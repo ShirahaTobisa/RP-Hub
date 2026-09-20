@@ -1,6 +1,6 @@
 # RP-Hub · R2 主线
 
-本仓库保存 `R2-rebuild-v4-img` 当前主线：R2 云同步、图片生成与管理、工坊插件，以及独立的更新镜像服务。
+本仓库保存 `R2-rebuild-v4-img` 当前主线：R2 云同步、图片生成与管理、工坊插件。更新分发端已迁至独立的公开仓库 [RP-Hub-Update-Mirror](https://github.com/ShirahaTobisa/RP-Hub-Update-Mirror)。
 
 上游项目：[STA1N156/RP-Hub](https://github.com/STA1N156/RP-Hub)。静态页面以 **1.7.5** 为底稿；站点在线更新后，由 R2 中的新页面覆盖静态底稿。当前覆盖层已对 **1.9.5** 验收，不能把仓库中的静态页面当成 1.9.5 源码。
 
@@ -12,7 +12,7 @@
 | --- | --- |
 | `_worker.js`、`DB/` | 同步、图片、工坊、导航适配、在线更新 |
 | `index.html`、`assets/`、`character/` | 静态页面底稿 |
-| `mirror/` | 独立部署的上游更新镜像服务 |
+| `mirror/README.md` | 更新分发端独立仓库指引 |
 | `scripts/`、`tests/` | 打包、辅助工具与测试 |
 | `examples/` | 工坊插件示例 |
 | `docs/` | 当前状态与开发说明 |
@@ -26,12 +26,11 @@ npm ci
 npm test
 npm run test:package
 npm run build
-npm run build:mirror
 ```
 
-主站生成 `dist/`，镜像服务生成 `dist-mirror/`，两者的 ZIP 都输出到 `release/`。发布主站时使用 `dist/` 或主站 ZIP；不要上传整个源码目录。
+主站生成 `dist/`，ZIP 输出到 `release/`。发布主站时使用 `dist/` 或主站 ZIP；不要上传整个源码目录。分发端在其独立仓库中测试和打包。
 
-浏览器测试和历史测试的依赖见 [开发与测试](docs/DEVELOPMENT.md)。GitHub Actions 运行核心检查和两份打包检查，不包含自动部署。
+浏览器测试和历史测试的依赖见 [开发与测试](docs/DEVELOPMENT.md)。GitHub Actions 运行核心检查和主站打包检查，不包含自动部署。
 
 ## 部署与数据
 

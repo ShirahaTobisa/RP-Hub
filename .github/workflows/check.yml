@@ -22,4 +22,3 @@ jobs:
       - run: npm test
       - run: npm run test:package
       - run: npm run build
-      - run: npm run build:mirror

@@ -10,7 +10,6 @@
 | `npm run test:package` | 主站打包内容、资源版本、ZIP 完整性 |
 | `npm run test:browser` | 工坊 API、插件云同步、图片编辑的浏览器测试 |
 | `npm run build` | 生成主站 dist 和 ZIP |
-| `npm run build:mirror` | 生成独立镜像服务 dist 和 ZIP |
 | `npm run test:history` | 旧综合入口，依赖本机历史资料，供历史版本复核 |
 
 首次运行浏览器测试前：
@@ -32,8 +31,8 @@ npm run test:browser
 
 ## 维护约定
 
-- 运行代码主要在 `DB/`、`_worker.js` 和 `mirror/worker.mjs`。共享 app.js 补丁统一写在 `DB/app-patches.mjs`。
-- `dist/`、`dist-mirror/` 为生成目录，修改源码后重新打包。
+- 主站运行代码主要在 `DB/`、`_worker.js`。共享 app.js 补丁统一写在 `DB/app-patches.mjs`；分发端在 [独立仓库](https://github.com/ShirahaTobisa/RP-Hub-Update-Mirror) 维护同版本的副本。
+- `dist/` 为生成目录，修改源码后重新打包。
 - 不提交生产数据、密钥、浏览器 profile、发布 ZIP 或测试证据。
 - `.gitattributes` 保留文件原始字节，避免 Git 换行转换改变既有发布校验值。
-- CI 使用 Windows，只运行核心测试、主站打包检查及两份打包。浏览器与历史复核单独运行；CI 不持有部署密钥。
+- CI 使用 Windows，只运行核心测试及主站打包检查。浏览器与历史复核单独运行；CI 不持有部署密钥。

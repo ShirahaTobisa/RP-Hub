@@ -20,7 +20,6 @@ const commands = [
     [process.execPath, ['--check', path.join(projectRoot, 'assets', 'js', 'app.js')]],
     [process.execPath, [path.join(testDirectory, 'mainline-v4-invariants.test.mjs')]],
     [process.execPath, [path.join(testDirectory, 'app-patches.test.mjs')]],
-    [process.execPath, [path.join(testDirectory, 'mirror-worker.test.mjs')]],
     [process.execPath, ['--experimental-vm-modules', path.join(testDirectory, 'app-update-mirror.test.mjs')]],
     [process.execPath, [path.join(testDirectory, 'app-patches-performance.test.mjs')]],
     [process.execPath, [path.join(testDirectory, 'bootstrap-sync.test.mjs')]],
