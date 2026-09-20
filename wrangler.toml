@@ -1,0 +1,15 @@
+name = "rph-r2"
+pages_build_output_dir = "."
+compatibility_date = "2026-06-06"
+
+[[r2_buckets]]
+binding = "RP_SYNC_R2"
+bucket_name = "rph-r2"
+
+[[env.production.r2_buckets]]
+binding = "RP_SYNC_R2"
+bucket_name = "rph-r2"
+
+[[env.preview.r2_buckets]]
+binding = "RP_SYNC_R2"
+bucket_name = "rph-r2"

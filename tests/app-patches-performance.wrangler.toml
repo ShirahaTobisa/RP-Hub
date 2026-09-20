@@ -1,0 +1,6 @@
+name = "rph-app-patches-performance"
+main = "./app-patches-performance.worker.mjs"
+compatibility_date = "2026-07-15"
+
+[limits]
+cpu_ms = 10

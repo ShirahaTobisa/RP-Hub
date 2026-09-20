@@ -1,0 +1,22 @@
+{
+  "name": "rp-hub-r2",
+  "version": "0.0.0",
+  "private": true,
+  "description": "RP-Hub R2 current mainline and update mirror",
+  "license": "CC-BY-NC-4.0",
+  "engines": {
+    "node": ">=22.22.2"
+  },
+  "scripts": {
+    "test": "node tests/run-core.mjs",
+    "test:package": "node tests/package.test.mjs",
+    "test:browser": "node scripts/prepare-test-fixtures.mjs && node tests/workshop-sdk.runner.mjs && node tests/workshop-cloud.runner.mjs && node tests/image-edit.runner.mjs",
+    "test:history": "node tests/run-all.mjs",
+    "build": "node scripts/package.mjs --release-dir release",
+    "build:mirror": "node scripts/package-mirror.mjs --release-dir release"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1",
+    "wrangler": "4.110.0"
+  }
+}

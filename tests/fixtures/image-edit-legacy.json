@@ -1,0 +1,171 @@
+{
+  "description": "Synthetic records produced by the original 0901 and production image modules in an isolated local browser test on 2026-09-20; no production user data.",
+  "original": "她站在窗前，望着远处。\n\nimage###blue sky, white clouds, landscape###",
+  "edited": "她站在窗前。\n\nimage###blue sky, white clouds, landscape###",
+  "cases": [
+    {
+      "host": "package-0901",
+      "before": {
+        "imageUrl": "http://127.0.0.1:61905/api/rp-image?provider=std&tag=blue+sky%2C+white+clouds%2C+landscape&model=nai-diffusion-4-5-full&artist=masterpiece%2C+best+quality%2C%5B%5B%5Bartist%3Adishwasher1910%5D%5D%5D%2C+%7B%7Byd_%28orange_maru%29%7D%7D%2C+%5Bartist%3Aciloranko%5D%2C+%5Bartist%3Asho_%28sho_lwlw%29%5D%2C+%5Bningen+mame%5D%2C+soft+lighting%2Cyear+2024&size=%E7%AB%96%E5%9B%BE&steps=40&scale=6&cfg=0&sampler=k_dpmpp_2m_sde&negative=%7B%7B%7B%7Bbad+anatomy%7D%7D%7D%7D%2C%7Bbad+feet%7D%2Cbad+hands%2C%7B%7B%7Bbad+proportions%7D%7D%7D%2C%7Bblurry%7D%2Ccloned+face%2Ccropped%2C%7B%7B%7Bdeformed%7D%7D%7D%2C%7B%7B%7Bdisfigured%7D%7D%7D%2Cerror%2C%7B%7B%7Bextra+arms%7D%7D%7D%2C%7Bextra+digit%7D%2C%7B%7B%7Bextra+legs%7D%7D%7D%2Cextra+limbs%2C%7B%7Bextra+limbs%7D%7D%2C%7Bfewer+digits%7D%2C%7B%7B%7Bfused+fingers%7D%7D%7D%2Cgross+proportions%2Cink+eyes%2Cink+hair%2Cjpeg+artifacts%2C%7B%7B%7B%7Blong+neck%7D%7D%7D%7D%2Clow+quality%2C%7Bmalformed+limbs%7D%2C%7B%7Bmissing+arms%7D%7D%2C%7Bmissing+fingers%7D%2C%7Bmissing+legs%7D%2C%7B%7B%7Bmore+than+2+nipples%7D%7D%7D%2Cmutated+hands%2C%7B%7B%7Bmutation%7D%7D%7D%2Cnormal+quality%2Cowres%2C%7B%7Bpoorly+drawn+face%7D%7D%2C%7B%7Bpoorly+drawn+hands%7D%7D%2Creen+eyes%2Csignature%2Ctext%2C%7B%7Btoo+many+fingers%7D%7D%2C%7B%7B%7Bugly%7D%7D%7D%2Cusername%2Cuta%2Cwatermark%2Cworst+quality%2C%7B%7B%7Bmore+than+2+legs%7D%7D%7D%2Cawkward+hand+sign%2Cweird+hand+gesture%2Ccontorted+hand%2Cunnatural+finger+pose%2Cdeformed+hand+gesture%2C%7Bshaka%7D%2C%7Bhang+loose%7D%2C%7B%7Brock+on%7D%7D%2C%7Bshaka+sign%7D&nocache=1&noise_schedule=karras&seed=25406484&reroll_nonce=668fea8b-fdd0-43df-85ba-4669a12c1def&character_id=image-edit-diagnostic-card&character_name=%E6%B5%8B%E8%AF%95%E8%A7%92%E8%89%B2&_rph_retry=1789900685838"
+      },
+      "after": {
+        "records": [
+          {
+            "key": "same-message-id:9651d862:0:515dcede",
+            "messageId": "same-message-id",
+            "messageIndex": 0,
+            "contentHash": "9651d862",
+            "occurrenceIndex": 0,
+            "prompt": "blue sky, white clouds, landscape",
+            "promptHash": "515dcede",
+            "paramsSnapshot": {
+              "prompt": "blue sky, white clouds, landscape",
+              "tag": "blue sky, white clouds, landscape",
+              "source": "module",
+              "provider": "std",
+              "model": "nai-diffusion-4-5-full",
+              "artist": "masterpiece, best quality,[[[artist:dishwasher1910]]], {{yd_(orange_maru)}}, [artist:ciloranko], [artist:sho_(sho_lwlw)], [ningen mame], soft lighting,year 2024",
+              "styleKey": "vertical",
+              "styleName": "韩漫小清新风",
+              "size": "竖图",
+              "steps": "40",
+              "scale": "6",
+              "cfg": "0",
+              "sampler": "k_dpmpp_2m_sde",
+              "negative": "{{{{bad anatomy}}}},{bad feet},bad hands,{{{bad proportions}}},{blurry},cloned face,cropped,{{{deformed}}},{{{disfigured}}},error,{{{extra arms}}},{extra digit},{{{extra legs}}},extra limbs,{{extra limbs}},{fewer digits},{{{fused fingers}}},gross proportions,ink eyes,ink hair,jpeg artifacts,{{{{long neck}}}},low quality,{malformed limbs},{{missing arms}},{missing fingers},{missing legs},{{{more than 2 nipples}}},mutated hands,{{{mutation}}},normal quality,owres,{{poorly drawn face}},{{poorly drawn hands}},reen eyes,signature,text,{{too many fingers}},{{{ugly}}},username,uta,watermark,worst quality,{{{more than 2 legs}}},awkward hand sign,weird hand gesture,contorted hand,unnatural finger pose,deformed hand gesture,{shaka},{hang loose},{{rock on}},{shaka sign}",
+              "nocache": "1",
+              "rerollNonce": "668fea8b-fdd0-43df-85ba-4669a12c1def",
+              "noise_schedule": "karras",
+              "seed": "25406484",
+              "characterUuid": "image-edit-diagnostic-card",
+              "characterName": "测试角色"
+            },
+            "imageSignature": "d084a2f6",
+            "status": "rendered",
+            "createdAt": 1789900685469,
+            "updatedAt": 1789900685811,
+            "rerollCount": 1
+          },
+          {
+            "key": "same-message-id:b1c2193d:0:515dcede",
+            "messageId": "same-message-id",
+            "messageIndex": 0,
+            "contentHash": "b1c2193d",
+            "occurrenceIndex": 0,
+            "prompt": "blue sky, white clouds, landscape",
+            "promptHash": "515dcede",
+            "paramsSnapshot": {
+              "prompt": "blue sky, white clouds, landscape",
+              "tag": "blue sky, white clouds, landscape",
+              "source": "module",
+              "provider": "std",
+              "model": "nai-diffusion-4-5-full",
+              "artist": "masterpiece, best quality,[[[artist:dishwasher1910]]], {{yd_(orange_maru)}}, [artist:ciloranko], [artist:sho_(sho_lwlw)], [ningen mame], soft lighting,year 2024",
+              "styleKey": "vertical",
+              "styleName": "韩漫小清新风",
+              "size": "竖图",
+              "steps": "40",
+              "scale": "6",
+              "cfg": "0",
+              "sampler": "k_dpmpp_2m_sde",
+              "negative": "{{{{bad anatomy}}}},{bad feet},bad hands,{{{bad proportions}}},{blurry},cloned face,cropped,{{{deformed}}},{{{disfigured}}},error,{{{extra arms}}},{extra digit},{{{extra legs}}},extra limbs,{{extra limbs}},{fewer digits},{{{fused fingers}}},gross proportions,ink eyes,ink hair,jpeg artifacts,{{{{long neck}}}},low quality,{malformed limbs},{{missing arms}},{missing fingers},{missing legs},{{{more than 2 nipples}}},mutated hands,{{{mutation}}},normal quality,owres,{{poorly drawn face}},{{poorly drawn hands}},reen eyes,signature,text,{{too many fingers}},{{{ugly}}},username,uta,watermark,worst quality,{{{more than 2 legs}}},awkward hand sign,weird hand gesture,contorted hand,unnatural finger pose,deformed hand gesture,{shaka},{hang loose},{{rock on}},{shaka sign}",
+              "nocache": "0",
+              "rerollNonce": "",
+              "noise_schedule": "karras",
+              "seed": "1391791787",
+              "characterUuid": "image-edit-diagnostic-card",
+              "characterName": "测试角色"
+            },
+            "imageSignature": "b5789423",
+            "status": "skipped",
+            "createdAt": 1789900686076,
+            "updatedAt": 1789900686076,
+            "rerollCount": 0
+          }
+        ]
+      }
+    },
+    {
+      "host": "rp.aliya.moe",
+      "before": {
+        "imageUrl": "http://127.0.0.1:61905/api/rp-image?provider=std&tag=blue+sky%2C+white+clouds%2C+landscape&model=nai-diffusion-4-5-full&artist=masterpiece%2C+best+quality%2C%5B%5B%5Bartist%3Adishwasher1910%5D%5D%5D%2C+%7B%7Byd_%28orange_maru%29%7D%7D%2C+%5Bartist%3Aciloranko%5D%2C+%5Bartist%3Asho_%28sho_lwlw%29%5D%2C+%5Bningen+mame%5D%2C+soft+lighting%2Cyear+2024&size=%E7%AB%96%E5%9B%BE&steps=40&scale=6&cfg=0&sampler=k_dpmpp_2m_sde&negative=%7B%7B%7B%7Bbad+anatomy%7D%7D%7D%7D%2C%7Bbad+feet%7D%2Cbad+hands%2C%7B%7B%7Bbad+proportions%7D%7D%7D%2C%7Bblurry%7D%2Ccloned+face%2Ccropped%2C%7B%7B%7Bdeformed%7D%7D%7D%2C%7B%7B%7Bdisfigured%7D%7D%7D%2Cerror%2C%7B%7B%7Bextra+arms%7D%7D%7D%2C%7Bextra+digit%7D%2C%7B%7B%7Bextra+legs%7D%7D%7D%2Cextra+limbs%2C%7B%7Bextra+limbs%7D%7D%2C%7Bfewer+digits%7D%2C%7B%7B%7Bfused+fingers%7D%7D%7D%2Cgross+proportions%2Cink+eyes%2Cink+hair%2Cjpeg+artifacts%2C%7B%7B%7B%7Blong+neck%7D%7D%7D%7D%2Clow+quality%2C%7Bmalformed+limbs%7D%2C%7B%7Bmissing+arms%7D%7D%2C%7Bmissing+fingers%7D%2C%7Bmissing+legs%7D%2C%7B%7B%7Bmore+than+2+nipples%7D%7D%7D%2Cmutated+hands%2C%7B%7B%7Bmutation%7D%7D%7D%2Cnormal+quality%2Cowres%2C%7B%7Bpoorly+drawn+face%7D%7D%2C%7B%7Bpoorly+drawn+hands%7D%7D%2Creen+eyes%2Csignature%2Ctext%2C%7B%7Btoo+many+fingers%7D%7D%2C%7B%7B%7Bugly%7D%7D%7D%2Cusername%2Cuta%2Cwatermark%2Cworst+quality%2C%7B%7B%7Bmore+than+2+legs%7D%7D%7D%2Cawkward+hand+sign%2Cweird+hand+gesture%2Ccontorted+hand%2Cunnatural+finger+pose%2Cdeformed+hand+gesture%2C%7Bshaka%7D%2C%7Bhang+loose%7D%2C%7B%7Brock+on%7D%7D%2C%7Bshaka+sign%7D&nocache=1&noise_schedule=karras&seed=1207818308&reroll_nonce=4a033d2e-ebb9-41c5-92af-9bf020d692f9&character_id=image-edit-diagnostic-card&character_name=%E6%B5%8B%E8%AF%95%E8%A7%92%E8%89%B2&_rph_retry=1789900688952"
+      },
+      "after": {
+        "records": [
+          {
+            "key": "same-message-id:9651d862:0:515dcede",
+            "messageId": "same-message-id",
+            "messageIndex": 0,
+            "contentHash": "9651d862",
+            "occurrenceIndex": 0,
+            "prompt": "blue sky, white clouds, landscape",
+            "promptHash": "515dcede",
+            "paramsSnapshot": {
+              "prompt": "blue sky, white clouds, landscape",
+              "tag": "blue sky, white clouds, landscape",
+              "source": "module",
+              "provider": "std",
+              "model": "nai-diffusion-4-5-full",
+              "artist": "masterpiece, best quality,[[[artist:dishwasher1910]]], {{yd_(orange_maru)}}, [artist:ciloranko], [artist:sho_(sho_lwlw)], [ningen mame], soft lighting,year 2024",
+              "styleKey": "vertical",
+              "styleName": "韩漫小清新风",
+              "size": "竖图",
+              "steps": "40",
+              "scale": "6",
+              "cfg": "0",
+              "sampler": "k_dpmpp_2m_sde",
+              "negative": "{{{{bad anatomy}}}},{bad feet},bad hands,{{{bad proportions}}},{blurry},cloned face,cropped,{{{deformed}}},{{{disfigured}}},error,{{{extra arms}}},{extra digit},{{{extra legs}}},extra limbs,{{extra limbs}},{fewer digits},{{{fused fingers}}},gross proportions,ink eyes,ink hair,jpeg artifacts,{{{{long neck}}}},low quality,{malformed limbs},{{missing arms}},{missing fingers},{missing legs},{{{more than 2 nipples}}},mutated hands,{{{mutation}}},normal quality,owres,{{poorly drawn face}},{{poorly drawn hands}},reen eyes,signature,text,{{too many fingers}},{{{ugly}}},username,uta,watermark,worst quality,{{{more than 2 legs}}},awkward hand sign,weird hand gesture,contorted hand,unnatural finger pose,deformed hand gesture,{shaka},{hang loose},{{rock on}},{shaka sign}",
+              "nocache": "1",
+              "rerollNonce": "4a033d2e-ebb9-41c5-92af-9bf020d692f9",
+              "noise_schedule": "karras",
+              "seed": "1207818308",
+              "characterUuid": "image-edit-diagnostic-card",
+              "characterName": "测试角色"
+            },
+            "imageSignature": "f3821444",
+            "status": "rendered",
+            "createdAt": 1789900688574,
+            "updatedAt": 1789900688929,
+            "rerollCount": 1
+          },
+          {
+            "key": "same-message-id:b1c2193d:0:515dcede",
+            "messageId": "same-message-id",
+            "messageIndex": 0,
+            "contentHash": "b1c2193d",
+            "occurrenceIndex": 0,
+            "prompt": "blue sky, white clouds, landscape",
+            "promptHash": "515dcede",
+            "paramsSnapshot": {
+              "prompt": "blue sky, white clouds, landscape",
+              "tag": "blue sky, white clouds, landscape",
+              "source": "module",
+              "provider": "std",
+              "model": "nai-diffusion-4-5-full",
+              "artist": "masterpiece, best quality,[[[artist:dishwasher1910]]], {{yd_(orange_maru)}}, [artist:ciloranko], [artist:sho_(sho_lwlw)], [ningen mame], soft lighting,year 2024",
+              "styleKey": "vertical",
+              "styleName": "韩漫小清新风",
+              "size": "竖图",
+              "steps": "40",
+              "scale": "6",
+              "cfg": "0",
+              "sampler": "k_dpmpp_2m_sde",
+              "negative": "{{{{bad anatomy}}}},{bad feet},bad hands,{{{bad proportions}}},{blurry},cloned face,cropped,{{{deformed}}},{{{disfigured}}},error,{{{extra arms}}},{extra digit},{{{extra legs}}},extra limbs,{{extra limbs}},{fewer digits},{{{fused fingers}}},gross proportions,ink eyes,ink hair,jpeg artifacts,{{{{long neck}}}},low quality,{malformed limbs},{{missing arms}},{missing fingers},{missing legs},{{{more than 2 nipples}}},mutated hands,{{{mutation}}},normal quality,owres,{{poorly drawn face}},{{poorly drawn hands}},reen eyes,signature,text,{{too many fingers}},{{{ugly}}},username,uta,watermark,worst quality,{{{more than 2 legs}}},awkward hand sign,weird hand gesture,contorted hand,unnatural finger pose,deformed hand gesture,{shaka},{hang loose},{{rock on}},{shaka sign}",
+              "nocache": "0",
+              "rerollNonce": "",
+              "noise_schedule": "karras",
+              "seed": "1391791787",
+              "characterUuid": "image-edit-diagnostic-card",
+              "characterName": "测试角色"
+            },
+            "imageSignature": "b5789423",
+            "status": "skipped",
+            "createdAt": 1789900689158,
+            "updatedAt": 1789900689158,
+            "rerollCount": 0
+          }
+        ]
+      }
+    }
+  ]
+}

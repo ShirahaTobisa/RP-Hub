@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>RP Sync real offline backup test</title>
+</head>
+<body>
+    <pre id="result" data-status="running">RUNNING</pre>
+    <script>
+        const realBackupResult = document.getElementById('result');
+        let realBackupFinished = false;
+        window.__finishRealBackupTest = async (status, text) => {
+            if (realBackupFinished) return;
+            realBackupFinished = true;
+            realBackupResult.dataset.status = status;
+            realBackupResult.textContent = text;
+            try {
+                await fetch('/tests/real-offline-backup.complete', {
+                    method: 'POST',
+                    cache: 'no-store',
+                    keepalive: true
+                });
+            } catch {}
+        };
+        window.addEventListener('error', (event) => {
+            window.__finishRealBackupTest(
+                'fail',
+                `FAIL: ${event.error?.stack || event.message || 'browser error'}`
+            );
+        });
+        window.addEventListener('unhandledrejection', (event) => {
+            window.__finishRealBackupTest(
+                'fail',
+                `FAIL: ${event.reason?.stack || event.reason || 'unhandled rejection'}`
+            );
+        });
+        window.alert = () => {};
+    </script>
+    <script src="/DB/nav-adapter.js"></script>
+    <script src="./real-offline-backup.bootstrap.js"></script>
+    <script type="module" src="./real-offline-backup.test.mjs"></script>
+    <img src="./real-offline-backup.wait" hidden alt="">
+</body>
+</html>

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>RPHubCharStore browser tests</title>
+</head>
+<body>
+    <pre id="result" data-status="running">RUNNING</pre>
+    <script>
+        const browserTestResult = document.getElementById('result');
+        window.addEventListener('error', (event) => {
+            browserTestResult.dataset.status = 'fail';
+            browserTestResult.textContent = `FAIL: ${event.message || event.error || 'resource load error'}`;
+        });
+        window.addEventListener('unhandledrejection', (event) => {
+            browserTestResult.dataset.status = 'fail';
+            browserTestResult.textContent = `FAIL: ${event.reason?.stack || event.reason || 'unhandled rejection'}`;
+        });
+        window.__charStoreAlerts = [];
+        window.__charStoreConsoleErrors = [];
+        window.alert = (message) => window.__charStoreAlerts.push(String(message));
+        const nativeConsoleError = console.error.bind(console);
+        console.error = (...args) => {
+            window.__charStoreConsoleErrors.push(args.map(String).join(' '));
+            nativeConsoleError(...args);
+        };
+        const nativeFetch = window.fetch.bind(window);
+        window.fetch = (input, init) => {
+            const url = new URL(typeof input === 'string' ? input : input.url, location.href);
+            if (url.pathname === '/assets/js/app.js') {
+                const mode = new URLSearchParams(location.search).get('mode');
+                if (mode === 'fetch-failure') {
+                    return Promise.reject(new TypeError('simulated app.js fetch failure'));
+                }
+                const unpatched = mode === 'unpatched';
+                const source = unpatched
+                    ? "await setStoredValue('characters', characters.value);"
+                    : 'await window.RPHubCharStore.saveAll(characters.value);';
+                return Promise.resolve(new Response(source, {
+                    status: 200,
+                    headers: { 'content-type': 'application/javascript' }
+                }));
+            }
+            return nativeFetch(input, init);
+        };
+        const charStoreScript = new URLSearchParams(location.search).get('mode') === 'large-record'
+            ? './char-store-browser.large-record.js'
+            : '../DB/char-store.js';
+        document.write(`<script src="${charStoreScript}"><\/script>`);
+    </script>
+    <script>
+        document.body.dataset.charStoreLoaded = String(Boolean(window.RPHubCharStore));
+    </script>
+    <script type="module" src="./char-store-browser.test.mjs"></script>
+    <img src="./char-store-browser.wait" hidden alt="">
+</body>
+</html>

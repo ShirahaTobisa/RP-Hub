@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>RP Sync bootstrap behavior tests</title>
+</head>
+<body>
+    <pre id="result" data-status="running">RUNNING</pre>
+    <script>
+        const bootstrapTestResult = document.getElementById('result');
+        window.addEventListener('error', (event) => {
+            if (bootstrapTestResult.dataset.status !== 'running') return;
+            bootstrapTestResult.dataset.status = 'fail';
+            bootstrapTestResult.textContent = `FAIL [${window.__bootstrapTestPhase || 'startup'}]: ${event.error?.stack || event.message || 'resource load error'}`;
+        });
+        window.addEventListener('unhandledrejection', (event) => {
+            if (bootstrapTestResult.dataset.status !== 'running') return;
+            bootstrapTestResult.dataset.status = 'fail';
+            bootstrapTestResult.textContent = `FAIL [${window.__bootstrapTestPhase || 'startup'}]: ${event.reason?.stack || event.reason || 'unhandled rejection'}`;
+        });
+        window.alert = () => {};
+    </script>
+    <script src="/DB/nav-adapter.js"></script>
+    <script>Object.defineProperty(navigator, "locks", { value: undefined });</script>
+    <script src="./bootstrap-app-write-gates.js"></script>
+    <script src="./bootstrap-behavior.instrumented.js"></script>
+    <script type="module" src="./bootstrap-behavior.test.mjs"></script>
+    <img src="./bootstrap-behavior.wait" hidden alt="">
+</body>
+</html>

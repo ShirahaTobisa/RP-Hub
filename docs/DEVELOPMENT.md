@@ -1,0 +1,39 @@
+# 开发与测试
+
+使用 Node.js 22.22.2 和 Windows PowerShell。先执行 `npm ci` 安装锁定的开发依赖。
+
+## 日常命令
+
+| 命令 | 范围 |
+| --- | --- |
+| `npm test` | 当前主线的 10 个独立测试脚本：图片编辑与归属、权限、同步约束、离线转换 |
+| `npm run test:package` | 主站打包内容、资源版本、ZIP 完整性 |
+| `npm run test:browser` | 工坊 API、插件云同步、图片编辑的浏览器测试 |
+| `npm run build` | 生成主站 dist 和 ZIP |
+| `npm run build:mirror` | 生成独立镜像服务 dist 和 ZIP |
+| `npm run test:history` | 旧综合入口，依赖本机历史资料，供历史版本复核 |
+
+首次运行浏览器测试前：
+
+```powershell
+npx playwright install chromium
+npm run test:browser
+```
+
+浏览器默认使用 Playwright 下载的 Chromium，可用 `CHROME_PATH` 指定浏览器路径。测试在临时浏览器环境中使用模拟数据，不连接生产站点。
+
+浏览器测试准备脚本会从上游公开仓库下载固定 commit 的 1.9.5 测试页面，核对 SHA-256 后解压到 `evidence/sync-195/upstream/`。页面依赖上游的公开 CDN 脚本，运行时需联网。旧图片匹配记录使用 `tests/fixtures/image-edit-legacy.json`，来自隔离测试的模拟数据。
+
+## 历史资料
+
+旧综合测试入口保留用于追溯，并不等同于当前默认验收。其中部分脚本依赖兄弟目录的 `R2`、`R2-rebuild-pics`、上游 Git 历史、旧发布 ZIP、对照证据或本地浏览器。个别测试还锁定了历史版本源码的哈希，不能直接套用到当前主线。新的检出目录不具备这些资料。
+
+`scripts/rebuild.mjs` 同样是历史重建工具，会读取兄弟目录；它不是当前主线的常规构建命令。日常使用 `npm run build` 即可。
+
+## 维护约定
+
+- 运行代码主要在 `DB/`、`_worker.js` 和 `mirror/worker.mjs`。共享 app.js 补丁统一写在 `DB/app-patches.mjs`。
+- `dist/`、`dist-mirror/` 为生成目录，修改源码后重新打包。
+- 不提交生产数据、密钥、浏览器 profile、发布 ZIP 或测试证据。
+- `.gitattributes` 保留文件原始字节，避免 Git 换行转换改变既有发布校验值。
+- CI 使用 Windows，只运行核心测试、主站打包检查及两份打包。浏览器与历史复核单独运行；CI 不持有部署密钥。

@@ -1,0 +1,40 @@
+# Local archives, test evidence and build output
+/archive/
+/evidence/
+/release/
+/dist/
+/dist-mirror/
+/.cache/
+/.local/
+node_modules/
+.wrangler/
+.rph-*
+playwright-report/
+test-results/
+
+# Credentials and local data
+.env
+.env.*
+!.env.example
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.zip
+*.tar
+*.tar.gz
+*.log
+*.tmp
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
