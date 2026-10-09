@@ -8,8 +8,8 @@ import { patchRpHubAppJs } from '../DB/app-patches.mjs';
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const { chromium } = createRequire(import.meta.url)('playwright');
 export const chrome = process.env.CHROME_PATH || chromium.executablePath();
-// 页面测试默认用固定的上游 2.0.0（scripts/prepare-test-fixtures.mjs 准备）；RPH_UPSTREAM_DIR 可指向其他版本的上游源码目录。
-export const defaultUpstream = path.resolve(process.env.RPH_UPSTREAM_DIR || path.join(root, 'evidence/sync-195/upstream/2.0.0/RP-Hub-ed372012fde428499d024ac3623902b754af7721'));
+// 页面测试默认用分发端收录的最新上游（scripts/prepare-test-fixtures.mjs 自动准备）；RPH_UPSTREAM_DIR 可指向其他版本的上游源码目录。
+export const defaultUpstream = path.resolve(process.env.RPH_UPSTREAM_DIR || path.join(root, 'evidence/sync-195/upstream/latest'));
 export const baseline = process.env.RPH_BASELINE_DIR || path.join(root, 'evidence/sync-195/baseline');
 const exposed = ['CONFIG', 'state', 'iterateSnapshotLines', 'iterateSnapshotChunks', 'SnapshotChunkWriter',
     'serializeSnapshotLine', 'serializeStreamRecord', 'checkStreamRecordSize', 'scanStreamSnapshot',
