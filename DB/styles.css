@@ -501,3 +501,4 @@
 :root[data-app-theme="dark"] .rp-sync-update-details summary::after { color: var(--night-muted); }
 :root[data-app-theme="dark"] .rp-sync-version-button::after { border-color: var(--night-muted); }
 :root[data-app-theme="dark"] .rp-sync-password-field input:focus { border-color: var(--night-accent); box-shadow: 0 0 0 4px rgba(150, 186, 255, 0.16); }
+.rp-sync-update-body [data-role="self-update-info"] { white-space: pre-line; }

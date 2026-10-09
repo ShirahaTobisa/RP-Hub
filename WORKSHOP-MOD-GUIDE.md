@@ -1,6 +1,6 @@
 # RP-Hub 创意工坊 Mod 作者指南
 
-这份指南描述当前 `DB/module-loader.js` 的 API 3，兼容原有 API 1、2 模块。指南和 `examples/` 都是教材，
+这份指南描述当前 `DB/module-loader.js` 的 API 4，兼容原有 API 1～3 模块。指南和 `examples/` 都是教材，
 不会进入 `dist/` 或发布 ZIP。
 
 ## 1. 这是什么与信任模型
@@ -50,7 +50,7 @@ Mod 是由用户在“模块管理”面板通过 URL 或文件导入安装的 J
 | `id` | 必填字符串，必须匹配 `^[a-z0-9-]{3,32}$`；也是存储隔离和卸载清理的身份。 |
 | `name` | 必填、非空字符串；显示在模块管理面板。 |
 | `version` | 必填、非空字符串；loader 不解释版本格式，只负责显示。 |
-| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `3`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app`、`ctx.requests` 或生成事件的模块声明 `3`。 |
+| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `4`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`。 |
 | `init(ctx)` | 必填函数；应用启动落定后调用。抛错会隔离为 `init-error`。 |
 
 文件加载后要立刻同步调用 `RPHubSDK.register(manifest)`。模块必须在 3 秒期限内注册，不能
@@ -100,6 +100,8 @@ await ctx.persistence.track('import', async () => {
 - `toast(message, { kind })` 显示 loader 自绘提示，`kind` 可用 `info`。
 - `addSidebarEntry({ label, onClick })` 登记导航菜单入口。loader 负责守卫和重建 DOM。
 - `openPanel({ title, render(bodyEl) })` 打开通用模态容器，关闭按钮由 loader 提供。
+- `addComposerButton({ label, text, onClick })`（API 4）在输入框上方那排按钮（“快捷面板”所在行）加一个圆形按钮，
+  `text` 取前两个字显示，`label` 作为提示文字。页面重新渲染丢掉按钮时 loader 会补回。
 
 ### `ctx.events`
 
@@ -118,8 +120,9 @@ await ctx.persistence.track('import', async () => {
 
 ### `ctx.app`（API 3）
 
-- `get(name)`：读取页面数据，如 `chatHistory`、`settings`、`currentCharacter`、`user`、`isGenerating`。
-  返回页面里的原对象，**只读，不要修改**；要改聊天内容请走页面自己的操作。
+- `get(name)`：读取页面数据或方法，如 `chatHistory`、`settings`、`currentCharacter`、`user`、`userInput`、
+  `isGenerating`、`sendMessage`。返回页面里的原对象；改聊天记录里的消息内容会在页面下次保存时一起保存。
+- `set(name, value)`（API 4）：修改页面已有的状态，如 `set('userInput', '文字')` 填写输入框；不能新增状态或覆盖方法。
 - `watch(getter, callback, { deep, immediate })`：`getter` 里通过 `get` 读到的数据变化时调用
   `callback(新值, 旧值)`，返回停止监听的函数。用它代替定时轮询。只能在 `init` 及之后调用。
 
@@ -145,7 +148,7 @@ ctx.requests.onChat(body => {
 ### `ctx.log`、版本与上游信息
 
 `ctx.log(...)` 会以 `[RPH-mod:<id>]` 前缀写入控制台。`ctx.version` 是
-`{ api: 3, loader: 'r2-workshop-3' }`。`ctx.upstream.updateInfo` 是页面提供的
+`{ api: 4, loader: 'r2-workshop-4' }`。`ctx.upstream.updateInfo` 是页面提供的
 `RPH_R2_UPDATE_INFO` 原值，也可能是 `null`；请判空读取。
 
 ## 5. 生命周期与状态徽记

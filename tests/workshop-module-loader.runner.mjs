@@ -184,7 +184,7 @@ const probeSource = `(() => {
         requiresApi: 1,
         async init(ctx) {
             flags.ctxKeys = Object.keys(ctx).sort();
-            flags.versionOk = ctx.version.api === 3 && ctx.version.loader === 'r2-workshop-3';
+            flags.versionOk = ctx.version.api === 4 && ctx.version.loader === 'r2-workshop-4';
             flags.updateInfoExact = ctx.upstream.updateInfo === (globalThis.RPH_R2_UPDATE_INFO ?? null);
             ctx.events.on('ready', () => { flags.readySeen += 1; });
             ctx.events.on('visibility', () => { flags.visibilitySeen += 1; });
@@ -342,7 +342,7 @@ window.RPH_R2_FLUSH_PERSISTENCE = baseFlush;
         }));
         assert.deepEqual(empty.sdkKeys, ['apiVersion', 'flush', 'register']);
         assert.equal(empty.sdkFrozen, true);
-        assert.equal(empty.apiVersion, 3);
+        assert.equal(empty.apiVersion, 4);
         assert.deepEqual({
             dbReads: empty.metrics.dbReads,
             intervalCreates: empty.metrics.intervalCreates,

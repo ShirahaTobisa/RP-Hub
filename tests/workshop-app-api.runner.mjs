@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } from './sync-195.helpers.mjs';
 
-// API 3：ctx.app、ctx.requests.onChat、生成开始/结束事件，以及随主线提供的 advice 插件，在真实 1.9.5 页面上验证。
+// API 3/4：ctx.app、ctx.requests.onChat、生成开始/结束事件、输入框按钮，以及随主线提供的 advice 插件，在真实页面上验证。
 const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const context = await browser.newContext();
@@ -71,8 +71,8 @@ try {
     const messages = chatBodies[0].messages;
     const lastAssistant = messages.findLast(m => m.role === 'assistant');
     const lastUser = messages.findLast(m => m.role === 'user');
-    assert.ok(lastAssistant.content.endsWith('准备完成\n\n<advice>\n我拔剑冲上去\n</advice>'), lastAssistant.content);
-    assert.ok(lastUser.content.includes('请按照上一条回复末尾 <advice> 中的方向继续写下去。'));
+    assert.ok(lastAssistant.content.endsWith('准备完成\n\n<选项>\n我拔剑冲上去\n<选项/>'), lastAssistant.content);
+    assert.ok(lastUser.content.includes('按照选项继续'));
     assert.ok(!messages.some(m => m.role === 'user' && m.content.includes('我拔剑冲上去')));
     assert.ok(!messages.some(m => String(m.content).includes('坏插件的改动')), 'failed handler changes must be discarded');
     console.log('PASS advice moved into previous AI reply; failing handler isolated');
@@ -88,11 +88,26 @@ try {
     assert.equal(after.handled, 1);
     console.log('PASS chat history keeps original input; generation events and ctx.app.watch fire');
 
+    // 「选」按钮：改写结果写进上一条 AI 回复并随记录保存，输入框换成固定文字后发送，请求不再被二次改写。
+    await page.evaluate(() => {
+        vm().userInput = '我推开门';
+        document.querySelector('[data-rph-workshop-composer-button="advice-inject"]').click();
+    });
+    await page.waitForFunction(() => api3Probe.events.filter(event => event === 'end').length === 2, null, { timeout: 30000 });
+    const written = await page.evaluate(() => vm().chatHistory.slice(-3).map(message => message.content));
+    assert.deepEqual(written, ['回复正文\n\n<选项>\n我推开门\n<选项/>', '按照选项继续', '回复正文']);
+    const composerMessages = chatBodies[1].messages;
+    assert.ok(composerMessages.findLast(m => m.role === 'assistant').content.endsWith('回复正文\n\n<选项>\n我推开门\n<选项/>'));
+    assert.equal(composerMessages.findLast(m => m.role === 'user').content.includes('按照选项继续'), true);
+    assert.equal(composerMessages.filter(m => String(m.content).includes('我推开门')).length, 1);
+    console.log('PASS composer button writes the advice into history and sends the fixed text once');
+    chatBodies.splice(0);
+
     await page.evaluate(base => fetch(base + '/v1/chat/completions', { method: 'POST', body: JSON.stringify({ messages: [
         { role: 'system', content: '你是角色扮演对话的逐轮记忆整理器。' }, { role: 'user', content: '我拔剑冲上去' }] }) }), harness.url);
-    assert.equal(chatBodies.length, 2);
-    assert.equal(chatBodies[1].messages.length, 2);
-    assert.equal(await page.evaluate(() => api3Probe.handled), 1);
+    assert.equal(chatBodies.length, 1);
+    assert.equal(chatBodies[0].messages.length, 2);
+    assert.equal(await page.evaluate(() => api3Probe.handled), 2);
     console.log('PASS auxiliary requests are not passed to chat handlers');
     assert.deepEqual(errors, []);
 } finally {

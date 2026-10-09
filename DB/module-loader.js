@@ -1,9 +1,9 @@
-/* RP-Hub workshop module loader and plugin SDK v3. */
+/* RP-Hub workshop module loader and plugin SDK v4. */
 (() => {
     'use strict';
 
-    const API_VERSION = 3;
-    const LOADER_VERSION = 'r2-workshop-3';
+    const API_VERSION = 4;
+    const LOADER_VERSION = 'r2-workshop-4';
     const LIST_KEY = 'rp_hub_workshop_modules_v1';
     const DB_NAME = 'RPHubDB';
     const DB_STORE = 'store';
@@ -46,6 +46,7 @@
         generationWatch: null,
         chatRequestHandlers: new Set(),
         fetchWrapped: false,
+        composerButtons: [],
         listeners: {
             ready: new Set(),
             visibility: new Set(),
@@ -310,6 +311,38 @@
             closePanel();
             throw error;
         }
+    }
+
+    // 输入框上方那排按钮（“快捷面板”所在行）。页面重新渲染会丢掉插入的按钮，由 ensureComposerButtons 补回。
+    const COMPOSER_ANCHOR = 'button[aria-controls="chat-quick-panel"]';
+
+    function ensureComposerButtons() {
+        if (state.composerButtons.every((button) => button.isConnected)) return;
+        const anchor = document.querySelector(COMPOSER_ANCHOR);
+        if (!anchor) return;
+        for (const button of state.composerButtons) {
+            if (button.isConnected) continue;
+            button.className = anchor.className;
+            anchor.before(button);
+        }
+    }
+
+    function addComposerButton(owner, options) {
+        if (!options || typeof options.onClick !== 'function') throw new TypeError('composer button onClick must be a function');
+        const label = String(options.label || '').trim();
+        if (!label) throw new TypeError('composer button label is required');
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.title = label;
+        button.setAttribute('aria-label', label);
+        button.dataset.rphWorkshopComposerButton = owner;
+        button.textContent = String(options.text || label).slice(0, 2);
+        button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            safeCall(`composer button for ${owner}`, options.onClick);
+        });
+        state.composerButtons.push(button);
+        ensureComposerButtons();
     }
 
     function releaseSidebarEntries(owner) {
@@ -610,10 +643,18 @@
         return (app?._instance || app?._container?._vnode?.component)?.setupState || null;
     }
 
-    // 读页面数据（如 chatHistory、settings、currentCharacter、user、isGenerating）；返回的是页面里的原对象，只读不改。
+    // 读页面数据或方法（如 chatHistory、settings、userInput、isGenerating、sendMessage）；返回的是页面里的原对象。
     function appGet(name) {
         const value = appState()?.[String(name)];
         return globalThis.Vue?.isRef?.(value) ? value.value : value;
+    }
+
+    // 改页面状态，如 set('userInput', '文字')；只改已有的状态，不新增。
+    function appSet(name, value) {
+        const state = appState();
+        const key = String(name);
+        if (!state || !(key in state) || typeof state[key] === 'function') throw new Error(`页面没有可修改的状态：${key}`);
+        state[key] = value;
     }
 
     // getter 里用 appGet 读到的数据一变，就调用 callback(新值, 旧值)；返回停止监听的函数。
@@ -737,7 +778,7 @@
     function installRuntimeHooks() {
         if (state.chatObserver || !state.runtimeActive) return;
         state.chatObserver = new MutationObserver((records) => {
-
+            if (state.composerButtons.length) ensureComposerButtons();
             if (state.listeners['chat-mutation'].size === 0) return;
             collectDirtyRows(records);
             scheduleChatMutationDispatch();
@@ -868,6 +909,7 @@
             ui: {
                 toast: showToast,
                 addSidebarEntry: (options) => addSidebarEntry(id, options),
+                addComposerButton: (options) => addComposerButton(id, options),
                 openPanel
             },
             events: {
@@ -875,6 +917,7 @@
             },
             app: {
                 get: appGet,
+                set: appSet,
                 watch: appWatch
             },
             requests: {
