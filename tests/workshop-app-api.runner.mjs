@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } from './sync-195.helpers.mjs';
 
 // API 3/4：ctx.app、ctx.requests.onChat、生成开始/结束事件、输入框按钮，以及随主线提供的 advice 插件，在真实页面上验证。
@@ -109,6 +110,63 @@ try {
     assert.equal(chatBodies[0].messages.length, 2);
     assert.equal(await page.evaluate(() => api3Probe.handled), 2);
     console.log('PASS auxiliary requests are not passed to chat handlers');
+
+    // 工坊：从分发端目录安装、刷新后运行、发布新版后原地更新；指纹不符的文件拒绝安装。
+    const marketSource = (version) => `RPHubSDK.register({ id: 'market-demo', name: '工坊示例', version: '${version}', requiresApi: 4, init() { globalThis.marketDemoVersion = '${version}'; } });`;
+    let marketVersion = '1.0.0';
+    const sha = (text) => createHash('sha256').update(text).digest('hex');
+    await page.route('https://update.rph.mornye.uk/workshop/**', (route) => {
+        const pathname = new URL(route.request().url()).pathname;
+        const headers = { 'access-control-allow-origin': '*' };
+        if (pathname === '/workshop/index.json') {
+            return route.fulfill({ headers, json: { schema: 1, plugins: [
+                { id: 'market-demo', name: '工坊示例', version: marketVersion, author: '测试', description: '示例插件', requiresApi: 4,
+                    file: { path: '/workshop/plugins/market-demo.js', sha256: sha(marketSource(marketVersion)) } },
+                { id: 'market-bad', name: '坏指纹', version: '1.0.0', author: '测试', description: '指纹对不上', requiresApi: 4,
+                    file: { path: '/workshop/plugins/market-bad.js', sha256: '0'.repeat(64) } },
+                { id: 'market-future', name: '新接口', version: '1.0.0', author: '测试', description: '需要更高接口版本', requiresApi: 99,
+                    file: { path: '/workshop/plugins/market-future.js', sha256: '0'.repeat(64) } }
+            ] } });
+        }
+        if (pathname === '/workshop/plugins/market-demo.js') return route.fulfill({ headers, contentType: 'text/javascript', body: marketSource(marketVersion) });
+        if (pathname === '/workshop/plugins/market-bad.js') return route.fulfill({ headers, contentType: 'text/javascript', body: 'tampered' });
+        return route.fulfill({ status: 404, headers, body: '' });
+    });
+    page.on('dialog', (dialog) => dialog.accept());
+    const marketAction = (id) => page.locator(`[data-rph-workshop-market-action="${id}"]`);
+    const openManager = async () => {
+        await page.evaluate(() => [...document.querySelectorAll('.app-nav-trigger')].find((trigger) => trigger.offsetParent)?.click());
+        await page.locator('[data-rph-workshop-manager-entry]').waitFor({ state: 'attached' });
+        await page.evaluate(() => document.querySelector('[data-rph-workshop-manager-entry]').click());
+        await marketAction('market-demo').waitFor();
+    };
+    const installations = () => page.evaluate(() => JSON.parse(localStorage.getItem('rp_hub_workshop_modules_v1') || '[]'));
+
+    await openManager();
+    assert.equal(await marketAction('market-demo').textContent(), '安装');
+    assert.equal(await marketAction('market-future').textContent(), '需要更新测试版');
+    assert.equal(await marketAction('market-future').isDisabled(), true);
+    await marketAction('market-bad').click();
+    await page.waitForFunction(() => document.querySelector('[data-rph-workshop-toast]')?.textContent.includes('不一致'));
+    assert.equal((await installations()).some((entry) => entry.url.endsWith('market-bad.js')), false);
+    await marketAction('market-demo').click();
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem('rp_hub_workshop_modules_v1')).some((entry) => entry.url.endsWith('/workshop/plugins/market-demo.js')));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => globalThis.marketDemoVersion === '1.0.0', null, { timeout: 45000 });
+    console.log('PASS workshop lists plugins, rejects a mismatched file, installs and runs a plugin after reload');
+
+    marketVersion = '1.0.1';
+    await openManager();
+    assert.equal(await marketAction('market-demo').textContent(), '更新');
+    await marketAction('market-demo').click();
+    await page.waitForFunction(() => JSON.parse(localStorage.getItem('rp_hub_workshop_modules_v1')).some((entry) => entry.id === 'market-demo' && entry.version === '1.0.1'));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => globalThis.marketDemoVersion === '1.0.1', null, { timeout: 45000 });
+    const marketEntries = (await installations()).filter((entry) => entry.id === 'market-demo');
+    assert.equal(marketEntries.length, 1);
+    await openManager();
+    assert.equal(await marketAction('market-demo').textContent(), '已安装');
+    console.log('PASS workshop update replaces the installed file in place and keeps one installation');
     assert.deepEqual(errors, []);
 } finally {
     await context.close();

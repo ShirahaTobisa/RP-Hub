@@ -176,6 +176,14 @@ ctx.requests.onChat(body => {
 
 ## 7. 发布与更新
 
+### 发布到工坊
+
+插件可以投稿到 [RP-Hub 插件工坊](https://github.com/ShirahaTobisa/RP-Hub-Workshop)：按仓库说明提交合并请求，审核合并后分发端自动上架，
+各站点在「模块管理 → 工坊」一键安装和更新（更新写回原安装，设置和数据保留）。工坊里的
+[接口示范](https://github.com/ShirahaTobisa/RP-Hub-Workshop/blob/main/plugins/api-demo/api-demo.js) 把每个接口各用一次，可以直接照着改。
+
+### 自行分发
+
 URL 安装要求 HTTPS 和 CORS；不满足时使用文件导入。插件文件保存在 `RPHubWorkshop/scripts`，
 以后加载本地副本，不自动获取远端更新。
 

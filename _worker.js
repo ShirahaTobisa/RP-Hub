@@ -122,12 +122,14 @@ const IMAGE_NON_GENERATION_QUERY_KEYS = new Set([
 ]);
 const IMAGE_GENERATION_PARAM_NAME_PATTERN = /^[A-Za-z0-9_.~-]{1,80}$/;
 
-function buildInjectedBootstrap(updateInfo = null) {
+function buildInjectedBootstrap(updateInfo = null, mirrorBase = '') {
     const safeInfo = updateInfo && typeof updateInfo === 'object'
         ? JSON.stringify(updateInfo).replace(/</g, '\\u003c')
         : 'null';
+    // 分发端地址给模块管理的“工坊”用；分发端关闭时为空字符串。
+    const safeMirrorBase = JSON.stringify(String(mirrorBase || '')).replace(/</g, '\\u003c');
 return `
-<script>window.RPH_R2_UPDATE_INFO=${safeInfo};</script>
+<script>window.RPH_R2_UPDATE_INFO=${safeInfo};window.RPH_R2_MIRROR_BASE=${safeMirrorBase};</script>
 <link rel="stylesheet" href="/DB/styles.css?v=r2-rebuild-1">
 <script src="/DB/nav-adapter.js?v=sync-195"></script>
 <script src="/DB/char-store.js?v=r2-rebuild-1"></script>
@@ -2830,7 +2832,9 @@ async function serveStatic(request, env) {
     return new HTMLRewriter()
         .on('head', {
             element(element) {
-                element.append(buildInjectedBootstrap(appUpdateInfo), { html: true });
+                let mirrorBase = '';
+                try { mirrorBase = getAppUpdateMirrorBase(env); } catch (_) { /* 地址配置无效时工坊不可用 */ }
+                element.append(buildInjectedBootstrap(appUpdateInfo, mirrorBase), { html: true });
             }
         })
         .on('button', updateNoticeButtonRewriter)

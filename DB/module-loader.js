@@ -17,6 +17,9 @@
     // 记忆总结、二次压缩、UI 变量分析等副请求的开头文字；带这些文字的请求不算主聊天。
     const AUXILIARY_REQUEST_MARKERS = ['你是角色扮演对话的逐轮记忆整理器', '你是角色扮演长期记忆压缩器', '只分析一个UI模板'];
     const MODULE_ID_PATTERN = /^[a-z0-9-]{3,32}$/;
+    const RISK_WARNING = '风险警告：第三方代码拥有页面全部权限，包括云同步密码与生图密钥。仅安装你信任的来源。\n\n确认安装此模块吗？';
+    const DEFAULT_MIRROR_BASE = 'https://update.rph.mornye.uk';
+    const WORKSHOP_INDEX_TTL_MS = 60_000;
 
     const state = {
         installations: [],
@@ -47,6 +50,7 @@
         chatRequestHandlers: new Set(),
         fetchWrapped: false,
         composerButtons: [],
+        workshopIndex: null,
         listeners: {
             ready: new Set(),
             visibility: new Set(),
@@ -410,6 +414,14 @@
         });
     }
 
+    function addInstallation(entry) {
+        state.installations.push(entry);
+        if (writeInstallations()) return true;
+        state.installations.pop();
+        showToast('模块安装列表保存失败');
+        return false;
+    }
+
     async function installFromInput(input) {
         const url = String(input.value || '').trim();
         if (url.length > 500) {
@@ -424,20 +436,14 @@
             showToast('该模块 URL 已安装');
             return;
         }
-        const warning = '风险警告：第三方代码拥有页面全部权限，包括云同步密码与生图密钥。仅安装你信任的来源。\n\n确认安装此模块吗？';
-        if (!globalThis.confirm(warning)) return;
+        if (!globalThis.confirm(RISK_WARNING)) return;
         try { await loadModuleSource({ url }); }
         catch (error) {
             showToast(`无法保存插件文件：${error.message}。地址须支持跨域下载，也可导入 JS 文件。`);
             return;
         }
         if (state.installations.some(entry => entry.url === url)) return;
-        state.installations.push({ id: '', url, enabled: true, addedAt: Date.now(), lastStatus: '' });
-        if (!writeInstallations()) {
-            state.installations.pop();
-            showToast('模块安装列表保存失败');
-            return;
-        }
+        if (!addInstallation({ id: '', url, enabled: true, addedAt: Date.now(), lastStatus: '' })) return;
         input.value = '';
         refreshManagementPanel();
         showToast('模块已安装，刷新后生效', { kind: 'info' });
@@ -458,6 +464,108 @@
             } catch (error) { showToast(error.message); }
         };
         return input;
+    }
+
+    // ---- 工坊：分发端审核上架的插件，一键安装/更新 ----
+    function workshopBase() {
+        const injected = globalThis.RPH_R2_MIRROR_BASE;
+        return typeof injected === 'string' ? injected.replace(/\/+$/, '') : DEFAULT_MIRROR_BASE;
+    }
+
+    function loadWorkshopIndex() {
+        if (!state.workshopIndex || Date.now() - state.workshopIndex.at > WORKSHOP_INDEX_TTL_MS) {
+            const promise = fetch(`${workshopBase()}/workshop/index.json`, { credentials: 'omit', signal: AbortSignal.timeout(15000) })
+                .then((response) => {
+                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                    return response.json();
+                });
+            state.workshopIndex = { at: Date.now(), promise };
+            promise.catch(() => { if (state.workshopIndex?.promise === promise) state.workshopIndex = null; });
+        }
+        return state.workshopIndex.promise;
+    }
+
+    // 下载插件并核对工坊目录里的指纹，不一致就拒绝，避免装上被替换或损坏的文件。
+    async function fetchWorkshopSource(plugin) {
+        const response = await fetch(workshopBase() + plugin.file.path, { credentials: 'omit', signal: AbortSignal.timeout(30000) });
+        if (!response.ok) throw new Error(`插件下载失败 (${response.status})`);
+        const bytes = await response.arrayBuffer();
+        const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+        if (digest !== plugin.file.sha256) throw new Error('插件文件与工坊目录不一致，已取消');
+        return new TextDecoder().decode(bytes);
+    }
+
+    // 更新写回原安装的文件，安装身份、启用状态和插件数据都保留。
+    async function installWorkshopPlugin(plugin, installed) {
+        if (!installed && !globalThis.confirm(RISK_WARNING)) {
+            refreshManagementPanel();
+            return;
+        }
+        try {
+            const code = await fetchWorkshopSource(plugin);
+            if (installed) {
+                await saveModuleSource(installed.url, code);
+                installed.version = plugin.version;
+                writeInstallations();
+                showToast(`${plugin.name} 已更新到 ${plugin.version}，刷新后生效`, { kind: 'info' });
+            } else {
+                const url = workshopBase() + plugin.file.path;
+                await saveModuleSource(url, code);
+                if (addInstallation({ id: '', name: plugin.name, version: plugin.version, url, enabled: true, addedAt: Date.now(), lastStatus: '' })) {
+                    showToast(`${plugin.name} 已安装，刷新后生效`, { kind: 'info' });
+                }
+            }
+        } catch (error) {
+            showToast(`${plugin.name}：${error.message}`);
+        }
+        refreshManagementPanel();
+    }
+
+    function workshopRow(plugin) {
+        const installed = state.installations.find((entry) => entry.id === plugin.id || entry.url === workshopBase() + plugin.file.path);
+        const row = document.createElement('div');
+        row.dataset.rphWorkshopMarketRow = plugin.id;
+        row.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:12px 4px;border-bottom:1px solid #e5e9f0;';
+        const info = document.createElement('div');
+        info.style.cssText = 'min-width:0;flex:1 1 240px;';
+        const title = document.createElement('div');
+        title.textContent = `${plugin.name} · v${plugin.version} · ${plugin.author}`;
+        title.style.cssText = 'font-weight:650;overflow-wrap:anywhere;';
+        const description = document.createElement('div');
+        description.textContent = plugin.description;
+        description.style.cssText = 'margin-top:3px;color:#64748b;font-size:12px;overflow-wrap:anywhere;';
+        info.append(title, description);
+        const [label, enabled] = plugin.requiresApi > API_VERSION ? ['需要更新测试版', false]
+            : !installed ? ['安装', true]
+                : installed.version !== plugin.version ? ['更新', true] : ['已安装', false];
+        const action = makeButton(label, enabled ? 'primary' : 'secondary');
+        action.dataset.rphWorkshopMarketAction = plugin.id;
+        action.disabled = !enabled;
+        action.addEventListener('click', () => {
+            action.disabled = true;
+            installWorkshopPlugin(plugin, installed);
+        });
+        row.append(info, action);
+        return row;
+    }
+
+    function renderWorkshopMarket(container) {
+        const status = document.createElement('p');
+        status.style.cssText = 'margin:0 0 6px;color:#64748b;font-size:13px;';
+        container.appendChild(status);
+        if (!workshopBase()) {
+            status.textContent = '分发端已关闭，工坊不可用。';
+            return;
+        }
+        status.textContent = '正在读取工坊目录…';
+        loadWorkshopIndex().then((index) => {
+            if (!container.isConnected) return;
+            const plugins = Array.isArray(index?.plugins) ? index.plugins : [];
+            status.textContent = plugins.length ? '经审核上架的插件，安装或更新后刷新页面生效。' : '工坊暂无插件。';
+            for (const plugin of plugins) container.appendChild(workshopRow(plugin));
+        }, (error) => {
+            if (container.isConnected) status.textContent = `工坊目录读取失败：${error.message}`;
+        });
     }
 
     function renderManagementPanel(body) {
@@ -492,8 +600,7 @@
             if (!confirm('插件拥有页面全部权限。确认安装此文件并将它纳入云同步吗？')) return;
             const url = 'rphub-file:' + crypto.randomUUID() + '/' + encodeURIComponent(file.name);
             await saveModuleSource(url, await file.text());
-            state.installations.push({ id: '', name: file.name, url, enabled: true, addedAt: Date.now(), lastStatus: '' });
-            if (!writeInstallations()) { state.installations.pop(); throw new Error('安装列表保存失败'); }
+            if (!addInstallation({ id: '', name: file.name, url, enabled: true, addedAt: Date.now(), lastStatus: '' })) return;
             refreshManagementPanel();
             showToast('插件文件已保存，刷新后生效', { kind: 'info' });
         });
@@ -601,7 +708,15 @@
             row.append(identity, actions);
             list.appendChild(row);
         }
-        body.append(note, addRow, importButton, fileInput, toolbar, list);
+        const market = document.createElement('section');
+        market.dataset.rphWorkshopMarket = '';
+        market.style.cssText = 'margin-top:20px;';
+        const marketTitle = document.createElement('h3');
+        marketTitle.textContent = '工坊';
+        marketTitle.style.cssText = 'margin:0 0 6px;font-size:15px;font-weight:650;';
+        market.appendChild(marketTitle);
+        renderWorkshopMarket(market);
+        body.append(note, addRow, importButton, fileInput, toolbar, list, market);
     }
 
     function openManagementPanel() {
