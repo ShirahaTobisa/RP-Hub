@@ -92,7 +92,12 @@ assert.match(result.body.error, /CF_API_TOKEN/);
 result = await call('self-update-apply', { ...baseEnv, CF_API_TOKEN: 'cf-token' });
 assert.equal(result.status, 409);
 assert.match(result.body.error, /帐户设置：读取|CF_ACCOUNT_ID/);
-console.log('PASS apply refuses without a token, and explains how to provide the account');
+result = await call('self-update-apply', { ...baseEnv, RP_SYNC_PASSWORD: '', CF_API_TOKEN: 'cf-token', CF_ACCOUNT_ID: 'acc-1' });
+assert.equal(result.status, 409);
+assert.match(result.body.error, /RP_SYNC_PASSWORD/);
+result = await call('self-update-rollback', { ...baseEnv, RP_SYNC_PASSWORD: '', CF_API_TOKEN: 'cf-token', CF_ACCOUNT_ID: 'acc-1' });
+assert.equal(result.status, 409);
+console.log('PASS apply refuses without a token or sync password, and explains how to provide the account');
 
 calls.length = 0;
 accounts = [{ id: 'acc-1' }];

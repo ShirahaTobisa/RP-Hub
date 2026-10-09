@@ -4,6 +4,8 @@
 
 部署包自带打过补丁的上游 **1.9.8** 页面作为底稿；站点在「云同步 → 程序更新」拉取上游新版本后，由 R2 中的页面覆盖底稿。测试版本身按日期发版，见下方[测试版发版与一键更新](#测试版发版与一键更新)。当前状态见 [docs/CURRENT-STATE.md](docs/CURRENT-STATE.md)。
 
+**第一次部署和开启一键更新，见 [安装与更新](docs/INSTALL.md)。**
+
 ## 目录
 
 | 路径 | 用途 |
@@ -52,7 +54,7 @@ npm run build
 
 ## 部署与数据
 
-主站沿用 `wrangler.toml` 中的 Pages/R2 配置。新建站点时替换其中的项目名和 bucket 名，R2 binding 保持 `RP_SYNC_R2`；同步密码通过 Cloudflare 的 secret `RP_SYNC_PASSWORD` 设置。镜像服务的独立配置见 [mirror/README.md](mirror/README.md)。
+普通用户按 [安装与更新](docs/INSTALL.md) 在 Cloudflare 后台操作即可。下面是用 wrangler 部署时的说明：主站沿用 `wrangler.toml` 中的 Pages/R2 配置。新建站点时替换其中的项目名和 bucket 名，R2 binding 保持 `RP_SYNC_R2`；同步密码通过 Cloudflare 的 secret `RP_SYNC_PASSWORD` 设置。镜像服务的独立配置见 [mirror/README.md](mirror/README.md)。
 
 已有云端快照可以直接拉取，**无需先上传**。拉取会用云端内容恢复当前浏览器数据；升级站点包时应继续使用原来的 R2 bucket 和同步设置。
 

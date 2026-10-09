@@ -2658,6 +2658,8 @@ async function fetchTestReleaseManifest(env) {
 
 // 用令牌找出本站所在的账户和 Pages 项目；只有 Pages 编辑权限的令牌列不出账户，此时要求设置 CF_ACCOUNT_ID。
 async function resolvePagesTarget(env, host) {
+    // 没有同步密码时接口对所有人开放，不能让任何人都能给站点部署或回退。
+    if (!getSyncPassword(env)) throw createHttpError('站点未设置同步密码 RP_SYNC_PASSWORD，为了安全不允许一键更新和回退。', 409);
     const token = String(env.CF_API_TOKEN || '').trim();
     if (!token) throw createHttpError('站点未设置 CF_API_TOKEN，无法一键更新；可下载部署包手动上传。', 409);
     const configuredAccount = String(env.CF_ACCOUNT_ID || '').trim();
