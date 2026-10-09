@@ -178,9 +178,11 @@ ctx.requests.onChat(body => {
 
 ### 发布到工坊
 
-插件可以投稿到 [RP-Hub 插件工坊](https://github.com/ShirahaTobisa/RP-Hub-Workshop)：按仓库说明提交合并请求，审核合并后分发端自动上架，
-各站点在「模块管理 → 工坊」一键安装和更新（更新写回原安装，设置和数据保留）。工坊里的
-[接口示范](https://github.com/ShirahaTobisa/RP-Hub-Workshop/blob/main/plugins/api-demo/api-demo.js) 把每个接口各用一次，可以直接照着改。
+在 [分发端投稿页](https://update.rph.mornye.uk/workshop/submit) 上传插件文件、填写名称、作者和说明。投稿先进入待审核区，
+维护者看过代码后上架，各站点在「模块管理 → 工坊」一键安装和更新（更新写回原安装，设置和数据保留）。更新插件同样在投稿页提交，
+版本号要改。`register` 里的 `id`、`version`、`requiresApi` 要直接写成固定值，投稿页靠它们识别插件。
+
+[`examples/api-demo-module.js`](examples/api-demo-module.js) 把每个接口各用一次，可以直接照着改。
 
 ### 自行分发
 
