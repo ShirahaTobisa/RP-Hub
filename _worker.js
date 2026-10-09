@@ -155,7 +155,6 @@ const UPDATE_NOTICE_COUNTDOWN_PATTERN = /countdownEndsAt = Date\.now\(\) \+ [\d_
 async function skipUpdateNoticeCountdown(response) {
     const headers = new Headers(response.headers);
     headers.delete('content-length');
-    headers.delete('etag');
     const text = (await response.text()).replace(UPDATE_NOTICE_COUNTDOWN_PATTERN, 'countdownEndsAt = Date.now();');
     return new Response(text, { status: response.status, headers });
 }
@@ -2801,12 +2800,20 @@ async function serveStatic(request, env) {
                 const slot = getStoredAppUpdateSlot(current, 'current');
                 const object = await bucket.get(getStoredAppUpdateKey(slot, staticPath));
                 if (object) {
-                    response = new Response(object.body, {
-                        headers: {
-                            'content-type': object.httpMetadata?.contentType || getContentType(staticPath),
-                            'cache-control': 'no-store'
-                        }
-                    });
+                    // 首页要注入覆盖层，不缓存；其他文件带 ETag，浏览器复查时内容没变就只回 304，不再重传。
+                    const etag = shouldInject(pathname) ? '' : object.httpEtag || '';
+                    if (etag && request.headers.get('if-none-match') === etag) {
+                        await object.body?.cancel?.();
+                        response = new Response(null, { status: 304, headers: { etag, 'cache-control': 'no-cache' } });
+                    } else {
+                        response = new Response(object.body, {
+                            headers: {
+                                'content-type': object.httpMetadata?.contentType || getContentType(staticPath),
+                                'cache-control': etag ? 'no-cache' : 'no-store',
+                                ...(etag ? { etag } : {})
+                            }
+                        });
+                    }
                 }
             }
             if (shouldInject(pathname)) {
@@ -2824,6 +2831,11 @@ async function serveStatic(request, env) {
 
     if (!response) {
         response = await env.ASSETS.fetch(request);
+        // 覆盖层按内容哈希加 ?v=（打包时写入），内容变了地址就变，浏览器可以一直用缓存，不必每次复查。
+        if (response.ok && pathname.startsWith('/DB/') && /^[a-f0-9]{12}$/.test(new URL(request.url).searchParams.get('v') || '')) {
+            response = new Response(response.body, response);
+            response.headers.set('cache-control', 'public, max-age=31536000, immutable');
+        }
     }
 
     if (staticPath === UPDATE_NOTICE_SCRIPT_PATH && response.ok) return skipUpdateNoticeCountdown(response);

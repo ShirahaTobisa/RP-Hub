@@ -16,7 +16,7 @@ const text = await served.text();
 assert.doesNotMatch(text, /Date\.now\(\) \+ 10_000/);
 assert.match(text, /countdownEndsAt = Date\.now\(\);/);
 assert.equal(text.length, source.length - ' + 10_000'.length);
-assert.equal(served.headers.get('etag'), null);
+assert.equal(served.headers.get('etag'), '"x"', 'the rewrite is deterministic, so the upstream ETag stays valid');
 const other = await worker.fetch(new Request('https://rph.example/assets/js/app.js'), env, { waitUntil() {} });
 assert.match(await other.text(), /\+ 10_000/);
 console.log('PASS update notice countdown removed only from ui-components.js');

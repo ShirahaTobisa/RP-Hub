@@ -14,7 +14,8 @@ const tests = [
     'bootstrap-sync.test.mjs',
     'offline-backup-converter.test.mjs',
     'self-update.test.mjs',
-    'update-notice.test.mjs'
+    'update-notice.test.mjs',
+    'static-cache.test.mjs'
 ];
 
 for (const test of tests) {

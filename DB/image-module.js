@@ -30,6 +30,8 @@
     const SEED_CACHE_TTL_MS = 30_000;
     const CHAT_CACHE_TTL_MS = 2_000;
     const ATTRIBUTION_RETRY_MS = 2_000;
+    // AI 回复期间消息每出一个字就变一次，生图又处于冻结状态；普通扫描放宽到这个间隔，回复结束后照常扫描。
+    const BUSY_SCAN_INTERVAL_MS = 500;
     const LIVE_WINDOW_MS = 30_000;
     const APP_STARTUP_SETTLE_MS = 1_000;
     const CANON_MARKER_CACHE_LIMIT = 500;
@@ -1207,6 +1209,8 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
     }
 
     function detectConversationBusySignal() {
+        // 页面的 isConversationBusy 与“中止生成”按钮同源；能读到就直接用，避免每次查 DOM 并触发样式计算。
+        if (readLiveAppValue('isConversationBusy') === true) return { supported: true, busy: true, source: 'app-state' };
         if ([...document.querySelectorAll('button[title="中止生成"]')].some(isElementVisible)) {
             return { supported: true, busy: true, source: 'stop-button' };
         }
@@ -1730,6 +1734,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
     function scheduleScan(delay = 30, options = {}) {
         if (options.full) state.fullScanPending = true;
         if (state.scanTimer) return;
+        if (!state.fullScanPending && isConversationBusy()) delay = Math.max(delay, BUSY_SCAN_INTERVAL_MS);
         state.scanTimer = setTimeout(() => {
             state.scanTimer = null;
             scanDocument({ full: state.fullScanPending }).catch((error) => log('scheduled scan failed', error));
@@ -2384,7 +2389,8 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         state.renderedChat = liveChat;
         state.observer = new MutationObserver((records) => {
             ensurePersistenceFlushWrapped();
-            maintainLiveRenderHook();
+            // 回复期间不会有人改正则脚本，跳过逐次比对整份列表。
+            if (!isConversationBusy()) maintainLiveRenderHook();
             const currentChat = readLiveAppValue('chatHistory');
             if (Array.isArray(currentChat) && state.renderedChat !== currentChat) {
                 state.renderedChat = currentChat;
