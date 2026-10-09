@@ -3,100 +3,72 @@
     cursor: wait;
 }
 
+/* 同步面板和同步密码框：面板、标题栏、关闭按钮和按钮用页面原生类名（compact-modal-panel、editor-modal-header 等），
+ * 这里只补布局、打开动画和内容区颜色；颜色变量见下方 RPHubUI 一节，同时适用于 1.9.x 和 2.0 的浅色、深色模式。 */
 .rp-sync-modal {
     position: fixed;
     inset: 0;
-    z-index: 9999;
+    z-index: 90;
     display: none;
-    color: #111827;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    color: var(--rk-text);
 }
 
 .rp-sync-modal.is-open {
-    display: block;
+    display: flex;
+    animation: rph-ui-fade-in var(--dur-3, 0.24s) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1));
 }
+
+.rp-sync-modal.is-open .rp-sync-modal__panel {
+    animation: rph-ui-rise-in var(--dur-4, 0.32s) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+@keyframes rph-ui-fade-in { from { opacity: 0; } }
+@keyframes rph-ui-rise-in { from { transform: translate3d(0, 18px, 0) scale(0.965); } }
 
 .rp-sync-modal__backdrop {
     position: absolute;
     inset: 0;
-    background: rgba(17, 24, 39, 0.32);
-    backdrop-filter: blur(5px);
+    background: var(--overlay, rgba(0, 0, 0, 0.5));
+    backdrop-filter: blur(6px) saturate(120%);
 }
 
-.rp-sync-modal__panel {
-    position: absolute;
-    left: 50%;
-    top: 50%;
-    width: min(92vw, 420px);
-    max-height: min(86vh, 640px);
+.rp-sync-modal__panel.compact-modal-panel {
+    max-width: 26rem;
+    max-height: calc(100dvh - 2rem);
     overflow-y: auto;
-    transform: translate(-50%, -50%);
-    border: 1px solid rgba(229, 231, 235, 0.95);
-    border-radius: 18px;
-    background: rgba(255, 255, 255, 0.98);
-    box-shadow: 0 24px 70px -34px rgba(15, 23, 42, 0.55);
-    padding: 18px;
+    padding: 0 1rem 1rem;
 }
 
-.rp-sync-modal__header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    margin-bottom: 14px;
+.rp-sync-modal__header.editor-modal-header {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    gap: 0.75rem;
+    margin: 0 -1rem 0.875rem;
 }
 
-.rp-sync-modal__eyebrow {
-    color: #2563eb;
-    font-size: 11px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-}
-
-.rp-sync-modal__title {
-    margin: 0;
-    color: #111827;
-    font-size: 20px;
-    line-height: 1.2;
-    font-weight: 800;
-}
-
-.rp-sync-modal__title-main {
-    display: block;
-    color: #111827;
-    font-size: 18px;
-    line-height: 1.1;
-    font-weight: 800;
-    letter-spacing: 0;
-}
-
+.rp-sync-modal__eyebrow,
 .rp-sync-modal__title-sub {
     display: block;
     margin-bottom: 3px;
-    color: #2563eb;
+    color: var(--rk-accent);
     font-size: 11px;
-    line-height: 1.2;
     font-weight: 800;
     letter-spacing: 0.08em;
     text-transform: uppercase;
 }
 
-.rp-sync-modal__close {
-    flex: 0 0 auto;
-    width: 32px;
-    height: 32px;
-    border: 1px solid rgba(229, 231, 235, 0.95);
-    border-radius: 999px;
-    background: #fff;
-    color: #6b7280;
-    font-size: 20px;
-    line-height: 1;
-    cursor: pointer;
-}
-
-.rp-sync-modal__close:hover {
-    color: #111827;
-    border-color: rgba(156, 163, 175, 0.9);
+.rp-sync-modal__title,
+.rp-sync-modal__title-main {
+    display: block;
+    margin: 0;
+    color: var(--rk-text);
+    font-size: 18px;
+    line-height: 1.15;
+    font-weight: 800;
 }
 
 .rp-sync-main-actions {
@@ -108,39 +80,37 @@
 .rp-sync-action-button {
     min-width: 0;
     height: 42px;
-    border: 1px solid rgba(229, 231, 235, 0.95);
-    border-radius: 12px;
-    background: #fff;
-    color: #374151;
+    border: 1px solid var(--rk-field-border);
+    border-radius: var(--r-md, 0.75rem);
+    background: var(--rk-field);
+    color: var(--rk-text);
     font-size: 15px;
     font-weight: 800;
     cursor: pointer;
-    transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease;
+    transition: border-color 0.16s ease, background 0.16s ease, color 0.16s ease, transform 0.16s ease;
 }
 
-.rp-sync-action-button:hover {
-    border-color: rgba(59, 130, 246, 0.35);
-    background: #f8fafc;
-    color: #1d4ed8;
-}
-
+.rp-sync-action-button:hover,
 .rp-sync-action-button.is-primary {
-    border-color: rgba(37, 99, 235, 0.25);
-    background: #eff6ff;
-    color: #1d4ed8;
+    border-color: var(--rk-accent);
+    background: var(--rk-tint);
+    color: var(--rk-accent);
 }
+
+.rp-sync-action-button:active { transform: scale(0.96); }
 
 .rp-sync-action-button:disabled,
 .rp-sync-modal__button:disabled,
 .rp-sync-version-button:disabled {
-    opacity: 0.62;
+    opacity: 0.6;
     cursor: wait;
+    transform: none;
 }
 
 .rp-sync-modal__status {
     min-height: 22px;
     margin: 14px 0 10px;
-    color: #4b5563;
+    color: var(--rk-muted);
     font-size: 13px;
     line-height: 1.55;
 }
@@ -150,28 +120,28 @@
     height: 8px;
     overflow: hidden;
     border-radius: 999px;
-    background: #e5e7eb;
+    background: var(--rk-border);
 }
 
 .rp-sync-progress__bar {
     width: 0;
     height: 100%;
     border-radius: inherit;
-    background: #2563eb;
+    background: var(--rk-accent);
     transition: width 0.28s ease;
 }
 
 .rp-sync-progress__value {
     margin-top: 6px;
     text-align: right;
-    color: #2563eb;
+    color: var(--rk-accent);
     font-size: 12px;
     font-weight: 800;
 }
 
 .rp-sync-update-details {
     margin-top: 14px;
-    border-top: 1px solid #e5e7eb;
+    border-top: 1px solid var(--rk-border);
     padding-top: 10px;
 }
 
@@ -179,36 +149,24 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    color: #374151;
+    color: var(--rk-text);
     cursor: pointer;
     font-size: 13px;
     font-weight: 800;
     list-style: none;
 }
 
-.rp-sync-update-details summary::-webkit-details-marker {
-    display: none;
-}
-
-.rp-sync-update-details summary::after {
-    content: "展开";
-    color: #9ca3af;
-    font-size: 12px;
-    font-weight: 700;
-}
-
-.rp-sync-update-details[open] summary::after {
-    content: "收起";
-}
-
-.rp-sync-update-body {
-    padding-top: 10px;
-}
+.rp-sync-update-details summary::-webkit-details-marker { display: none; }
+.rp-sync-update-details summary::after { content: "展开"; color: var(--rk-muted); font-size: 12px; font-weight: 700; }
+.rp-sync-update-details[open] summary::after { content: "收起"; }
+.rp-sync-update-body { padding-top: 10px; }
+.rp-sync-update-body [data-role="self-update-info"] { white-space: pre-line; }
 
 .rp-sync-choice__desc,
-.rp-sync-modal__intro {
+.rp-sync-modal__intro,
+.rp-sync-password-status {
     margin: 0 0 10px;
-    color: #64748b;
+    color: var(--rk-muted);
     font-size: 13px;
     line-height: 1.55;
 }
@@ -223,27 +181,31 @@
 .rp-sync-password-field {
     display: grid;
     gap: 7px;
-    color: #475569;
+    color: var(--rk-text);
     font-size: 13px;
-    font-weight: 800;
+    font-weight: 700;
 }
 
-.rp-sync-version-picker {
-    position: relative;
-}
+.rp-sync-version-picker { position: relative; }
 
-.rp-sync-version-button {
+.rp-sync-version-button,
+.rp-sync-password-field input {
     position: relative;
     width: 100%;
     min-height: 38px;
-    border: 1px solid rgba(209, 213, 219, 0.95);
-    border-radius: 12px;
-    background: #fff;
-    color: #111827;
+    border: 1px solid var(--rk-field-border);
+    border-radius: var(--r-md, 0.75rem);
+    background: var(--rk-field);
+    color: var(--rk-text);
     font-size: 13px;
     line-height: 1.45;
-    padding: 8px 36px 8px 12px;
+    padding: 8px 12px;
     text-align: left;
+    outline: none;
+}
+
+.rp-sync-version-button {
+    padding-right: 36px;
     font-weight: 700;
     cursor: pointer;
 }
@@ -255,10 +217,17 @@
     top: 50%;
     width: 8px;
     height: 8px;
-    border-right: 2px solid #6b7280;
-    border-bottom: 2px solid #6b7280;
+    border-right: 2px solid var(--rk-muted);
+    border-bottom: 2px solid var(--rk-muted);
     transform: translateY(-65%) rotate(45deg);
     pointer-events: none;
+}
+
+.rp-sync-password-field input { font-size: 15px; padding: 10px 12px; }
+
+.rp-sync-password-field input:focus {
+    border-color: var(--rk-accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--rk-accent) 18%, transparent);
 }
 
 .rp-sync-version-menu {
@@ -270,10 +239,10 @@
     display: none;
     max-height: 190px;
     overflow-y: auto;
-    border: 1px solid rgba(209, 213, 219, 0.95);
-    border-radius: 12px;
-    background: #fff;
-    box-shadow: 0 18px 46px -28px rgba(15, 23, 42, 0.48);
+    border: 1px solid var(--rk-field-border);
+    border-radius: var(--r-md, 0.75rem);
+    background: var(--c-elevated, var(--rk-field));
+    box-shadow: var(--shadow-3, 0 18px 46px -28px rgba(15, 23, 42, 0.48));
     padding: 6px;
 }
 
@@ -285,9 +254,9 @@
 .rp-sync-version-option {
     width: 100%;
     border: 0;
-    border-radius: 9px;
+    border-radius: 0.5rem;
     background: transparent;
-    color: #111827;
+    color: var(--rk-text);
     cursor: pointer;
     font-size: 13px;
     font-weight: 700;
@@ -297,208 +266,115 @@
 }
 
 .rp-sync-version-option:hover {
-    background: #eff6ff;
-    color: #1d4ed8;
+    background: var(--rk-tint);
+    color: var(--rk-accent);
 }
 
 .rp-sync-inline-actions,
-.rp-sync-modal__actions,
-.rp-sync-confirm__actions {
+.rp-sync-modal__actions {
     display: flex;
     flex-wrap: wrap;
     justify-content: flex-end;
     gap: 8px;
 }
 
-.rp-sync-modal__actions {
-    margin-top: 16px;
-}
+.rp-sync-modal__actions { margin-top: 16px; }
+.rp-sync-password-field { margin-top: 14px; }
+.rp-sync-password-status { min-height: 20px; margin: 10px 0 0; }
 
 .rp-sync-modal__button {
-    min-width: 78px;
-    border: 1px solid rgba(209, 213, 219, 0.95);
-    border-radius: 999px;
-    background: #fff;
-    color: #374151;
-    font-size: 13px;
-    font-weight: 800;
-    padding: 8px 12px;
-    cursor: pointer;
-}
-
-.rp-sync-modal__button:hover {
-    border-color: rgba(59, 130, 246, 0.35);
-    color: #1d4ed8;
-}
-
-.rp-sync-modal__button.is-primary {
-    border-color: rgba(37, 99, 235, 0.25);
-    background: #eff6ff;
-    color: #1d4ed8;
-}
-
-.rp-sync-modal__button.is-danger {
-    border-color: rgba(239, 68, 68, 0.28);
-    background: #fef2f2;
-    color: #b91c1c;
-}
-
-.rp-sync-password-field {
-    margin-top: 14px;
-}
-
-.rp-sync-password-field input {
-    width: 100%;
-    border: 1px solid rgba(209, 213, 219, 0.95);
-    border-radius: 12px;
-    background: #fff;
-    color: #111827;
-    font-size: 15px;
-    line-height: 1.4;
-    padding: 11px 12px;
-    outline: none;
-    transition: border-color 0.16s ease, box-shadow 0.16s ease;
-}
-
-.rp-sync-password-field input:focus {
-    border-color: rgba(37, 99, 235, 0.52);
-    box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.11);
-}
-
-.rp-sync-password-status {
-    min-height: 20px;
-    margin: 10px 0 0;
-    color: #475569;
-    font-size: 13px;
-    line-height: 1.5;
-}
-
-.rp-sync-confirm {
-    position: absolute;
-    inset: 0;
-    z-index: 30;
-    display: none;
-    align-items: center;
     justify-content: center;
-    padding: 18px;
-    border-radius: inherit;
-    background: rgba(17, 24, 39, 0.22);
-}
-
-.rp-sync-confirm.is-open {
-    display: flex;
-}
-
-.rp-sync-confirm__box {
-    width: min(100%, 330px);
-    border: 1px solid rgba(229, 231, 235, 0.95);
-    border-radius: 16px;
-    background: #fff;
-    box-shadow: 0 22px 55px -30px rgba(15, 23, 42, 0.62);
-    padding: 16px;
-}
-
-.rp-sync-confirm__title {
-    color: #111827;
-    font-size: 16px;
-    font-weight: 800;
-    line-height: 1.3;
-}
-
-.rp-sync-confirm__message {
-    margin: 8px 0 14px;
-    color: #64748b;
+    padding: 0.5rem 0.9rem;
     font-size: 13px;
-    line-height: 1.55;
 }
 
 @media (max-width: 640px) {
-    .rp-sync-modal__backdrop {
-        background: rgba(17, 24, 39, 0.36);
-    }
-
-    .rp-sync-modal__panel {
-        left: 0;
-        right: 0;
-        bottom: 0;
-        top: auto;
-        width: 100%;
-        max-height: min(82vh, 620px);
-        transform: none;
-        border-right: 0;
-        border-bottom: 0;
-        border-left: 0;
-        border-radius: 20px 20px 0 0;
-        padding: 16px 16px max(16px, env(safe-area-inset-bottom));
-    }
-
-    .rp-sync-modal__header {
-        margin-bottom: 12px;
-    }
-
-    .rp-sync-modal__title {
-        font-size: 18px;
-    }
-
-    .rp-sync-modal__title-main {
-        font-size: 17px;
-    }
-
-    .rp-sync-modal__title-sub {
-        font-size: 10px;
-    }
-
-    .rp-sync-main-actions {
-        gap: 8px;
-    }
-
-    .rp-sync-action-button {
-        height: 42px;
-        font-size: 14px;
-        border-radius: 12px;
-    }
-
-    .rp-sync-inline-actions {
-        display: grid;
-        grid-template-columns: 1fr;
-    }
-
-    .rp-sync-inline-actions .rp-sync-modal__button {
-        width: 100%;
-    }
+    .rp-sync-inline-actions { display: grid; grid-template-columns: 1fr; }
 }
 
-/* 深色模式：跟随 RPH 1.9.x 根元素的 data-app-theme="dark"，颜色取页面自带的 --night-* 变量。 */
-:root[data-app-theme="dark"] .rp-sync-modal { color: var(--night-text); }
-:root[data-app-theme="dark"] :is(.rp-sync-modal__backdrop, .rp-sync-confirm) { background: rgba(0, 0, 0, 0.55); }
-:root[data-app-theme="dark"] :is(.rp-sync-modal__panel, .rp-sync-confirm__box, .rp-sync-version-menu) {
-    border-color: var(--night-border);
-    background: var(--night-surface);
-    box-shadow: 0 24px 70px -34px rgba(0, 0, 0, 0.8);
+/* RPHubUI 弹窗（DB/ui-kit.js）：面板、标题栏、关闭和按钮用页面原生类名，由各版本 RPH 自己的样式决定外观；
+ * 这里只补位置、动画（RPH 2.0 自带同样的 modal 过渡，1.9.x 没有）和内容区用到的颜色。
+ * 颜色先取 RPH 2.0 的 --c-*（深色模式下它们会被页面改成深色值），1.9.x 没有时深色模式退到 --night-*。 */
+.rph-ui-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    background: var(--overlay, rgba(0, 0, 0, 0.5));
+    backdrop-filter: blur(6px) saturate(120%);
 }
-:root[data-app-theme="dark"] :is(.rp-sync-modal__close, .rp-sync-action-button, .rp-sync-modal__button, .rp-sync-version-button, .rp-sync-password-field input) {
-    border-color: var(--night-border);
-    background: var(--night-raised);
-    color: var(--night-text);
+:is(.rph-ui-overlay, .rp-sync-modal) {
+    --rk-text: var(--c-text, #111827);
+    --rk-muted: var(--c-text-3, #6b7280);
+    --rk-border: var(--c-border-soft, #e5e7eb);
+    --rk-field: var(--c-field, #fff);
+    --rk-field-border: var(--c-border, #d1d5db);
+    --rk-tint: var(--c-accent-soft, #eff6ff);
+    --rk-accent: var(--c-accent-text, #2563eb);
+    --rk-danger: var(--c-danger, #dc2626);
 }
-:root[data-app-theme="dark"] :is(.rp-sync-modal__close, .rp-sync-action-button, .rp-sync-modal__button):hover {
-    border-color: var(--night-accent);
-    color: var(--night-accent);
+:root[data-app-theme="dark"] :is(.rph-ui-overlay, .rp-sync-modal) {
+    --rk-text: var(--c-text, var(--night-text));
+    --rk-muted: var(--c-text-3, var(--night-muted));
+    --rk-border: var(--c-border-soft, var(--night-border));
+    --rk-field: var(--c-field, var(--night-field));
+    --rk-field-border: var(--c-border, var(--night-border));
+    --rk-tint: var(--c-accent-soft, var(--night-tint));
+    --rk-accent: var(--c-accent-text, var(--night-accent));
+    --rk-danger: var(--c-danger, #f87171);
 }
-:root[data-app-theme="dark"] :is(.rp-sync-action-button, .rp-sync-modal__button).is-primary {
-    border-color: var(--night-primary);
-    background: var(--night-selected);
-    color: var(--night-text);
+.rph-ui-overlay.modal-enter-active { transition: opacity var(--dur-3, 0.24s) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)); }
+.rph-ui-overlay.modal-leave-active { transition: opacity var(--dur-1, 0.12s) var(--ease-in, ease-in); }
+.rph-ui-overlay:is(.modal-enter-from, .modal-leave-to) { opacity: 0; }
+.rph-ui-overlay.modal-enter-active > .rph-ui-panel { transition: transform var(--dur-4, 0.32s) var(--ease-out, cubic-bezier(0.22, 1, 0.36, 1)); }
+.rph-ui-overlay.modal-leave-active > .rph-ui-panel { transition: transform var(--dur-1, 0.12s) var(--ease-in, ease-in); }
+.rph-ui-overlay.modal-enter-from > .rph-ui-panel { transform: translate3d(0, 18px, 0) scale(0.965); }
+.rph-ui-overlay.modal-leave-to > .rph-ui-panel { transform: translate3d(0, 8px, 0) scale(0.985); }
+.rph-ui-panel { max-height: calc(100dvh - 2rem); color: var(--rk-text); outline: none; }
+.rph-ui-title { min-width: 0; margin: 0; font-size: 1.05rem; font-weight: 700; overflow-wrap: anywhere; }
+.rph-ui-body { min-height: 0; overflow: auto; padding: 1rem; font-size: 0.875rem; line-height: 1.5; }
+.rph-ui-message { margin: 0 0 1rem; color: var(--rk-muted); white-space: pre-line; }
+.rph-ui-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 0.5rem; }
+.rph-ui-button { justify-content: center; white-space: nowrap; }
+.rph-ui-button:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
+.rph-ui-button.rph-ui-danger:not(.modal-primary-button) { color: var(--rk-danger); }
+.modal-primary-button.rph-ui-danger { background: var(--rk-danger) !important; }
+.rph-ui-section { margin: 0 0 1.25rem; }
+.rph-ui-list + .rph-ui-section { margin-top: 1.25rem; }
+.rph-ui-section > h3 { margin: 0 0 0.5rem; font-size: 0.95rem; font-weight: 700; }
+.rph-ui-note { margin: 0 0 0.875rem; padding: 0.55rem 0.75rem; border-left: 3px solid var(--rk-accent); border-radius: 0.375rem; background: var(--rk-tint); }
+.rph-ui-muted { color: var(--rk-muted); font-size: 0.8rem; overflow-wrap: anywhere; }
+.rph-ui-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 0.875rem; padding: 0.8rem 0.25rem; border-bottom: 1px solid var(--rk-border); }
+.rph-ui-row-main { min-width: 0; flex: 1 1 14rem; }
+.rph-ui-row-main > :first-child { font-weight: 650; overflow-wrap: anywhere; }
+.rph-ui-row-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 0.5rem; }
+.rph-ui-list { border-top: 1px solid var(--rk-border); }
+.rph-ui-empty { margin: 0; padding: 1.5rem 0.5rem; text-align: center; color: var(--rk-muted); }
+.rph-ui-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(9.5rem, 1fr)); gap: 0.5rem; }
+.rph-ui-grid > .rph-ui-button { justify-content: flex-start; text-align: left; white-space: normal; }
+.rph-ui-inline { display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; margin-bottom: 0.75rem; }
+.rph-ui-field { display: grid; gap: 0.35rem; margin-bottom: 0.75rem; font-weight: 600; }
+.rph-ui-input {
+    width: 100%;
+    min-width: 0;
+    padding: 0.5rem 0.7rem;
+    border: 1px solid var(--rk-field-border);
+    border-radius: 0.6rem;
+    background: var(--rk-field);
+    color: var(--rk-text);
+    font: inherit;
+    font-weight: 400;
 }
-:root[data-app-theme="dark"] .rp-sync-modal__button.is-danger { border-color: rgba(248, 113, 113, 0.4); background: rgba(127, 29, 29, 0.35); color: #fca5a5; }
-:root[data-app-theme="dark"] :is(.rp-sync-modal__title, .rp-sync-modal__title-main, .rp-sync-confirm__title, .rp-sync-version-option, .rp-sync-update-details summary) { color: var(--night-text); }
-:root[data-app-theme="dark"] .rp-sync-version-option:hover { background: var(--night-tint); color: var(--night-accent); }
-:root[data-app-theme="dark"] :is(.rp-sync-modal__status, .rp-sync-choice__desc, .rp-sync-modal__intro, .rp-sync-version-fields label, .rp-sync-password-field, .rp-sync-password-status, .rp-sync-confirm__message) { color: var(--night-secondary); }
-:root[data-app-theme="dark"] :is(.rp-sync-modal__eyebrow, .rp-sync-modal__title-sub, .rp-sync-progress__value) { color: var(--night-accent); }
-:root[data-app-theme="dark"] .rp-sync-progress { background: var(--night-field); }
-:root[data-app-theme="dark"] .rp-sync-progress__bar { background: var(--night-primary); }
-:root[data-app-theme="dark"] .rp-sync-update-details { border-top-color: var(--night-border); }
-:root[data-app-theme="dark"] .rp-sync-update-details summary::after { color: var(--night-muted); }
-:root[data-app-theme="dark"] .rp-sync-version-button::after { border-color: var(--night-muted); }
-:root[data-app-theme="dark"] .rp-sync-password-field input:focus { border-color: var(--night-accent); box-shadow: 0 0 0 4px rgba(150, 186, 255, 0.16); }
-.rp-sync-update-body [data-role="self-update-info"] { white-space: pre-line; }
+.rph-ui-input:focus { outline: none; border-color: var(--rk-accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--rk-accent) 18%, transparent); }
+textarea.rph-ui-input { min-height: 6rem; resize: vertical; }
+.rph-ui-check { position: relative; display: inline-flex; align-items: center; gap: 0.35rem; white-space: nowrap; cursor: pointer; }
+.rph-ui-badge { padding: 0.15rem 0.5rem; border-radius: 999px; background: var(--rk-tint); color: var(--rk-accent); font-size: 0.75rem; white-space: nowrap; }
+.rph-ui-badge[data-tone="error"] { background: color-mix(in srgb, var(--rk-danger) 14%, transparent); color: var(--rk-danger); }
+.rph-ui-badge[data-tone="muted"] { background: color-mix(in srgb, var(--rk-muted) 16%, transparent); color: var(--rk-muted); }
+.rph-ui-toast-stack { position: fixed; top: 1.25rem; left: 50%; z-index: 100; display: grid; gap: 0.5rem; transform: translateX(-50%); pointer-events: none; }
+.rph-ui-toast-stack .toast-item { padding: 0.6rem 1.1rem; border: 1px solid var(--c-border, #e5e7eb); border-radius: 999px; background: var(--c-surface, #fff); color: var(--c-text, #111827); box-shadow: 0 8px 22px rgba(15, 23, 42, 0.16); }
+:is(.rph-ui-panel, .rp-sync-modal__panel) .modal-close-button svg { width: 1.25rem; height: 1.25rem; }
+.rph-ui-body p.rph-ui-muted { margin: 0 0 0.75rem; }

@@ -62,25 +62,29 @@
                 }
             });
 
+            // 面板控件用页面样式类名（见指南「面板样式」），自动跟随主题和深色模式，不用自己写颜色。
             function renderPanel(body) {
-                const line = (text) => Object.assign(document.createElement('p'), { textContent: text, style: 'margin:0 0 8px' });
+                const line = (text) => Object.assign(document.createElement('p'), { className: 'rph-ui-muted', textContent: text });
                 const button = (text, onClick) => {
-                    const element = Object.assign(document.createElement('button'), { type: 'button', textContent: text });
-                    element.style.cssText = 'min-height:34px;padding:6px 12px;margin:0 8px 8px 0;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;font:inherit;cursor:pointer;';
+                    const element = Object.assign(document.createElement('button'), { type: 'button', textContent: text, className: 'modal-secondary-button rph-ui-button' });
                     element.addEventListener('click', onClick);
                     return element;
                 };
-                const rewrite = Object.assign(document.createElement('input'), { type: 'checkbox', checked: ctx.storage.get('rewrite') === '1' });
+                const rewrite = Object.assign(document.createElement('input'), { type: 'checkbox', className: 'settings-toggle-input sr-only', checked: ctx.storage.get('rewrite') === '1' });
                 rewrite.addEventListener('change', () => ctx.storage.set('rewrite', rewrite.checked ? '1' : '0'));
-                const rewriteLabel = document.createElement('label');
-                rewriteLabel.append(rewrite, ' 请求改写示范：给每次主聊天请求追加一条系统提示');
-                const log = Object.assign(document.createElement('pre'), { textContent: events.join('\n') || '暂无事件' });
-                log.style.cssText = 'max-height:180px;overflow:auto;margin:8px 0;padding:8px;border:1px solid #e5e9f0;border-radius:6px;background:#f8fafc;color:#334155;white-space:pre-wrap;';
+                const rewriteLabel = Object.assign(document.createElement('label'), { className: 'rph-ui-check rph-ui-field' });
+                rewriteLabel.append(rewrite, Object.assign(document.createElement('span'), { className: 'settings-toggle' }), '请求改写示范：给每次主聊天请求追加一条系统提示');
+                const log = Object.assign(document.createElement('pre'), { className: 'rph-ui-input', textContent: events.join('\n') || '暂无事件' });
+                log.style.cssText = 'max-height:180px;overflow:auto;white-space:pre-wrap;';
+                const actions = Object.assign(document.createElement('div'), { className: 'rph-ui-actions' });
                 body.replaceChildren(
                     line(`面板打开次数：${ctx.storage.get('open-count') || 0}`),
                     line(`当前用户：${ctx.app.get('user')?.name || '未知'}；当前角色：${ctx.app.get('currentCharacter')?.name || '未选择'}；消息数：${ctx.app.get('chatHistory')?.length ?? 0}`),
                     rewriteLabel,
                     log,
+                    actions
+                );
+                actions.append(
                     button('弹出提示', () => ctx.ui.toast('这是 ctx.ui.toast 的提示', { kind: 'info' })),
                     button('统计聊天记录键', async () => {
                         const keys = await ctx.appDb.keys('rp_hub_chat_');

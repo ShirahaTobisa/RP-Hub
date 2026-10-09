@@ -167,6 +167,7 @@ try {
     const chooser = a.waitForEvent('filechooser');
     await a.locator('[data-rph-workshop-import]').click();
     await (await chooser).setFiles({ name: 'liuguanyi.js', mimeType: 'text/javascript', buffer: Buffer.from(plugin) });
+    await a.locator('[data-rph-ui-confirm] [data-rph-ui-confirm-accept]').click();
     await a.waitForFunction(() => JSON.parse(localStorage.getItem('rp_hub_workshop_modules_v1') || '[]').length === 1);
     await a.reload({ waitUntil: 'domcontentloaded' });
     await moduleReady(a);
@@ -273,15 +274,15 @@ try {
     await openManager(b);
     const layout = await b.locator('[data-rph-workshop-module-row]').evaluate(row => {
         const bounds = row.getBoundingClientRect();
-        return { width: bounds.width, scrollWidth: row.scrollWidth,
-            overflow: [...row.querySelectorAll('button, label')].some(node => {
+        return { width: row.clientWidth, scrollWidth: row.scrollWidth,
+            overflow: [...row.querySelectorAll('button, label')].filter(node => {
                 const box = node.getBoundingClientRect();
                 return box.left < bounds.left || box.right > bounds.right;
-            }) };
+            }).map(node => node.textContent.trim()) };
     });
-    assert(layout.scrollWidth <= layout.width + 1 && !layout.overflow);
+    assert(layout.scrollWidth <= layout.width + 1 && !layout.overflow.length, JSON.stringify(layout));
     await b.screenshot({ path: path.join(evidence, 'mobile-manager.png') });
-    await b.locator('[data-rph-workshop-enabled]').uncheck();
+    await b.locator('label:has([data-rph-workshop-enabled]) .settings-toggle').click();
     await b.locator('[data-rph-workshop-panel-close]').click();
     await push(b);
     await a.evaluate(async () => { await api.performPullSync(); });

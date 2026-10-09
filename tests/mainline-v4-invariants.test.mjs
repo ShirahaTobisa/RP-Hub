@@ -25,11 +25,11 @@ function normalizedWorkerSegment(source, startMarker, endMarker) {
 }
 
 const protectedFiles = new Map([
-    ['DB/image-module.js', '54E5D04D8B8F9AB0023E0B31209A551F0EE690750E16C05BC2CC5302F2B1C1F7'],
-    ['_worker.js', '8195F762FE459027D783953A119F2EACCC4E22F98E072B4AE6A040920BEE2970'],
+    ['DB/image-module.js', 'A0088D817E1D57E330C1BE3458C6A79DFDA14551F400958F749B0FD4FA3C3E97'],
+    ['_worker.js', 'E20A5794BD778BCACA37BAA31AAEB71B97B9D1F9A9F1B47B77305DAE76A848A6'],
     ['DB/char-store.js', 'A02451B65EA470AAA936A772EA75900C323618CFA579953350996771D744D7FE'],
-    ['DB/bootstrap.js', 'FBF0A0C35CBD44BA86F1FB58BCCC6DDA79ED7625976B03F4C37FE385D6918C83'],
-    ['DB/styles.css', 'A8717E07C8DD2FBF0645F12895D80527A8697A2BA53E91E2D8330CF86D745F97'],
+    ['DB/bootstrap.js', 'C4056905FEC868FA89DF37F1CB4D98E9B1BDCB5F16A428632985F33E29D3A65E'],
+    ['DB/styles.css', 'E3434E5898DF63782A3F3C604F1C32FAACF56B69FB9FF7BB2B36E1524C204EBE'],
     ['DB/app-patches.mjs', '55629DF1E0888F027863F2A618A72300BB03DDBF938F2119EAF520421C57AC53'],
     ['assets/js/app.js', '2A966442F7E937A5229FE093C97336C152A8153B38E8B335CDC680D06781430C'],
     ['scripts/rebuild.mjs', 'BFD59ECA2596E37C55583146FFB8CFE48656B9C4AF81E9ACA606B833C02302DC']
@@ -45,7 +45,7 @@ assert.equal(workerSource.split(workshopInjection).length - 1, 1, 'workshop load
 const workerWithoutWorkshopInjection = workerSource.replace(/<script src="\/DB\/nav-adapter\.js\?v=sync-195"><\/script>\r?\n/, '').replace(`${workshopInjection}${workerSource.includes(`${workshopInjection}\r\n`) ? '\r\n' : '\n'}`, '');
 assert.equal(
     sha256Bytes(Buffer.from(workerWithoutWorkshopInjection, 'utf8')),
-    'A28C76CF336FD866938CDAC4BD28E8981C3D0D217E205DAFA67E8D2E9B5E6930',
+    '952E14370C33D6B1382B8579A9CCDE142C163B23B4CE068D958ABF9F4C317CC0',
     '_worker.js differs from the current img baseline by more than the workshop injection line'
 );
 const stableWorkerSegments = [
@@ -66,7 +66,7 @@ const stableBootstrapUpdateSegments = [
     ['update check', 'async function checkAppUpdate', 'async function applyAppUpdate', '58E94BE2974D6302160424B9608D936064EBFDA8863F0E62E22A34D3BFE5842F'],
     ['update apply', 'async function applyAppUpdate', 'async function rollbackAppUpdate', '8998E34D9287D239E5DE0EB22CE454CAC4D85F2EAE07BC4B330754E662AAD3C2'],
     ['update rollback', 'async function rollbackAppUpdate', 'async function submitSyncPassword', 'E7BEA7374036044587C6490A312D8AECFB2ED61F50633D699C96CEA302AEEBCD'],
-    ['update modal wiring', 'function ensureModal', 'function rememberSyncFocus', '05870970D47030D5288D56E52D998E8CCE09615A723A90CDCC224D312BD8314F']
+    ['update modal wiring', 'function ensureModal', 'function rememberSyncFocus', '2191940D66C72CA14CAD2AAE6AD350A3CC270CC4BA3A501EAAA33D7CFA7CA3E0']
 ];
 
 for (const [label, startMarker, endMarker, expectedHash] of stableBootstrapUpdateSegments) {

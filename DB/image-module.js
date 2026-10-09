@@ -208,6 +208,11 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
     }
 
     function showImageToast(message, options = {}) {
+        // 正式页面有 DB/ui-kit.js，用页面原生提示条；单独加载生图模块时（旧测试）用下面的备用提示条。
+        if (window.RPHubUI) {
+            window.RPHubUI.toast(message, { kind: options.kind === 'info' ? 'info' : 'error', duration: 4200 });
+            return;
+        }
         if (!document?.body) return;
         let host = state.toastHost;
         if (!host?.isConnected) {

@@ -14,6 +14,7 @@ const commands = [
     [process.execPath, ['--check', path.join(projectRoot, 'DB', 'bootstrap.js')]],
     [process.execPath, ['--check', path.join(projectRoot, 'DB', 'char-store.js')]],
     [process.execPath, ['--check', path.join(projectRoot, 'DB', 'module-loader.js')]],
+    [process.execPath, ['--check', path.join(projectRoot, 'DB', 'ui-kit.js')]],
     [process.execPath, ['--check', path.join(projectRoot, 'examples', 'hello-module.js')]],
     [process.execPath, ['--check', path.join(projectRoot, 'examples', 'broken-module.js')]],
     [process.execPath, ['--check', path.join(projectRoot, 'examples', 'template-module.js')]],

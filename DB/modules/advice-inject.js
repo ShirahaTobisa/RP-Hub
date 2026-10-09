@@ -7,11 +7,9 @@
         template: '<选项>\n{{input}}\n<选项/>',
         userSlot: '按照选项继续'
     };
-    const FIELD_STYLE = 'display:block;box-sizing:border-box;width:100%;margin:4px 0 12px;padding:8px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#18212f;font:inherit;';
-    const BUTTON_STYLE = 'min-height:34px;padding:6px 12px;margin-right:8px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;font:inherit;cursor:pointer;';
 
     RPHubSDK.register({
-        id: 'advice-inject', name: '输入转 advice', version: '1.2.0', requiresApi: 4,
+        id: 'advice-inject', name: '输入转 advice', version: '1.2.1', requiresApi: 4,
         init(ctx) {
             const get = key => ctx.storage.get(key) ?? DEFAULTS[key];
             const render = input => get('template').replace('{{input}}', () => input);
@@ -67,14 +65,18 @@
                     ctx.ui.openPanel({
                         title: '输入转 advice',
                         render(body) {
+                            // 样式类名见 WORKSHOP-MOD-GUIDE.md「面板样式」，跟随页面主题和深色模式。
                             body.innerHTML = `
-                                <label style="display:block;margin-bottom:12px"><input type="checkbox" data-k="enabled"> 发送时自动改写请求</label>
-                                <label style="display:block">advice 格式（{{input}} 会换成你的原话，追加在上一条 AI 回复末尾）</label>
-                                <textarea data-k="template" rows="5" style="${FIELD_STYLE}"></textarea>
-                                <label style="display:block">原话位置改成（留在最后一条用户消息里）</label>
-                                <textarea data-k="userSlot" rows="3" style="${FIELD_STYLE}"></textarea>
-                                <p style="margin:0 0 12px;color:#64748b">输入框上方的「选」按钮会把改写结果直接写进聊天记录再发送，不受上面开关影响。</p>
-                                <button type="button" data-save style="${BUTTON_STYLE}border-color:#2563eb;background:#2563eb;color:#fff;">保存</button><button type="button" data-reset style="${BUTTON_STYLE}">恢复默认</button>`;
+                                <label class="rph-ui-check rph-ui-field"><input type="checkbox" class="settings-toggle-input sr-only" data-k="enabled"><span class="settings-toggle"></span>发送时自动改写请求</label>
+                                <label class="rph-ui-field">advice 格式（{{input}} 会换成你的原话，追加在上一条 AI 回复末尾）
+                                    <textarea class="rph-ui-input" data-k="template" rows="5"></textarea></label>
+                                <label class="rph-ui-field">原话位置改成（留在最后一条用户消息里）
+                                    <textarea class="rph-ui-input" data-k="userSlot" rows="3"></textarea></label>
+                                <p class="rph-ui-muted">输入框上方的「选」按钮会把改写结果直接写进聊天记录再发送，不受上面开关影响。</p>
+                                <div class="rph-ui-actions">
+                                    <button type="button" class="modal-secondary-button rph-ui-button" data-reset>恢复默认</button>
+                                    <button type="button" class="modal-primary-button rph-ui-button" data-save>保存</button>
+                                </div>`;
                             const fields = [...body.querySelectorAll('[data-k]')];
                             const fill = read => fields.forEach(el => {
                                 const value = read(el.dataset.k);

@@ -132,7 +132,8 @@ try {
         if (pathname === '/workshop/plugins/market-bad.js') return route.fulfill({ headers, contentType: 'text/javascript', body: 'tampered' });
         return route.fulfill({ status: 404, headers, body: '' });
     });
-    page.on('dialog', (dialog) => dialog.accept());
+    // 确认框是页面内的原生样式弹窗，不再是浏览器 confirm。
+    const acceptConfirm = () => page.locator('[data-rph-ui-confirm] [data-rph-ui-confirm-accept]').click();
     const marketAction = (id) => page.locator(`[data-rph-workshop-market-action="${id}"]`);
     const openManager = async () => {
         await page.evaluate(() => [...document.querySelectorAll('.app-nav-trigger')].find((trigger) => trigger.offsetParent)?.click());
@@ -153,15 +154,17 @@ try {
     await openManager();
     assert.equal(await marketAction('market-demo').textContent(), '安装');
     await page.locator('[data-rph-workshop-launcher] [data-rph-workshop-module-id="advice-inject"]').click();
-    await page.locator('[data-rph-workshop-panel] h2').filter({ hasText: '输入转 advice' }).waitFor();
+    await page.locator('[data-rph-workshop-panel] .rph-ui-title').filter({ hasText: '输入转 advice' }).waitFor();
     console.log('PASS plugin entries live in the module manager launcher; the navigation panel fits short screens');
     await openManager();
     assert.equal(await marketAction('market-future').textContent(), '需要更新测试版');
     assert.equal(await marketAction('market-future').isDisabled(), true);
     await marketAction('market-bad').click();
-    await page.waitForFunction(() => document.querySelector('[data-rph-workshop-toast]')?.textContent.includes('不一致'));
+    await acceptConfirm();
+    await page.waitForFunction(() => [...document.querySelectorAll('.toast-item')].some((toast) => toast.textContent.includes('不一致')));
     assert.equal((await installations()).some((entry) => entry.url.endsWith('market-bad.js')), false);
     await marketAction('market-demo').click();
+    await acceptConfirm();
     await page.waitForFunction(() => JSON.parse(localStorage.getItem('rp_hub_workshop_modules_v1')).some((entry) => entry.url.endsWith('/workshop/plugins/market-demo.js')));
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => globalThis.marketDemoVersion === '1.0.0', null, { timeout: 45000 });
@@ -172,13 +175,14 @@ try {
     assert.equal(await marketAction('market-demo').textContent(), '更新');
     await marketAction('market-demo').click();
     await page.waitForFunction(() => JSON.parse(localStorage.getItem('rp_hub_workshop_modules_v1')).some((entry) => entry.id === 'market-demo' && entry.version === '1.0.1'));
+    await page.waitForFunction(() => document.querySelector('[data-rph-workshop-market-action="market-demo"]')?.textContent === '已更新，刷新后生效');
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => globalThis.marketDemoVersion === '1.0.1', null, { timeout: 45000 });
     const marketEntries = (await installations()).filter((entry) => entry.id === 'market-demo');
     assert.equal(marketEntries.length, 1);
     await openManager();
     assert.equal(await marketAction('market-demo').textContent(), '已安装');
-    console.log('PASS workshop update replaces the installed file in place and keeps one installation');
+    console.log('PASS workshop update replaces the installed file in place, says a reload is needed, and keeps one installation');
     assert.deepEqual(errors, []);
 } finally {
     await context.close();

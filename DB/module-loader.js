@@ -27,11 +27,8 @@
         runtimesByScript: new WeakMap(),
         registeredIds: new Map(),
         pluginEntries: [],
-        panelRoot: null,
-        panelReturnFocus: null,
-        panelEscapeHandler: null,
+        panel: null,
         managementBody: null,
-        toastHost: null,
         appSettled: false,
         resolveAppSettled: null,
         runtimeActive: false,
@@ -221,99 +218,37 @@
         if (state.writeErrors.size) throw new Error('插件数据尚未保存成功，已取消上传', { cause: state.writeErrors.values().next().value });
     }
 
+    // 提示条、面板、确认框都交给 DB/ui-kit.js，外观和动画跟页面原生弹窗一致。
     function showToast(message, options = {}) {
-        const text = String(message || '').trim();
-        if (!text) return;
-        if (!document.body) {
-            document.addEventListener('DOMContentLoaded', () => showToast(text, options), { once: true });
-            return;
-        }
-        let host = state.toastHost;
-        if (!host?.isConnected) {
-            host = document.createElement('div');
-            host.id = 'rph-workshop-toast-host';
-            host.setAttribute('aria-live', 'assertive');
-            host.setAttribute('aria-atomic', 'false');
-            host.style.cssText = 'position:fixed;left:50%;top:16px;z-index:2147483646;display:flex;flex-direction:column;align-items:center;gap:8px;width:min(440px,calc(100vw - 24px));pointer-events:none;font:13px/1.45 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;';
-            document.body.appendChild(host);
-            state.toastHost = host;
-        }
-        const duplicate = [...host.children].find((item) => item.textContent === text);
-        if (duplicate) duplicate.remove();
-        const toast = document.createElement('div');
-        const kind = options.kind === 'info' ? 'info' : 'error';
-        toast.dataset.rphWorkshopToast = kind;
-        toast.setAttribute('role', kind === 'error' ? 'alert' : 'status');
-        toast.textContent = text;
-        toast.style.cssText = kind === 'info'
-            ? 'max-width:100%;padding:9px 12px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#334155;box-shadow:0 8px 22px rgba(15,23,42,.16);overflow-wrap:anywhere;'
-            : 'max-width:100%;padding:9px 12px;border:1px solid #fecaca;border-radius:7px;background:#fff;color:#991b1b;box-shadow:0 8px 22px rgba(15,23,42,.16);overflow-wrap:anywhere;';
-        host.appendChild(toast);
-        setTimeout(() => {
-            toast.remove();
-            if (host.childElementCount === 0) {
-                host.remove();
-                if (state.toastHost === host) state.toastHost = null;
-            }
-        }, 4_200);
+        window.RPHubUI.toast(message, { kind: options.kind || 'error', duration: 4_200 });
+    }
+
+    function confirmRisk(message = RISK_WARNING) {
+        return window.RPHubUI.confirm({ title: '安装插件', message, confirmText: '确认安装', danger: true });
     }
 
     function closePanel() {
-        if (state.panelEscapeHandler) document.removeEventListener('keydown', state.panelEscapeHandler);
-        state.panelEscapeHandler = null;
-        state.managementBody = null;
-        state.panelRoot?.remove();
-        state.panelRoot = null;
-        if (state.panelReturnFocus?.isConnected && state.panelReturnFocus.getClientRects().length) state.panelReturnFocus.focus();
-        state.panelReturnFocus = null;
+        state.panel?.close();
     }
 
     function openPanel(options) {
         if (!options || typeof options !== 'object' || typeof options.render !== 'function') {
             throw new TypeError('panel render must be a function');
         }
-        const title = String(options.title || '').trim();
         closePanel();
-        state.panelReturnFocus = document.activeElement;
-        const root = document.createElement('div');
-        root.dataset.rphWorkshopPanel = '';
-        root.style.cssText = 'position:fixed;inset:0;z-index:2147483645;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(15,23,42,.48);font:14px/1.45 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;';
-        const dialog = document.createElement('section');
-        dialog.setAttribute('role', 'dialog');
-        dialog.setAttribute('aria-modal', 'true');
-        dialog.setAttribute('aria-label', title || '面板');
-        dialog.style.cssText = 'display:flex;flex-direction:column;width:min(720px,100%);max-height:min(760px,calc(100vh - 32px));overflow:hidden;border:1px solid #d8dee8;border-radius:8px;background:#fff;color:#18212f;box-shadow:0 22px 60px rgba(15,23,42,.28);';
-        const header = document.createElement('header');
-        header.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid #e5e9f0;';
-        const heading = document.createElement('h2');
-        heading.textContent = title;
-        heading.style.cssText = 'min-width:0;margin:0;font-size:17px;font-weight:650;line-height:1.3;overflow-wrap:anywhere;';
-        const close = document.createElement('button');
-        close.type = 'button';
-        close.dataset.rphWorkshopPanelClose = '';
-        close.setAttribute('aria-label', '关闭');
-        close.setAttribute('title', '关闭');
-        close.textContent = '×';
-        close.style.cssText = 'flex:0 0 32px;width:32px;height:32px;border:0;border-radius:6px;background:transparent;color:#475569;font-size:24px;line-height:30px;cursor:pointer;';
-        close.addEventListener('click', closePanel);
-        header.append(heading, close);
-        const body = document.createElement('div');
-        body.dataset.rphWorkshopPanelBody = '';
-        body.style.cssText = 'min-height:0;overflow:auto;padding:16px;';
-        dialog.append(header, body);
-        root.appendChild(dialog);
-        root.addEventListener('click', (event) => { if (event.target === root) closePanel(); });
-        state.panelEscapeHandler = (event) => { if (event.key === 'Escape') closePanel(); };
-        document.addEventListener('keydown', state.panelEscapeHandler);
-        document.body.appendChild(root);
-        state.panelRoot = root;
-        try {
-            options.render(body);
-            if (!root.contains(document.activeElement)) close.focus();
-        } catch (error) {
-            closePanel();
-            throw error;
-        }
+        const panel = window.RPHubUI.openModal({
+            title: String(options.title || '').trim(),
+            attributes: { 'data-rph-workshop-panel': '' },
+            bodyAttributes: { 'data-rph-workshop-panel-body': '' },
+            closeAttributes: { 'data-rph-workshop-panel-close': '' },
+            onClose: () => {
+                if (state.panel !== panel) return;
+                state.panel = null;
+                state.managementBody = null;
+            },
+            render: (body) => options.render(body)
+        });
+        state.panel = panel;
     }
 
     // 输入框上方那排按钮（“快捷面板”所在行）。页面重新渲染会丢掉插入的按钮，由 ensureComposerButtons 补回。
@@ -364,19 +299,11 @@
 
     function renderPluginLauncher(body) {
         if (!state.pluginEntries.length) return;
-        const section = document.createElement('section');
+        const section = element('section', 'rph-ui-section');
         section.dataset.rphWorkshopLauncher = '';
-        section.style.cssText = 'margin:0 0 18px;';
-        const title = document.createElement('h3');
-        title.textContent = '插件功能';
-        title.style.cssText = 'margin:0 0 8px;font-size:15px;font-weight:650;';
-        const grid = document.createElement('div');
-        grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;';
+        const grid = element('div', 'rph-ui-grid');
         state.pluginEntries.forEach((entry, index) => {
             const button = makeButton(entry.label);
-            button.style.justifyContent = 'flex-start';
-            button.style.textAlign = 'left';
-            button.style.whiteSpace = 'normal';
             button.dataset.rphWorkshopSidebarEntry = `module-${index + 1}`;
             button.dataset.rphWorkshopModuleId = entry.owner;
             button.title = state.registeredIds.get(entry.owner)?.manifest?.name || entry.owner;
@@ -386,28 +313,26 @@
             });
             grid.appendChild(button);
         });
-        section.append(title, grid);
+        section.append(element('h3', '', '插件功能'), grid);
         body.appendChild(section);
     }
 
-    function statusPresentation(status) {
-        if (status === 'ok') return { label: '正常', color: '#166534', background: '#dcfce7' };
-        if (status === 'load-error') return { label: '加载失败', color: '#991b1b', background: '#fee2e2' };
-        if (status === 'init-error') return { label: '初始化失败', color: '#991b1b', background: '#fee2e2' };
-        if (status === 'api-mismatch') return { label: 'API 不符', color: '#92400e', background: '#fef3c7' };
-        return { label: '未加载', color: '#475569', background: '#e2e8f0' };
+    const STATUS_LABELS = {
+        ok: ['正常', ''],
+        'load-error': ['加载失败', 'error'],
+        'init-error': ['初始化失败', 'error'],
+        'api-mismatch': ['API 不符', 'error']
+    };
+
+    function element(tag, className = '', text = '') {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text) node.textContent = text;
+        return node;
     }
 
     function makeButton(label, kind = 'secondary') {
-        const button = document.createElement('button');
-        button.type = 'button';
-        button.textContent = label;
-        button.style.cssText = kind === 'primary'
-            ? 'min-height:36px;padding:7px 12px;border:1px solid #2563eb;border-radius:6px;background:#2563eb;color:#fff;font:inherit;font-weight:600;cursor:pointer;white-space:nowrap;'
-            : kind === 'danger'
-                ? 'min-height:34px;padding:6px 10px;border:1px solid #fecaca;border-radius:6px;background:#fff;color:#b91c1c;font:inherit;cursor:pointer;white-space:nowrap;'
-                : 'min-height:36px;padding:7px 12px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#334155;font:inherit;cursor:pointer;white-space:nowrap;';
-        return button;
+        return window.RPHubUI.button(label, kind);
     }
 
     function refreshManagementPanel() {
@@ -458,7 +383,7 @@
             showToast('该模块 URL 已安装');
             return;
         }
-        if (!globalThis.confirm(RISK_WARNING)) return;
+        if (!await confirmRisk()) return;
         try { await loadModuleSource({ url }); }
         catch (error) {
             showToast(`无法保存插件文件：${error.message}。地址须支持跨域下载，也可导入 JS 文件。`);
@@ -519,7 +444,7 @@
 
     // 更新写回原安装的文件，安装身份、启用状态和插件数据都保留。
     async function installWorkshopPlugin(plugin, installed) {
-        if (!installed && !globalThis.confirm(RISK_WARNING)) {
+        if (!installed && !await confirmRisk()) {
             refreshManagementPanel();
             return;
         }
@@ -545,21 +470,15 @@
 
     function workshopRow(plugin) {
         const installed = state.installations.find((entry) => entry.id === plugin.id || entry.url === workshopBase() + plugin.file.path);
-        const row = document.createElement('div');
+        const running = installed && state.runtimesByUrl.get(installed.url)?.manifest?.version;
+        const row = element('div', 'rph-ui-row');
         row.dataset.rphWorkshopMarketRow = plugin.id;
-        row.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:12px 4px;border-bottom:1px solid #e5e9f0;';
-        const info = document.createElement('div');
-        info.style.cssText = 'min-width:0;flex:1 1 240px;';
-        const title = document.createElement('div');
-        title.textContent = `${plugin.name} · v${plugin.version} · ${plugin.author}`;
-        title.style.cssText = 'font-weight:650;overflow-wrap:anywhere;';
-        const description = document.createElement('div');
-        description.textContent = plugin.description;
-        description.style.cssText = 'margin-top:3px;color:#64748b;font-size:12px;overflow-wrap:anywhere;';
-        info.append(title, description);
+        const info = element('div', 'rph-ui-row-main');
+        info.append(element('div', '', `${plugin.name} · v${plugin.version} · ${plugin.author}`), element('div', 'rph-ui-muted', plugin.description));
         const [label, enabled] = plugin.requiresApi > API_VERSION ? ['需要更新测试版', false]
             : !installed ? ['安装', true]
-                : installed.version !== plugin.version ? ['更新', true] : ['已安装', false];
+                : installed.version !== plugin.version ? ['更新', true]
+                    : running && running !== plugin.version ? ['已更新，刷新后生效', false] : ['已安装', false];
         const action = makeButton(label, enabled ? 'primary' : 'secondary');
         action.dataset.rphWorkshopMarketAction = plugin.id;
         action.disabled = !enabled;
@@ -572,8 +491,7 @@
     }
 
     function renderWorkshopMarket(container) {
-        const status = document.createElement('p');
-        status.style.cssText = 'margin:0 0 6px;color:#64748b;font-size:13px;';
+        const status = element('p', 'rph-ui-muted');
         container.appendChild(status);
         if (!workshopBase()) {
             status.textContent = '分发端已关闭，工坊不可用。';
@@ -594,19 +512,15 @@
         body.replaceChildren();
         state.managementBody = body;
         renderPluginLauncher(body);
-        const note = document.createElement('p');
+        const note = element('p', 'rph-ui-note', '改动刷新后生效；插件文件、启用状态和插件数据随云同步保存。');
         note.dataset.rphWorkshopNotice = '';
-        note.textContent = '改动刷新后生效；插件文件、启用状态和插件数据随云同步保存。';
-        note.style.cssText = 'margin:0 0 14px;padding:9px 11px;border-left:3px solid #2563eb;background:#eff6ff;color:#1e3a5f;';
 
-        const addRow = document.createElement('div');
-        addRow.style.cssText = 'display:flex;align-items:stretch;gap:8px;margin-bottom:12px;';
-        const input = document.createElement('input');
+        const addRow = element('div', 'rph-ui-inline');
+        const input = element('input', 'rph-ui-input');
         input.type = 'url';
         input.placeholder = 'https://example.com/module.js';
         input.maxLength = 501;
         input.dataset.rphWorkshopUrlInput = '';
-        input.style.cssText = 'min-width:0;flex:1;height:36px;padding:7px 10px;border:1px solid #cbd5e1;border-radius:6px;background:#fff;color:#18212f;font:inherit;';
         const install = makeButton('安装', 'primary');
         install.dataset.rphWorkshopInstall = '';
         install.addEventListener('click', () => installFromInput(input));
@@ -615,12 +529,10 @@
             event.preventDefault();
             installFromInput(input);
         });
-        addRow.append(input, install);
-
         const importButton = makeButton('导入 JS 文件');
         importButton.dataset.rphWorkshopImport = '';
         const fileInput = moduleFileInput(async file => {
-            if (!confirm('插件拥有页面全部权限。确认安装此文件并将它纳入云同步吗？')) return;
+            if (!await confirmRisk('插件拥有页面全部权限。确认安装此文件并将它纳入云同步吗？')) return;
             const url = 'rphub-file:' + crypto.randomUUID() + '/' + encodeURIComponent(file.name);
             await saveModuleSource(url, await file.text());
             if (!addInstallation({ id: '', name: file.name, url, enabled: true, addedAt: Date.now(), lastStatus: '' })) return;
@@ -628,12 +540,10 @@
             showToast('插件文件已保存，刷新后生效', { kind: 'info' });
         });
         importButton.onclick = () => fileInput.click();
+        addRow.append(input, install, importButton, fileInput);
 
-        const toolbar = document.createElement('div');
-        toolbar.style.cssText = 'display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;';
-        const count = document.createElement('span');
-        count.textContent = `已安装 ${state.installations.length} 个模块`;
-        count.style.cssText = 'color:#64748b;font-size:13px;';
+        const toolbar = element('div', 'rph-ui-inline');
+        const count = element('span', 'rph-ui-muted', `已安装 ${state.installations.length} 个模块`);
         const disableAll = makeButton('全部禁用');
         disableAll.dataset.rphWorkshopDisableAll = '';
         disableAll.disabled = !state.installations.some((entry) => entry.enabled);
@@ -650,42 +560,28 @@
         });
         toolbar.append(count, disableAll);
 
-        const list = document.createElement('div');
+        const list = element('div', 'rph-ui-list');
         list.dataset.rphWorkshopModuleList = '';
-        list.style.cssText = 'border-top:1px solid #e5e9f0;';
-        if (!state.installations.length) {
-            const empty = document.createElement('p');
-            empty.textContent = '尚未安装模块';
-            empty.style.cssText = 'margin:0;padding:24px 8px;text-align:center;color:#64748b;';
-            list.appendChild(empty);
-        }
+        if (!state.installations.length) list.appendChild(element('p', 'rph-ui-empty', '尚未安装模块'));
         for (const entry of state.installations) {
             const runtime = state.runtimesByUrl.get(entry.url);
             const manifest = runtime?.manifest || null;
-            const row = document.createElement('div');
+            const row = element('div', 'rph-ui-row');
             row.dataset.rphWorkshopModuleRow = entry.url;
-            row.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;gap:10px 14px;padding:13px 4px;border-bottom:1px solid #e5e9f0;';
-            const identity = document.createElement('div');
-            identity.style.cssText = 'min-width:0;flex:1 1 220px;';
             const displayUrl = entry.url.startsWith('rphub-file:') ? '已保存的插件文件' : entry.url;
-            const name = document.createElement('div');
-            name.textContent = manifest?.name || entry.name || entry.id || displayUrl;
-            name.style.cssText = 'font-weight:650;overflow-wrap:anywhere;';
-            const detail = document.createElement('div');
             const version = manifest?.version || entry.version;
-            detail.textContent = version ? `${displayUrl} · v${version}` : displayUrl;
-            detail.style.cssText = 'margin-top:3px;color:#64748b;font-size:12px;overflow-wrap:anywhere;';
-            identity.append(name, detail);
-            const actions = document.createElement('div');
-            actions.style.cssText = 'display:flex;align-items:center;justify-content:flex-end;gap:9px;flex-wrap:wrap;';
-            const presentation = statusPresentation(entry.lastStatus);
-            const badge = document.createElement('span');
+            const identity = element('div', 'rph-ui-row-main');
+            identity.append(
+                element('div', '', manifest?.name || entry.name || entry.id || displayUrl),
+                element('div', 'rph-ui-muted', version ? `${displayUrl} · v${version}` : displayUrl)
+            );
+            const actions = element('div', 'rph-ui-row-actions');
+            const [statusLabel, tone] = STATUS_LABELS[entry.lastStatus] || ['未加载', 'muted'];
+            const badge = element('span', 'rph-ui-badge', statusLabel);
             badge.dataset.rphWorkshopStatus = entry.lastStatus;
-            badge.textContent = presentation.label;
-            badge.style.cssText = `padding:3px 7px;border-radius:999px;background:${presentation.background};color:${presentation.color};font-size:12px;white-space:nowrap;`;
-            const toggleLabel = document.createElement('label');
-            toggleLabel.style.cssText = 'display:inline-flex;align-items:center;gap:5px;color:#475569;white-space:nowrap;cursor:pointer;';
-            const toggle = document.createElement('input');
+            if (tone) badge.dataset.tone = tone;
+            const toggleLabel = element('label', 'rph-ui-check');
+            const toggle = element('input', 'settings-toggle-input sr-only');
             toggle.type = 'checkbox';
             toggle.checked = entry.enabled;
             toggle.dataset.rphWorkshopEnabled = entry.url;
@@ -700,7 +596,7 @@
                 }
                 showToast('模块启停改动将在刷新后生效', { kind: 'info' });
             });
-            toggleLabel.append(toggle, document.createTextNode('启用'));
+            toggleLabel.append(toggle, element('span', 'settings-toggle'), document.createTextNode('启用'));
             const uninstall = makeButton('卸载', 'danger');
             uninstall.dataset.rphWorkshopUninstall = entry.url;
             uninstall.addEventListener('click', async () => {
@@ -731,15 +627,11 @@
             row.append(identity, actions);
             list.appendChild(row);
         }
-        const market = document.createElement('section');
+        const market = element('section', 'rph-ui-section');
         market.dataset.rphWorkshopMarket = '';
-        market.style.cssText = 'margin-top:20px;';
-        const marketTitle = document.createElement('h3');
-        marketTitle.textContent = '工坊';
-        marketTitle.style.cssText = 'margin:0 0 6px;font-size:15px;font-weight:650;';
-        market.appendChild(marketTitle);
+        market.appendChild(element('h3', '', '工坊'));
         renderWorkshopMarket(market);
-        body.append(note, addRow, importButton, fileInput, toolbar, list, market);
+        body.append(note, addRow, toolbar, list, market);
     }
 
     function openManagementPanel() {

@@ -97,11 +97,30 @@ await ctx.persistence.track('import', async () => {
 
 ### `ctx.ui`
 
-- `toast(message, { kind })` 显示 loader 自绘提示，`kind` 可用 `info`。
+- `toast(message, { kind })` 用页面自带的提示条显示消息。`kind` 可用 `info`、`success`、`warning`、`error`，不写时按 `error` 显示。
 - `addSidebarEntry({ label, onClick })` 登记插件入口。入口集中显示在「模块管理」面板顶部的“插件功能”里，不进导航菜单，插件再多导航也不会变长；点击时先关闭面板再调用 `onClick`。
-- `openPanel({ title, render(bodyEl) })` 打开通用模态容器，关闭按钮由 loader 提供。
+- `openPanel({ title, render(bodyEl) })` 打开弹窗。外观、进出场动画和深色模式都和页面原生弹窗一致；标题栏和关闭按钮由 loader 提供，点遮罩或按 Esc 也会关闭。同一时间只开一个插件面板。
 - `addComposerButton({ label, text, onClick })`（API 4）在输入框上方那排按钮（“快捷面板”所在行）加一个圆形按钮，
   `text` 取前两个字显示，`label` 作为提示文字。页面重新渲染丢掉按钮时 loader 会补回。
+
+#### 面板样式
+
+面板内容不需要自己写颜色。给元素加下面的类名，就会跟随页面主题和深色模式（1.9.x 和 2.0 都适用）：
+
+| 类名 | 用途 |
+| --- | --- |
+| `modal-primary-button rph-ui-button` | 主按钮 |
+| `modal-secondary-button rph-ui-button` | 普通按钮 |
+| `rph-ui-actions` | 按钮行，靠右排列 |
+| `rph-ui-field` | 一个表单项（`label` 包住说明文字和输入框） |
+| `rph-ui-input` | 输入框、多行文本框 |
+| `rph-ui-check`，里面放 `input.settings-toggle-input.sr-only` 和 `span.settings-toggle` | 原生样式的开关 |
+| `rph-ui-muted` | 次要说明文字 |
+| `rph-ui-note` | 带色条的提示块 |
+| `rph-ui-section` | 分组，里面的 `h3` 是小标题 |
+| `rph-ui-row` / `rph-ui-row-main` / `rph-ui-row-actions` | 列表行：左边信息，右边操作 |
+
+完整写法见 `DB/modules/advice-inject.js` 和 `examples/api-demo-module.js`。
 
 ### `ctx.events`
 

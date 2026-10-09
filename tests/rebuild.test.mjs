@@ -54,6 +54,7 @@ try {
     expected.delete('DB/image-module.js');
     expected.delete('DB/module-loader.js');
     expected.delete('DB/nav-adapter.js');
+    expected.delete('DB/ui-kit.js');
     expected.set('DB/styles.css', 'a5ae1a2f99c1ca26bd3a3533551996b745a43a78adba87418cde0af9913bfbf9');
     const actual = treeManifest(outputRoot, runtimeEntries);
     assert.deepEqual(actual, expected);

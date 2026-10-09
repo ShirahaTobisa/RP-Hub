@@ -13,6 +13,7 @@ const DEPLOY_ENTRIES = [
     'assets',
     'character',
     'novel',
+    'DB/ui-kit.js',
     'DB/nav-adapter.js',
     'DB/bootstrap.js',
     'DB/char-store.js',
@@ -36,6 +37,7 @@ const ANY_EXPORT = /^\s*export\s+/gm;
 const DEFAULT_EXPORT = /^\s*export\s+default\b/gm;
 const VERSIONED_WORKER_ASSETS = [
     ['DB/styles.css', '/DB/styles.css'],
+    ['DB/ui-kit.js', '/DB/ui-kit.js'],
     ['DB/nav-adapter.js', '/DB/nav-adapter.js'],
     ['DB/char-store.js', '/DB/char-store.js'],
     ['DB/bootstrap.js', '/DB/bootstrap.js'],

@@ -13,6 +13,7 @@ const root = path.resolve(here, '..');
 const dist = process.env.RPH_PACKAGE_ROOT || path.join(root, 'dist');
 const versionedAssets = [
     ['DB/styles.css', '/DB/styles.css'],
+    ['DB/ui-kit.js', '/DB/ui-kit.js'],
     ['DB/nav-adapter.js', '/DB/nav-adapter.js'],
     ['DB/char-store.js', '/DB/char-store.js'],
     ['DB/bootstrap.js', '/DB/bootstrap.js'],
@@ -102,6 +103,7 @@ try {
         assert.ok(body.byteLength > 0, `${versionedUrl} returned an empty body`);
         assetResults.push({ path: publicPath, version, status: response.status, bytes: body.byteLength });
     }
+    assert.ok(html.indexOf(versionedUrls['/DB/ui-kit.js']) < html.indexOf(versionedUrls['/DB/nav-adapter.js']));
     assert.ok(html.indexOf(versionedUrls['/DB/nav-adapter.js']) < html.indexOf(versionedUrls['/DB/char-store.js']));
     assert.ok(html.indexOf(versionedUrls['/DB/char-store.js']) < html.indexOf(versionedUrls['/DB/bootstrap.js']));
     assert.ok(html.indexOf(versionedUrls['/DB/bootstrap.js']) < html.indexOf(versionedUrls['/DB/image-module.js']));

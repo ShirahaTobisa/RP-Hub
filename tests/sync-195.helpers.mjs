@@ -63,12 +63,12 @@ export async function startHarness({ upstream, assets = process.env.RPH_PACKAGE_
                 response.setHeader('content-type', 'text/html; charset=utf-8');
                 if (upstream) {
                     const html = await fs.readFile(path.join(upstream, 'index.html'), 'utf8');
-                    const scripts = ['nav-adapter', 'char-store', 'bootstrap', 'image-module', 'module-loader']
+                    const scripts = ['ui-kit', 'nav-adapter', 'char-store', 'bootstrap', 'image-module', 'module-loader']
                         .map(name => `<script src="/DB/${name}.js"></script>`).join('');
                     response.end(html.replace('</head>', `<link rel="stylesheet" href="/DB/styles.css">${scripts}</head>`));
                     return;
                 }
-                response.end(`<!doctype html><html><body><div id="app"><aside class="app-sidebar"><button class="menu"><svg viewBox="0 0 24 24"><path d="M0 0"></path></svg><span>设置</span></button></aside></div><script src="/DB/nav-adapter.js"></script><script src="/instrumented.js${url.search}"></script></body></html>`);
+                response.end(`<!doctype html><html><body><div id="app"><aside class="app-sidebar"><button class="menu"><svg viewBox="0 0 24 24"><path d="M0 0"></path></svg><span>设置</span></button></aside></div><script src="/DB/ui-kit.js"></script><script src="/DB/nav-adapter.js"></script><script src="/instrumented.js${url.search}"></script></body></html>`);
                 return;
             }
             if (url.pathname === '/instrumented.js') {

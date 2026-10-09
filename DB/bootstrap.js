@@ -208,12 +208,6 @@
     let appUpdateVersionMenu = null;
     let appUpdateSelectedTarget = '';
     let closeButton = null;
-    let confirmLayer = null;
-    let confirmTitle = null;
-    let confirmMessage = null;
-    let confirmCancelButton = null;
-    let confirmSubmitButton = null;
-    let confirmResolve = null;
     let estimatedProgressTimer = null;
     let passwordModalRoot = null;
     let passwordInput = null;
@@ -2325,13 +2319,13 @@
         passwordModalRoot.className = 'rp-sync-modal rp-sync-password-modal';
         passwordModalRoot.innerHTML = `
             <div class="rp-sync-modal__backdrop"></div>
-            <form class="rp-sync-modal__panel rp-sync-password-panel">
-                <div class="rp-sync-modal__header">
+            <form class="rp-sync-modal__panel compact-modal-panel rp-sync-password-panel">
+                <div class="rp-sync-modal__header editor-modal-header">
                     <div>
                         <div class="rp-sync-modal__eyebrow">Sync Password</div>
                         <h3 class="rp-sync-modal__title">同步密码</h3>
                     </div>
-                    <button type="button" class="rp-sync-modal__close" aria-label="关闭">×</button>
+                    <button type="button" class="rp-sync-modal__close modal-close-button" aria-label="关闭"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
                 </div>
                 <p class="rp-sync-modal__intro">当前站点已开启同步密码。输入一次后会保存在这个浏览器里，下次同步不需要再输入。</p>
                 <label class="rp-sync-password-field">
@@ -2340,8 +2334,8 @@
                 </label>
                 <p class="rp-sync-password-status">请输入同步密码。</p>
                 <div class="rp-sync-modal__actions">
-                    <button type="button" class="rp-sync-modal__button" data-action="cancel-password">取消</button>
-                    <button type="submit" class="rp-sync-modal__button is-primary" data-action="submit-password">继续同步</button>
+                    <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="cancel-password">取消</button>
+                    <button type="submit" class="rp-sync-modal__button modal-primary-button" data-action="submit-password">继续同步</button>
                 </div>
             </form>
         `;
@@ -2382,29 +2376,13 @@
         openModal();
     }
 
-    function settleInlineConfirm(value) {
-        if (confirmLayer) confirmLayer.classList.remove('is-open');
-        if (confirmResolve) {
-            const resolve = confirmResolve;
-            confirmResolve = null;
-            resolve(Boolean(value));
-        }
-    }
-
+    // 确认框用 DB/ui-kit.js 的原生样式弹窗，叠在同步面板上面。
     function openInlineConfirm(options = {}) {
-        ensureModal();
-        modalRoot.classList.add('is-open');
-        if (appUpdateVersionMenu) appUpdateVersionMenu.classList.remove('is-open');
-        if (confirmResolve) settleInlineConfirm(false);
-
-        confirmTitle.textContent = options.title || '确认操作';
-        confirmMessage.textContent = options.message || '继续执行这个操作吗？';
-        confirmSubmitButton.textContent = options.confirmText || '继续';
-        confirmSubmitButton.classList.toggle('is-danger', options.variant === 'danger');
-        confirmLayer.classList.add('is-open');
-
-        return new Promise((resolve) => {
-            confirmResolve = resolve;
+        return window.RPHubUI.confirm({
+            title: options.title,
+            message: options.message || '继续执行这个操作吗？',
+            confirmText: options.confirmText,
+            danger: options.variant === 'danger'
         });
     }
 
@@ -2652,7 +2630,7 @@
                 return;
             }
 
-            window.alert(error.message || '同步验证失败，请稍后再试。');
+            window.RPHubUI.toast(error.message || '同步验证失败，请稍后再试。', { kind: 'error' });
         } finally {
             updateButtonState();
         }
@@ -2665,13 +2643,13 @@
         modalRoot.className = 'rp-sync-modal';
         modalRoot.innerHTML = `
             <div class="rp-sync-modal__backdrop"></div>
-            <div class="rp-sync-modal__panel">
-                <div class="rp-sync-modal__header">
+            <div class="rp-sync-modal__panel compact-modal-panel">
+                <div class="rp-sync-modal__header editor-modal-header">
                     <h3 class="rp-sync-modal__title">
                         <span class="rp-sync-modal__title-sub">R2 Sync</span>
                         <span class="rp-sync-modal__title-main">云同步</span>
                     </h3>
-                    <button type="button" class="rp-sync-modal__close" aria-label="关闭">×</button>
+                    <button type="button" class="rp-sync-modal__close modal-close-button" aria-label="关闭"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
                 </div>
                 <div class="rp-sync-main-actions">
                     <button type="button" class="rp-sync-action-button" data-action="pull">拉取</button>
@@ -2696,9 +2674,9 @@
                             </label>
                         </div>
                         <div class="rp-sync-inline-actions">
-                            <button type="button" class="rp-sync-modal__button" data-action="app-update-check">检测版本</button>
-                            <button type="button" class="rp-sync-modal__button is-primary" data-action="app-update-apply">更新版本</button>
-                            <button type="button" class="rp-sync-modal__button" data-action="app-update-rollback">回滚上一版</button>
+                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="app-update-check">检测版本</button>
+                            <button type="button" class="rp-sync-modal__button modal-primary-button" data-action="app-update-apply">更新版本</button>
+                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="app-update-rollback">回滚上一版</button>
                         </div>
                     </div>
                 </details>
@@ -2716,22 +2694,12 @@
                             </label>
                         </div>
                         <div class="rp-sync-inline-actions">
-                            <button type="button" class="rp-sync-modal__button" data-action="self-update-check">检测版本</button>
-                            <button type="button" class="rp-sync-modal__button is-primary" data-action="self-update-apply">一键更新</button>
-                            <button type="button" class="rp-sync-modal__button" data-action="self-update-rollback">回退上一次部署</button>
+                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="self-update-check">检测版本</button>
+                            <button type="button" class="rp-sync-modal__button modal-primary-button" data-action="self-update-apply">一键更新</button>
+                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="self-update-rollback">回退上一次部署</button>
                         </div>
                     </div>
                 </details>
-                <div class="rp-sync-confirm" aria-hidden="true">
-                    <div class="rp-sync-confirm__box" role="dialog" aria-modal="true">
-                        <div class="rp-sync-confirm__title">确认操作</div>
-                        <p class="rp-sync-confirm__message">继续执行这个操作吗？</p>
-                        <div class="rp-sync-confirm__actions">
-                            <button type="button" class="rp-sync-modal__button" data-action="confirm-cancel">取消</button>
-                            <button type="button" class="rp-sync-modal__button is-primary" data-action="confirm-submit">继续</button>
-                        </div>
-                    </div>
-                </div>
             </div>
         `;
 
@@ -2754,11 +2722,6 @@
         appUpdateVersionButton = modalRoot.querySelector('[data-action="app-update-version-button"]');
         appUpdateVersionMenu = modalRoot.querySelector('[data-action="app-update-version-menu"]');
         closeButton = modalRoot.querySelector('.rp-sync-modal__close');
-        confirmLayer = modalRoot.querySelector('.rp-sync-confirm');
-        confirmTitle = modalRoot.querySelector('.rp-sync-confirm__title');
-        confirmMessage = modalRoot.querySelector('.rp-sync-confirm__message');
-        confirmCancelButton = modalRoot.querySelector('[data-action="confirm-cancel"]');
-        confirmSubmitButton = modalRoot.querySelector('[data-action="confirm-submit"]');
 
         modalRoot.querySelector('.rp-sync-modal__backdrop').addEventListener('click', () => {
             if (!state.syncing) closeModal();
@@ -2771,11 +2734,6 @@
         selfUpdateCheckButton.addEventListener('click', () => checkSelfUpdate().catch(() => { }));
         selfUpdateApplyButton.addEventListener('click', () => applySelfUpdate().catch(() => { }));
         selfUpdateRollbackButton.addEventListener('click', () => rollbackSelfUpdate().catch(() => { }));
-        confirmCancelButton.addEventListener('click', () => settleInlineConfirm(false));
-        confirmSubmitButton.addEventListener('click', () => settleInlineConfirm(true));
-        confirmLayer.addEventListener('click', (event) => {
-            if (event.target === confirmLayer) settleInlineConfirm(false);
-        });
         for (const [button, menu] of [[appUpdateVersionButton, appUpdateVersionMenu], [selfUpdateVersionButton, selfUpdateVersionMenu]]) {
             button.addEventListener('click', () => {
                 if (!state.syncing) menu.classList.toggle('is-open');
@@ -2893,7 +2851,6 @@
 
     function closeModal() {
         if (state.syncing || !modalRoot) return;
-        settleInlineConfirm(false);
         modalRoot.classList.remove('is-open');
         returnSyncFocus();
     }

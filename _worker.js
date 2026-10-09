@@ -131,6 +131,7 @@ function buildInjectedBootstrap(updateInfo = null, mirrorBase = '') {
 return `
 <script>window.RPH_R2_UPDATE_INFO=${safeInfo};window.RPH_R2_MIRROR_BASE=${safeMirrorBase};</script>
 <link rel="stylesheet" href="/DB/styles.css?v=r2-rebuild-1">
+<script src="/DB/ui-kit.js?v=r2-ui-1"></script>
 <script src="/DB/nav-adapter.js?v=sync-195"></script>
 <script src="/DB/char-store.js?v=r2-rebuild-1"></script>
 <script src="/DB/bootstrap.js?v=r2-rebuild-1"></script>

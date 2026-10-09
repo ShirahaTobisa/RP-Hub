@@ -25,6 +25,7 @@ const deployEntries = [
     'assets',
     'character',
     'novel',
+    'DB/ui-kit.js',
     'DB/nav-adapter.js',
     'DB/bootstrap.js',
     'DB/char-store.js',
@@ -34,13 +35,14 @@ const deployEntries = [
 ];
 const versionedAssets = [
     ['DB/styles.css', '/DB/styles.css'],
+    ['DB/ui-kit.js', '/DB/ui-kit.js'],
     ['DB/nav-adapter.js', '/DB/nav-adapter.js'],
     ['DB/char-store.js', '/DB/char-store.js'],
     ['DB/bootstrap.js', '/DB/bootstrap.js'],
     ['DB/image-module.js', '/DB/image-module.js'],
     ['DB/module-loader.js', '/DB/module-loader.js']
 ];
-const EXPECTED_DIST_WORKER_SHA256 = '0ef456fb0fe47da37139384e5540283923f03d394e7fb478bc73545f39042dce';
+const EXPECTED_DIST_WORKER_SHA256 = '1f5f62d00bbb17cecd053ba934f2d332c5d3b0aa010eb414da9e53dc101cb9f5';
 
 function runPackage() {
     const result = spawnSync(process.execPath, [
