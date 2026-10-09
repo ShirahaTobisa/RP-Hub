@@ -310,8 +310,9 @@
     --rk-text: var(--c-text, #111827);
     --rk-muted: var(--c-text-3, #6b7280);
     --rk-border: var(--c-border-soft, #e5e7eb);
-    --rk-field: var(--c-field, #fff);
-    --rk-field-border: var(--c-border, #d1d5db);
+    /* 输入框用比弹窗底色深一档的 raised 色：浅色模式下 --c-field 和弹窗同为白色，手机上分不清。 */
+    --rk-field: var(--c-raised, #f3f4f6);
+    --rk-field-border: var(--c-border-strong, #d1d5db);
     --rk-tint: var(--c-accent-soft, #eff6ff);
     --rk-accent: var(--c-accent-text, #2563eb);
     --rk-danger: var(--c-danger, #dc2626);
@@ -320,8 +321,8 @@
     --rk-text: var(--c-text, var(--night-text));
     --rk-muted: var(--c-text-3, var(--night-muted));
     --rk-border: var(--c-border-soft, var(--night-border));
-    --rk-field: var(--c-field, var(--night-field));
-    --rk-field-border: var(--c-border, var(--night-border));
+    --rk-field: var(--c-raised, var(--night-field));
+    --rk-field-border: var(--c-border-strong, var(--night-border));
     --rk-tint: var(--c-accent-soft, var(--night-tint));
     --rk-accent: var(--c-accent-text, var(--night-accent));
     --rk-danger: var(--c-danger, #f87171);
