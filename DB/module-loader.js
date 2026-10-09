@@ -26,7 +26,7 @@
         runtimesByUrl: new Map(),
         runtimesByScript: new WeakMap(),
         registeredIds: new Map(),
-        sidebarEntries: new Map(),
+        pluginEntries: [],
         panelRoot: null,
         panelReturnFocus: null,
         panelEscapeHandler: null,
@@ -45,7 +45,6 @@
         workshopDbPromise: null,
         pendingWrites: new Set(),
         writeErrors: new Map(),
-        nextSidebarEntryId: 1,
         generationWatch: null,
         chatRequestHandlers: new Set(),
         fetchWrapped: false,
@@ -349,23 +348,46 @@
         ensureComposerButtons();
     }
 
+    // 插件入口集中在「模块管理」面板顶部，不逐个放进导航菜单；装多少插件，导航菜单都不会变长。
     function releaseSidebarEntries(owner) {
-        for (const entry of state.sidebarEntries.get(owner) || []) entry.dispose();
-        state.sidebarEntries.delete(owner);
+        state.pluginEntries = state.pluginEntries.filter((entry) => entry.owner !== owner);
+        refreshManagementPanel();
     }
 
     function addSidebarEntry(owner, options) {
         if (!options || typeof options.onClick !== 'function') throw new TypeError('sidebar entry onClick must be a function');
         const label = String(options.label || '').trim();
         if (!label) throw new TypeError('sidebar entry label is required');
-        const key = 'module-' + state.nextSidebarEntryId++;
-        const entry = window.RPHubNavAdapter.registerEntry({
-            id: key, label, attributes: { 'data-rph-workshop-sidebar-entry': key, 'data-rph-workshop-module-id': owner },
-            iconPaths: ['M8 3v4M16 3v4M6 7h12a2 2 0 012 2v7a4 4 0 01-4 4H8a4 4 0 01-4-4V9a2 2 0 012-2z', 'M9 12h.01M15 12h.01'],
-            onClick: options.onClick, waitForClose: false
+        state.pluginEntries.push({ owner, label, onClick: options.onClick });
+        refreshManagementPanel();
+    }
+
+    function renderPluginLauncher(body) {
+        if (!state.pluginEntries.length) return;
+        const section = document.createElement('section');
+        section.dataset.rphWorkshopLauncher = '';
+        section.style.cssText = 'margin:0 0 18px;';
+        const title = document.createElement('h3');
+        title.textContent = '插件功能';
+        title.style.cssText = 'margin:0 0 8px;font-size:15px;font-weight:650;';
+        const grid = document.createElement('div');
+        grid.style.cssText = 'display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;';
+        state.pluginEntries.forEach((entry, index) => {
+            const button = makeButton(entry.label);
+            button.style.justifyContent = 'flex-start';
+            button.style.textAlign = 'left';
+            button.style.whiteSpace = 'normal';
+            button.dataset.rphWorkshopSidebarEntry = `module-${index + 1}`;
+            button.dataset.rphWorkshopModuleId = entry.owner;
+            button.title = state.registeredIds.get(entry.owner)?.manifest?.name || entry.owner;
+            button.addEventListener('click', () => {
+                closePanel();
+                safeCall(`plugin entry for ${entry.owner}`, entry.onClick);
+            });
+            grid.appendChild(button);
         });
-        if (!state.sidebarEntries.has(owner)) state.sidebarEntries.set(owner, []);
-        state.sidebarEntries.get(owner).push(entry);
+        section.append(title, grid);
+        body.appendChild(section);
     }
 
     function statusPresentation(status) {
@@ -571,6 +593,7 @@
     function renderManagementPanel(body) {
         body.replaceChildren();
         state.managementBody = body;
+        renderPluginLauncher(body);
         const note = document.createElement('p');
         note.dataset.rphWorkshopNotice = '';
         note.textContent = '改动刷新后生效；插件文件、启用状态和插件数据随云同步保存。';

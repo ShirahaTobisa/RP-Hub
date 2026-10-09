@@ -142,8 +142,20 @@ try {
     };
     const installations = () => page.evaluate(() => JSON.parse(localStorage.getItem('rp_hub_workshop_modules_v1') || '[]'));
 
+    // 插件入口不进导航菜单，集中在「模块管理」顶部；覆盖层加入口后，导航面板在矮屏幕上仍不超出视口（上游按面板高度定位）。
+    await page.setViewportSize({ width: 900, height: 420 });
+    await page.evaluate(() => [...document.querySelectorAll('.app-nav-trigger')].find((trigger) => trigger.offsetParent)?.click());
+    await page.locator('#app-navigation-panel [data-rph-workshop-manager-entry]').waitFor({ state: 'attached' });
+    assert.equal(await page.locator('#app-navigation-panel [data-rph-workshop-module-id]').count(), 0, 'plugin entries must stay out of the navigation menu');
+    assert.ok(await page.evaluate(() => document.querySelector('#app-navigation-panel').getBoundingClientRect().bottom <= innerHeight + 1), 'navigation panel must fit the viewport');
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1280, height: 900 });
     await openManager();
     assert.equal(await marketAction('market-demo').textContent(), '安装');
+    await page.locator('[data-rph-workshop-launcher] [data-rph-workshop-module-id="advice-inject"]').click();
+    await page.locator('[data-rph-workshop-panel] h2').filter({ hasText: '输入转 advice' }).waitFor();
+    console.log('PASS plugin entries live in the module manager launcher; the navigation panel fits short screens');
+    await openManager();
     assert.equal(await marketAction('market-future').textContent(), '需要更新测试版');
     assert.equal(await marketAction('market-future').isDisabled(), true);
     await marketAction('market-bad').click();

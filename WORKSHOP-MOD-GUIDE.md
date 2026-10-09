@@ -98,7 +98,7 @@ await ctx.persistence.track('import', async () => {
 ### `ctx.ui`
 
 - `toast(message, { kind })` 显示 loader 自绘提示，`kind` 可用 `info`。
-- `addSidebarEntry({ label, onClick })` 登记导航菜单入口。loader 负责守卫和重建 DOM。
+- `addSidebarEntry({ label, onClick })` 登记插件入口。入口集中显示在「模块管理」面板顶部的“插件功能”里，不进导航菜单，插件再多导航也不会变长；点击时先关闭面板再调用 `onClick`。
 - `openPanel({ title, render(bodyEl) })` 打开通用模态容器，关闭按钮由 loader 提供。
 - `addComposerButton({ label, text, onClick })`（API 4）在输入框上方那排按钮（“快捷面板”所在行）加一个圆形按钮，
   `text` 取前两个字显示，`label` 作为提示文字。页面重新渲染丢掉按钮时 loader 会补回。

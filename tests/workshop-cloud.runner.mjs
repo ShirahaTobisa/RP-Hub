@@ -222,6 +222,7 @@ try {
     passed('failed full-text read preserves complete data and blocks upload');
 
     await a.locator('.app-nav-trigger:visible').first().click();
+    await a.locator('[data-rph-workshop-manager-entry]').click();
     await a.locator('[data-rph-workshop-module-id="liuguanyi"]').filter({ hasText: '便签' }).click();
     await a.getByRole('textbox', { name: '便签内容' }).fill('Cloud note\n中文 and punctuation <>&');
     await a.locator('[data-rph-workshop-panel-close]').click();
@@ -261,6 +262,7 @@ try {
     passed('restored local audio reconstructs exact bytes and plays');
 
     await b.locator('.app-nav-trigger:visible').first().click();
+    await b.locator('[data-rph-workshop-manager-entry]').click();
     await b.locator('[data-rph-workshop-module-id="liuguanyi"]').filter({ hasText: '文字名场面' }).click();
     await b.locator('.sm-card').filter({ hasText: 'Long moment 0' }).click();
     assert.equal(await b.locator('.sm-content img').count(), 0);
