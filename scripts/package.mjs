@@ -219,16 +219,21 @@ function createZip(distRoot, releaseRoot, version) {
     const timestamp = formatTimestamp();
     const zipPath = path.join(releaseRoot, version ? `RP-Hub-${version}.zip` : `RP-Hub-R2-rebuild-v4-img-${timestamp}.zip`);
     const temporaryZip = path.join(releaseRoot, `.RP-Hub-R2-rebuild-v4-img-${timestamp}-${process.pid}.tmp.zip`);
+    const entryListPath = `${temporaryZip}.json`;
     fs.rmSync(temporaryZip, { force: true });
     try {
+        // Windows PowerShell 5.1 自带的压缩会写入反斜杠路径，Cloudflare 等工具解压后找不到子目录；
+        // 包内文件名由这里按 ZIP 规范（正斜杠）算好，PowerShell 只负责逐个写入，避免短路径（如 RUNNER~1）算错前缀。
+        fs.writeFileSync(entryListPath, JSON.stringify(listFiles(distRoot).map(file => ({
+            source: file,
+            name: path.relative(distRoot, file).split(path.sep).join('/')
+        }))));
         const command = [
             "$ErrorActionPreference = 'Stop'",
-            // Windows PowerShell 5.1 自带的压缩会写入反斜杠路径，Cloudflare 等工具解压后找不到子目录；
-            // 逐个写入并按 ZIP 规范使用正斜杠。
             'Add-Type -AssemblyName System.IO.Compression.FileSystem',
-            `$root = (Resolve-Path -LiteralPath ${powershellLiteral(distRoot)}).Path.TrimEnd('\\')`,
+            `$entries = Get-Content -LiteralPath ${powershellLiteral(entryListPath)} -Raw -Encoding UTF8 | ConvertFrom-Json`,
             `$zip = [IO.Compression.ZipFile]::Open(${powershellLiteral(temporaryZip)}, 'Create')`,
-            "try { Get-ChildItem -LiteralPath $root -Recurse -File | ForEach-Object { [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, $_.FullName.Substring($root.Length + 1).Replace('\\', '/'), 'Optimal') } } finally { $zip.Dispose() }"
+            "try { foreach ($entry in $entries) { [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $entry.source, $entry.name, 'Optimal') } } finally { $zip.Dispose() }"
         ].join('; ');
         execFileSync('powershell.exe', [
             '-NoLogo',
@@ -245,6 +250,7 @@ function createZip(distRoot, releaseRoot, version) {
         return zipPath;
     } finally {
         fs.rmSync(temporaryZip, { force: true });
+        fs.rmSync(entryListPath, { force: true });
     }
 }
 
