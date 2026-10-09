@@ -184,7 +184,7 @@ const probeSource = `(() => {
         requiresApi: 1,
         async init(ctx) {
             flags.ctxKeys = Object.keys(ctx).sort();
-            flags.versionOk = ctx.version.api === 2 && ctx.version.loader === 'r2-workshop-2';
+            flags.versionOk = ctx.version.api === 3 && ctx.version.loader === 'r2-workshop-3';
             flags.updateInfoExact = ctx.upstream.updateInfo === (globalThis.RPH_R2_UPDATE_INFO ?? null);
             ctx.events.on('ready', () => { flags.readySeen += 1; });
             ctx.events.on('visibility', () => { flags.visibilitySeen += 1; });
@@ -342,7 +342,7 @@ window.RPH_R2_FLUSH_PERSISTENCE = baseFlush;
         }));
         assert.deepEqual(empty.sdkKeys, ['apiVersion', 'flush', 'register']);
         assert.equal(empty.sdkFrozen, true);
-        assert.equal(empty.apiVersion, 2);
+        assert.equal(empty.apiVersion, 3);
         assert.deepEqual({
             dbReads: empty.metrics.dbReads,
             intervalCreates: empty.metrics.intervalCreates,
@@ -575,7 +575,7 @@ window.RPH_R2_FLUSH_PERSISTENCE = baseFlush;
         assert.equal(probe.dbKeysOk, true);
         assert.equal(probe.versionOk, true);
         assert.equal(probe.updateInfoExact, true);
-        assert.deepEqual(probe.ctxKeys, ['appDb', 'data', 'events', 'log', 'persistence', 'storage', 'ui', 'upstream', 'version']);
+        assert.deepEqual(probe.ctxKeys, ['app', 'appDb', 'data', 'events', 'log', 'persistence', 'requests', 'storage', 'ui', 'upstream', 'version']);
         await failurePage.evaluate(() => {
             const row = document.createElement('article');
             row.setAttribute('data-chat-index', 'workshop-probe');

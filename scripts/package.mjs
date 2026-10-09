@@ -12,13 +12,14 @@ const DEPLOY_ENTRIES = [
     'LICENSE',
     'assets',
     'character',
+    'novel',
     'DB/nav-adapter.js',
     'DB/bootstrap.js',
     'DB/char-store.js',
     'DB/styles.css',
     'DB/image-module.js',
     'DB/module-loader.js',
-    'DB/modules'
+    'DB/modules/advice-inject.js'
 ];
 
 const APP_PATCH_IMPORT = /^import\s*\{\s*patchRpHubAppJs\s*,\s*RpHubAppPatchError\s*,\s*RP_HUB_APP_PATCH_REVISION\s*\}\s*from\s*['"]\.\/DB\/app-patches\.mjs['"]\s*;\s*/;
@@ -43,6 +44,10 @@ const VERSIONED_WORKER_ASSETS = [
     ['DB/module-loader.js', '/DB/module-loader.js']
 ];
 
+// 测试版版本号：日期，同一天第二版起加序号，如 2026.10.09、2026.10.09.2。
+export const RELEASE_VERSION_PATTERN = /^\d{4}\.\d{2}\.\d{2}(?:\.\d+)?$/;
+const RELEASE_VERSION_PLACEHOLDER = "const RPH_RELEASE_VERSION = 'dev';";
+
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const sourceRoot = path.resolve(scriptDirectory, '..');
 const projectRoot = path.resolve(sourceRoot, '..');
@@ -56,7 +61,11 @@ function parseArguments(argv) {
         const argument = argv[index];
         if (argument === '--dist') options.distRoot = path.resolve(argv[++index]);
         else if (argument === '--release-dir') options.releaseRoot = path.resolve(argv[++index]);
+        else if (argument === '--version') options.version = argv[++index];
         else throw new Error(`Unknown argument: ${argument}`);
+    }
+    if (options.version !== undefined && !RELEASE_VERSION_PATTERN.test(options.version)) {
+        throw new Error(`Release version must look like 2026.10.09 or 2026.10.09.2: ${options.version}`);
     }
     return options;
 }
@@ -122,6 +131,13 @@ function inlineAppPatcher(workerSource, patcherSource) {
     return bundled;
 }
 
+function writeReleaseVersion(workerSource, version) {
+    if (workerSource.split(RELEASE_VERSION_PLACEHOLDER).length !== 2) {
+        throw new Error('Expected exactly one RPH_RELEASE_VERSION placeholder in _worker.js.');
+    }
+    return version ? workerSource.replace(RELEASE_VERSION_PLACEHOLDER, `const RPH_RELEASE_VERSION = '${version}';`) : workerSource;
+}
+
 function escapeRegExp(value) {
     return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -166,7 +182,7 @@ function scanForSensitiveValues(root) {
     const findings = [];
     const textExtensions = new Set(['.css', '.html', '.js', '.toml']);
     const patterns = [
-        { label: 'Cloudflare API token', expression: /cfat_[A-Za-z0-9_-]{20,}/ },
+        { label: 'Cloudflare API token', expression: /cf[au]t_[A-Za-z0-9_-]{20,}/ },
         { label: 'embedded sync password', expression: /RP_SYNC_PASSWORD\s*=\s*['"][^'"]+['"]/ }
     ];
     for (const file of listFiles(root)) {
@@ -198,16 +214,21 @@ function powershellLiteral(value) {
     return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-function createZip(distRoot, releaseRoot) {
+function createZip(distRoot, releaseRoot, version) {
     fs.mkdirSync(releaseRoot, { recursive: true });
     const timestamp = formatTimestamp();
-    const zipPath = path.join(releaseRoot, `RP-Hub-R2-rebuild-v4-img-${timestamp}.zip`);
+    const zipPath = path.join(releaseRoot, version ? `RP-Hub-${version}.zip` : `RP-Hub-R2-rebuild-v4-img-${timestamp}.zip`);
     const temporaryZip = path.join(releaseRoot, `.RP-Hub-R2-rebuild-v4-img-${timestamp}-${process.pid}.tmp.zip`);
     fs.rmSync(temporaryZip, { force: true });
     try {
         const command = [
             "$ErrorActionPreference = 'Stop'",
-            `Compress-Archive -Path (Join-Path ${powershellLiteral(distRoot)} '*') -DestinationPath ${powershellLiteral(temporaryZip)} -CompressionLevel Optimal -Force`
+            // Windows PowerShell 5.1 自带的压缩会写入反斜杠路径，Cloudflare 等工具解压后找不到子目录；
+            // 逐个写入并按 ZIP 规范使用正斜杠。
+            'Add-Type -AssemblyName System.IO.Compression.FileSystem',
+            `$root = (Resolve-Path -LiteralPath ${powershellLiteral(distRoot)}).Path.TrimEnd('\\')`,
+            `$zip = [IO.Compression.ZipFile]::Open(${powershellLiteral(temporaryZip)}, 'Create')`,
+            "try { Get-ChildItem -LiteralPath $root -Recurse -File | ForEach-Object { [void][IO.Compression.ZipFileExtensions]::CreateEntryFromFile($zip, $_.FullName, $_.FullName.Substring($root.Length + 1).Replace('\\', '/'), 'Optimal') } } finally { $zip.Dispose() }"
         ].join('; ');
         execFileSync('powershell.exe', [
             '-NoLogo',
@@ -217,7 +238,7 @@ function createZip(distRoot, releaseRoot) {
             command
         ], { stdio: 'pipe', windowsHide: true });
         if (!fs.existsSync(temporaryZip) || fs.statSync(temporaryZip).size === 0) {
-            throw new Error('Compress-Archive did not produce a non-empty ZIP.');
+            throw new Error('ZIP creation did not produce a non-empty file.');
         }
         fs.rmSync(zipPath, { force: true });
         fs.renameSync(temporaryZip, zipPath);
@@ -227,7 +248,24 @@ function createZip(distRoot, releaseRoot) {
     }
 }
 
-function buildDist(distRoot) {
+// 自部署发布包：外壳原文 + 其余文件的 base64，站点拿到后可直接按 Cloudflare Pages 上传格式部署。
+function createReleaseBundle(distRoot, releaseRoot, version) {
+    const assets = listFiles(distRoot)
+        .map(file => path.relative(distRoot, file).split(path.sep).join('/'))
+        .filter(relative => relative !== '_worker.js')
+        .sort()
+        .map(relative => ({ path: relative, base64: fs.readFileSync(path.join(distRoot, relative)).toString('base64') }));
+    const bundlePath = path.join(releaseRoot, `rph-bundle-${version}.json`);
+    fs.writeFileSync(bundlePath, JSON.stringify({
+        format: 'rph-release-bundle-v1',
+        version,
+        worker: fs.readFileSync(path.join(distRoot, '_worker.js'), 'utf8'),
+        assets
+    }));
+    return bundlePath;
+}
+
+function buildDist(distRoot, version) {
     const stageRoot = path.join(
         path.dirname(distRoot),
         `.rph-dist-stage-${process.pid}-${Date.now()}`
@@ -242,7 +280,7 @@ function buildDist(distRoot) {
         const workerSource = fs.readFileSync(path.join(sourceRoot, '_worker.js'), 'utf8');
         const patcherSource = fs.readFileSync(path.join(sourceRoot, 'DB', 'app-patches.mjs'), 'utf8');
         const bundledWorker = rewriteWorkerAssetVersions(
-            inlineAppPatcher(workerSource, patcherSource),
+            writeReleaseVersion(inlineAppPatcher(workerSource, patcherSource), version),
             stageRoot
         );
         fs.writeFileSync(path.join(stageRoot, '_worker.js'), bundledWorker, 'utf8');
@@ -262,13 +300,16 @@ function buildDist(distRoot) {
 
 function main(argv = process.argv.slice(2)) {
     const options = parseArguments(argv);
-    const { fileCount, assetVersions } = buildDist(options.distRoot);
-    const zipPath = createZip(options.distRoot, options.releaseRoot);
+    const { fileCount, assetVersions } = buildDist(options.distRoot, options.version);
+    const zipPath = createZip(options.distRoot, options.releaseRoot, options.version);
+    const bundlePath = options.version ? createReleaseBundle(options.distRoot, options.releaseRoot, options.version) : null;
 
     process.stdout.write(`${JSON.stringify({
         ok: true,
         dist: options.distRoot,
         zip: zipPath,
+        bundle: bundlePath,
+        version: options.version || 'dev',
         fileCount,
         assetVersions,
         zipBytes: fs.statSync(zipPath).size

@@ -12,7 +12,9 @@ const tests = [
     'image-key-persistence.test.mjs',
     'image-admin-key.test.mjs',
     'bootstrap-sync.test.mjs',
-    'offline-backup-converter.test.mjs'
+    'offline-backup-converter.test.mjs',
+    'self-update.test.mjs',
+    'update-notice.test.mjs'
 ];
 
 for (const test of tests) {

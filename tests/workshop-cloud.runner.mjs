@@ -2,13 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { startHarness, initializeFixture, chromium, chrome, root } from './sync-195.helpers.mjs';
+import { startHarness, initializeFixture, chromium, chrome, root, defaultUpstream } from './sync-195.helpers.mjs';
 
 const evidence = path.join(root, 'evidence/workshop-cloud-20260917');
 await fs.mkdir(evidence, { recursive: true });
 const plugin = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-19.5.4.js'), 'utf8');
-const upstream = path.join(root, 'evidence/sync-195/upstream/1.9.5/RP-Hub-cd7fb2b946f5985991b60597960852671013f36f');
-const harness = await startHarness({ upstream });
+const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const report = { passed: [], pageErrors: [], blocked: [], snapshots: [] };
 const contexts = [];

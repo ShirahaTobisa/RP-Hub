@@ -196,6 +196,14 @@
     let appUpdateCheckButton = null;
     let appUpdateApplyButton = null;
     let appUpdateRollbackButton = null;
+    let selfUpdateCheckButton = null;
+    let selfUpdateApplyButton = null;
+    let selfUpdateRollbackButton = null;
+    let selfUpdateInfo = null;
+    let selfUpdateStatus = null;
+    let selfUpdateVersionButton = null;
+    let selfUpdateVersionMenu = null;
+    let selfUpdateSelected = null;
     let appUpdateVersionButton = null;
     let appUpdateVersionMenu = null;
     let appUpdateSelectedTarget = '';
@@ -2283,6 +2291,9 @@
         if (appUpdateCheckButton) appUpdateCheckButton.disabled = disabled;
         if (appUpdateApplyButton) appUpdateApplyButton.disabled = disabled;
         if (appUpdateRollbackButton) appUpdateRollbackButton.disabled = disabled;
+        for (const button of [selfUpdateCheckButton, selfUpdateApplyButton, selfUpdateRollbackButton, selfUpdateVersionButton]) {
+            if (button) button.disabled = disabled;
+        }
         if (appUpdateVersionButton) appUpdateVersionButton.disabled = disabled;
         if (closeButton) closeButton.disabled = disabled;
     }
@@ -2435,30 +2446,32 @@
         return parts.join(' · ');
     }
 
-    function renderAppUpdateVersions(versions) {
-        if (!appUpdateVersionButton || !appUpdateVersionMenu) return;
+    // 版本下拉：程序更新和测试版更新共用。默认选中第一项（最新版），选中时回调 onSelect(版本)。
+    function renderVersionPicker(button, menu, versions, formatLabel, onSelect) {
         const list = Array.isArray(versions) ? versions : [];
-        if (list.length === 0) {
-            appUpdateSelectedTarget = '';
-            appUpdateVersionButton.textContent = '最新版';
-            appUpdateVersionMenu.innerHTML = '';
-            return;
-        }
-        appUpdateSelectedTarget = list[0]?.tag || list[0]?.sha || '';
-        appUpdateVersionButton.textContent = formatAppUpdateVersionLabel(list[0], 0);
-        appUpdateVersionMenu.innerHTML = '';
+        const choose = (version, index) => {
+            button.textContent = version ? formatLabel(version, index) : '最新版';
+            onSelect(version || null);
+        };
+        menu.innerHTML = '';
+        choose(list[0], 0);
         list.forEach((version, index) => {
             const item = document.createElement('button');
             item.type = 'button';
             item.className = 'rp-sync-version-option';
-            item.textContent = formatAppUpdateVersionLabel(version, index);
-            item.dataset.value = version.tag || version.sha || '';
+            item.textContent = formatLabel(version, index);
             item.addEventListener('click', () => {
-                appUpdateSelectedTarget = item.dataset.value || '';
-                appUpdateVersionButton.textContent = item.textContent || '最新版';
-                appUpdateVersionMenu.classList.remove('is-open');
+                choose(version, index);
+                menu.classList.remove('is-open');
             });
-            appUpdateVersionMenu.appendChild(item);
+            menu.appendChild(item);
+        });
+    }
+
+    function renderAppUpdateVersions(versions) {
+        if (!appUpdateVersionButton || !appUpdateVersionMenu) return;
+        renderVersionPicker(appUpdateVersionButton, appUpdateVersionMenu, versions, formatAppUpdateVersionLabel, (version) => {
+            appUpdateSelectedTarget = version?.tag || version?.sha || '';
         });
     }
 
@@ -2689,6 +2702,26 @@
                         </div>
                     </div>
                 </details>
+                <details class="rp-sync-update-details">
+                    <summary>测试版更新</summary>
+                    <div class="rp-sync-update-body">
+                        <p class="rp-sync-choice__desc" data-role="self-update-info">从分发端获取测试版。站点设置 CF_API_TOKEN 后可一键更新。</p>
+                        <div class="rp-sync-version-fields">
+                            <label>
+                                <span>目标版本</span>
+                                <div class="rp-sync-version-picker">
+                                    <button type="button" class="rp-sync-version-button" data-action="self-update-version-button">最新版</button>
+                                    <div class="rp-sync-version-menu" data-action="self-update-version-menu"></div>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="rp-sync-inline-actions">
+                            <button type="button" class="rp-sync-modal__button" data-action="self-update-check">检测版本</button>
+                            <button type="button" class="rp-sync-modal__button is-primary" data-action="self-update-apply">一键更新</button>
+                            <button type="button" class="rp-sync-modal__button" data-action="self-update-rollback">回退上一次部署</button>
+                        </div>
+                    </div>
+                </details>
                 <div class="rp-sync-confirm" aria-hidden="true">
                     <div class="rp-sync-confirm__box" role="dialog" aria-modal="true">
                         <div class="rp-sync-confirm__title">确认操作</div>
@@ -2712,6 +2745,12 @@
         appUpdateCheckButton = modalRoot.querySelector('[data-action="app-update-check"]');
         appUpdateApplyButton = modalRoot.querySelector('[data-action="app-update-apply"]');
         appUpdateRollbackButton = modalRoot.querySelector('[data-action="app-update-rollback"]');
+        selfUpdateCheckButton = modalRoot.querySelector('[data-action="self-update-check"]');
+        selfUpdateApplyButton = modalRoot.querySelector('[data-action="self-update-apply"]');
+        selfUpdateRollbackButton = modalRoot.querySelector('[data-action="self-update-rollback"]');
+        selfUpdateInfo = modalRoot.querySelector('[data-role="self-update-info"]');
+        selfUpdateVersionButton = modalRoot.querySelector('[data-action="self-update-version-button"]');
+        selfUpdateVersionMenu = modalRoot.querySelector('[data-action="self-update-version-menu"]');
         appUpdateVersionButton = modalRoot.querySelector('[data-action="app-update-version-button"]');
         appUpdateVersionMenu = modalRoot.querySelector('[data-action="app-update-version-menu"]');
         closeButton = modalRoot.querySelector('.rp-sync-modal__close');
@@ -2729,20 +2768,25 @@
         appUpdateCheckButton.addEventListener('click', () => checkAppUpdate().catch(() => { }));
         appUpdateApplyButton.addEventListener('click', () => applyAppUpdate().catch(() => { }));
         appUpdateRollbackButton.addEventListener('click', () => rollbackAppUpdate().catch(() => { }));
+        selfUpdateCheckButton.addEventListener('click', () => checkSelfUpdate().catch(() => { }));
+        selfUpdateApplyButton.addEventListener('click', () => applySelfUpdate().catch(() => { }));
+        selfUpdateRollbackButton.addEventListener('click', () => rollbackSelfUpdate().catch(() => { }));
         confirmCancelButton.addEventListener('click', () => settleInlineConfirm(false));
         confirmSubmitButton.addEventListener('click', () => settleInlineConfirm(true));
         confirmLayer.addEventListener('click', (event) => {
             if (event.target === confirmLayer) settleInlineConfirm(false);
         });
-        appUpdateVersionButton.addEventListener('click', () => {
-            if (state.syncing) return;
-            appUpdateVersionMenu.classList.toggle('is-open');
-        });
+        for (const [button, menu] of [[appUpdateVersionButton, appUpdateVersionMenu], [selfUpdateVersionButton, selfUpdateVersionMenu]]) {
+            button.addEventListener('click', () => {
+                if (!state.syncing) menu.classList.toggle('is-open');
+            });
+        }
         document.addEventListener('click', (event) => {
             if (!modalRoot?.contains(event.target)) return;
-            if (!event.target.closest('.rp-sync-version-picker')) {
-                appUpdateVersionMenu?.classList.remove('is-open');
-            }
+            const picker = event.target.closest('.rp-sync-version-picker');
+            modalRoot.querySelectorAll('.rp-sync-version-menu.is-open').forEach((menu) => {
+                if (menu.parentElement !== picker) menu.classList.remove('is-open');
+            });
         });
         if (closeButton) closeButton.addEventListener('click', closeModal);
     }
@@ -2750,6 +2794,86 @@
     function rememberSyncFocus() {
         const active = document.activeElement;
         if (!modalRoot?.contains(active) && !passwordModalRoot?.contains(active)) syncReturnFocus = active;
+    }
+
+    // 测试版：外壳从分发端取发布包部署到本站；站点没设置 CF_API_TOKEN 时改为下载部署包。
+    async function runSelfUpdateTask(task) {
+        if (state.syncing) return;
+        state.syncing = true;
+        updateButtonState();
+        openModal();
+        setActionButtonsDisabled(true);
+        try {
+            await task();
+        } catch (error) {
+            updateProgress(100, error.message || '测试版操作失败。');
+        } finally {
+            state.syncing = false;
+            setActionButtonsDisabled(false);
+            updateButtonState();
+        }
+    }
+
+    function reloadAfterDeploy(text) {
+        updateProgress(100, `${text}约半分钟后生效，页面将自动刷新。`);
+        setTimeout(() => location.reload(), 40_000);
+    }
+
+    function checkSelfUpdate() {
+        return runSelfUpdateTask(async () => {
+            updateProgress(20, '正在检测测试版...');
+            selfUpdateStatus = await postSync({ action: 'self-update-status' });
+            selfUpdateApplyButton.textContent = selfUpdateStatus.selfDeploy ? '一键更新' : '下载部署包';
+            const current = selfUpdateStatus.current;
+            const formatLabel = (version, index) => [index === 0 ? `最新版：${version.tag}` : version.tag,
+                version.publishedAt ? new Date(version.publishedAt).toLocaleDateString('zh-CN') : '',
+                version.tag === current ? '当前' : ''].filter(Boolean).join(' · ');
+            renderVersionPicker(selfUpdateVersionButton, selfUpdateVersionMenu, selfUpdateStatus.versions, formatLabel, (version) => {
+                selfUpdateSelected = version;
+                selfUpdateInfo.textContent = version ? `${version.tag}：${version.notes || '无更新说明'}` : '分发端暂无测试版。';
+            });
+            updateProgress(100, selfUpdateStatus.updateAvailable
+                ? `发现测试版 ${selfUpdateStatus.latest}，当前为 ${selfUpdateStatus.current}。`
+                : `当前已是最新测试版：${selfUpdateStatus.current}。`);
+        });
+    }
+
+    async function applySelfUpdate() {
+        if (!selfUpdateStatus) await checkSelfUpdate();
+        const target = selfUpdateSelected;
+        if (!target) return;
+        if (!selfUpdateStatus.selfDeploy) {
+            if (target.zipUrl) window.open(target.zipUrl, '_blank', 'noopener');
+            updateProgress(100, `站点未设置 CF_API_TOKEN，请下载部署包后上传到 Cloudflare Pages：${target.zipUrl || '分发端暂无下载地址'}`);
+            return;
+        }
+        const confirmed = await openInlineConfirm({
+            title: '更新测试版',
+            message: `将把本站部署为测试版 ${target.tag}。云同步数据不受影响，出问题可回退上一次部署。`,
+            confirmText: '开始更新'
+        });
+        if (!confirmed) return;
+        await runSelfUpdateTask(async () => {
+            await flushAppState();
+            updateProgress(30, `正在部署测试版 ${target.tag}...`);
+            const result = await postSync({ action: 'self-update-apply', target: target.tag }, { timeoutMs: 180_000, retryCount: 0 });
+            reloadAfterDeploy(`测试版 ${result.version} 已提交部署，`);
+        });
+    }
+
+    async function rollbackSelfUpdate() {
+        const confirmed = await openInlineConfirm({
+            title: '回退上一次部署',
+            message: '将把本站切回上一次 Cloudflare 部署，云同步数据不受影响。',
+            confirmText: '确认回退',
+            variant: 'danger'
+        });
+        if (!confirmed) return;
+        await runSelfUpdateTask(async () => {
+            updateProgress(30, '正在回退...');
+            await postSync({ action: 'self-update-rollback' }, { timeoutMs: 120_000, retryCount: 0 });
+            reloadAfterDeploy('已切回上一次部署，');
+        });
     }
 
     function returnSyncFocus() {

@@ -2,12 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { startHarness, initializeFixture, chromium, chrome, root } from './sync-195.helpers.mjs';
+import { startHarness, initializeFixture, chromium, chrome, root, defaultUpstream } from './sync-195.helpers.mjs';
 
 const evidence = path.join(root, 'evidence/image-edit-repair-20260920');
 await fs.mkdir(evidence, { recursive: true });
 const oldRuns = JSON.parse(await fs.readFile(path.join(root, 'tests/fixtures/image-edit-legacy.json'), 'utf8'));
-const harness = await startHarness({ assets: path.resolve(process.env.RPH_PACKAGE_ROOT || root), upstream: path.join(root, 'evidence/sync-195/upstream/1.9.5/RP-Hub-cd7fb2b946f5985991b60597960852671013f36f') });
+const harness = await startHarness({ assets: path.resolve(process.env.RPH_PACKAGE_ROOT || root), upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const contexts = [], report = { passed: [], pageErrors: [], imageRequests: [], snapshots: [] }, scripts = new Map();
 report.moduleSha256 = crypto.createHash('sha256').update(await fs.readFile(path.join(process.env.RPH_PACKAGE_ROOT || root,'DB/image-module.js'))).digest('hex');

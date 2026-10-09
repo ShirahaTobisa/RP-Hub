@@ -24,13 +24,14 @@ const deployEntries = [
     'LICENSE',
     'assets',
     'character',
+    'novel',
     'DB/nav-adapter.js',
     'DB/bootstrap.js',
     'DB/char-store.js',
     'DB/styles.css',
     'DB/image-module.js',
     'DB/module-loader.js',
-    'DB/modules'
+    'DB/modules/advice-inject.js'
 ];
 const versionedAssets = [
     ['DB/styles.css', '/DB/styles.css'],
@@ -40,7 +41,7 @@ const versionedAssets = [
     ['DB/image-module.js', '/DB/image-module.js'],
     ['DB/module-loader.js', '/DB/module-loader.js']
 ];
-const EXPECTED_DIST_WORKER_SHA256 = 'dd9bbceb166273658f2deec0a59d04f37fc494a5fa131ca7f00561c6823c5a8d';
+const EXPECTED_DIST_WORKER_SHA256 = '478ebd52cd824ca2098b9153fecc4dc415869d7e1de58ee1b8dbcd1b2af4be18';
 
 function runPackage() {
     const result = spawnSync(process.execPath, [

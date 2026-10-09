@@ -26,12 +26,12 @@ function normalizedWorkerSegment(source, startMarker, endMarker) {
 
 const protectedFiles = new Map([
     ['DB/image-module.js', 'EEC947FA77F4D50A28F1F6E23D15A1ECB0995C4F67D2D3C1659A2254C001AA47'],
-    ['_worker.js', '351A50453018389B27477291C71FC0942F8E745AF93DFA2983A33C90E8B53445'],
+    ['_worker.js', 'C405DD2F2146916867FA2C136195E54BF608F3FC8941F4F9C1A54BC603BE8319'],
     ['DB/char-store.js', 'A02451B65EA470AAA936A772EA75900C323618CFA579953350996771D744D7FE'],
-    ['DB/bootstrap.js', '2BEA8C374E3B56F1CD3F883B23C0E03991C983F0353F404CC7192403515AE602'],
-    ['DB/styles.css', 'BB608C2DB52681DC8279139A0DBCFAD30DED5E5B15214A58363E6F26FF540A15'],
+    ['DB/bootstrap.js', 'FBF0A0C35CBD44BA86F1FB58BCCC6DDA79ED7625976B03F4C37FE385D6918C83'],
+    ['DB/styles.css', 'A883DA57BCBEDA8F7D7975691E89EC0B65773AED15A85E594BE4E3A3E00232B9'],
     ['DB/app-patches.mjs', '55629DF1E0888F027863F2A618A72300BB03DDBF938F2119EAF520421C57AC53'],
-    ['assets/js/app.js', '1531FD9E563517F642B57AB5CC9C821796753F813EF244370402CE772AA47B0C'],
+    ['assets/js/app.js', '2A966442F7E937A5229FE093C97336C152A8153B38E8B335CDC680D06781430C'],
     ['scripts/rebuild.mjs', 'BFD59ECA2596E37C55583146FFB8CFE48656B9C4AF81E9ACA606B833C02302DC']
 ]);
 
@@ -45,7 +45,7 @@ assert.equal(workerSource.split(workshopInjection).length - 1, 1, 'workshop load
 const workerWithoutWorkshopInjection = workerSource.replace(/<script src="\/DB\/nav-adapter\.js\?v=sync-195"><\/script>\r?\n/, '').replace(`${workshopInjection}${workerSource.includes(`${workshopInjection}\r\n`) ? '\r\n' : '\n'}`, '');
 assert.equal(
     sha256Bytes(Buffer.from(workerWithoutWorkshopInjection, 'utf8')),
-    'A2303B5074F99D962289650D564E3B3A927EFD4DF7D09B48BE6B8379EF452E61',
+    '9AE657FE06B4C88CC981B79ADC1AC65064EA9EE4A54F44C299C0D4A214E2CD7B',
     '_worker.js differs from the current img baseline by more than the workshop injection line'
 );
 const stableWorkerSegments = [
@@ -62,11 +62,11 @@ for (const [label, startMarker, endMarker, expectedHash] of stableWorkerSegments
 
 const bootstrapSource = fs.readFileSync(path.join(root, 'DB', 'bootstrap.js'), 'utf8');
 const stableBootstrapUpdateSegments = [
-    ['version rendering', 'function renderAppUpdateVersions', 'async function checkAppUpdate', 'FF7BB233B607324F6A6D1925AF8A763D1D1814F6ACD4CAF0CA5AEEAAD46ED01F'],
+    ['version rendering', 'function renderAppUpdateVersions', 'async function checkAppUpdate', 'BA415346FD6C556F436ABF55212AC1C146ED90000B17E572CBA9CE77FD9F505B'],
     ['update check', 'async function checkAppUpdate', 'async function applyAppUpdate', '58E94BE2974D6302160424B9608D936064EBFDA8863F0E62E22A34D3BFE5842F'],
     ['update apply', 'async function applyAppUpdate', 'async function rollbackAppUpdate', '8998E34D9287D239E5DE0EB22CE454CAC4D85F2EAE07BC4B330754E662AAD3C2'],
     ['update rollback', 'async function rollbackAppUpdate', 'async function submitSyncPassword', 'E7BEA7374036044587C6490A312D8AECFB2ED61F50633D699C96CEA302AEEBCD'],
-    ['update modal wiring', 'function ensureModal', 'function rememberSyncFocus', '0AAF4EB51B85EAF3F07F3B431C1FA16FA46AFB3BE33D3421731E791F8349978B']
+    ['update modal wiring', 'function ensureModal', 'function rememberSyncFocus', '05870970D47030D5288D56E52D998E8CCE09615A723A90CDCC224D312BD8314F']
 ];
 
 for (const [label, startMarker, endMarker, expectedHash] of stableBootstrapUpdateSegments) {

@@ -467,3 +467,37 @@
         width: 100%;
     }
 }
+
+/* 深色模式：跟随 RPH 1.9.x 根元素的 data-app-theme="dark"，颜色取页面自带的 --night-* 变量。 */
+:root[data-app-theme="dark"] .rp-sync-modal { color: var(--night-text); }
+:root[data-app-theme="dark"] :is(.rp-sync-modal__backdrop, .rp-sync-confirm) { background: rgba(0, 0, 0, 0.55); }
+:root[data-app-theme="dark"] :is(.rp-sync-modal__panel, .rp-sync-confirm__box, .rp-sync-version-menu) {
+    border-color: var(--night-border);
+    background: var(--night-surface);
+    box-shadow: 0 24px 70px -34px rgba(0, 0, 0, 0.8);
+}
+:root[data-app-theme="dark"] :is(.rp-sync-modal__close, .rp-sync-action-button, .rp-sync-modal__button, .rp-sync-version-button, .rp-sync-password-field input) {
+    border-color: var(--night-border);
+    background: var(--night-raised);
+    color: var(--night-text);
+}
+:root[data-app-theme="dark"] :is(.rp-sync-modal__close, .rp-sync-action-button, .rp-sync-modal__button):hover {
+    border-color: var(--night-accent);
+    color: var(--night-accent);
+}
+:root[data-app-theme="dark"] :is(.rp-sync-action-button, .rp-sync-modal__button).is-primary {
+    border-color: var(--night-primary);
+    background: var(--night-selected);
+    color: var(--night-text);
+}
+:root[data-app-theme="dark"] .rp-sync-modal__button.is-danger { border-color: rgba(248, 113, 113, 0.4); background: rgba(127, 29, 29, 0.35); color: #fca5a5; }
+:root[data-app-theme="dark"] :is(.rp-sync-modal__title, .rp-sync-modal__title-main, .rp-sync-confirm__title, .rp-sync-version-option, .rp-sync-update-details summary) { color: var(--night-text); }
+:root[data-app-theme="dark"] .rp-sync-version-option:hover { background: var(--night-tint); color: var(--night-accent); }
+:root[data-app-theme="dark"] :is(.rp-sync-modal__status, .rp-sync-choice__desc, .rp-sync-modal__intro, .rp-sync-version-fields label, .rp-sync-password-field, .rp-sync-password-status, .rp-sync-confirm__message) { color: var(--night-secondary); }
+:root[data-app-theme="dark"] :is(.rp-sync-modal__eyebrow, .rp-sync-modal__title-sub, .rp-sync-progress__value) { color: var(--night-accent); }
+:root[data-app-theme="dark"] .rp-sync-progress { background: var(--night-field); }
+:root[data-app-theme="dark"] .rp-sync-progress__bar { background: var(--night-primary); }
+:root[data-app-theme="dark"] .rp-sync-update-details { border-top-color: var(--night-border); }
+:root[data-app-theme="dark"] .rp-sync-update-details summary::after { color: var(--night-muted); }
+:root[data-app-theme="dark"] .rp-sync-version-button::after { border-color: var(--night-muted); }
+:root[data-app-theme="dark"] .rp-sync-password-field input:focus { border-color: var(--night-accent); box-shadow: 0 0 0 4px rgba(150, 186, 255, 0.16); }

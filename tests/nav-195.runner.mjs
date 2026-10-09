@@ -1,14 +1,18 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { startHarness, chromium, chrome, root } from './sync-195.helpers.mjs';
+import { startHarness, chromium, chrome, root, defaultUpstream } from './sync-195.helpers.mjs';
 
 const upstreamRoot = path.join(root, 'evidence/sync-195/upstream');
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const reports = [];
 try {
-    for (const [version, sha] of [['1.9.4', 'd312bd4b2798dad3f30307afdbd704aac1f80f1a'], ['1.9.5', 'cd7fb2b946f5985991b60597960852671013f36f']]) {
-        const harness = await startHarness({ upstream: path.join(upstreamRoot, version, `RP-Hub-${sha}`), assets: process.env.RPH_PACKAGE_ROOT || root });
+    // 设置 RPH_UPSTREAM_DIR 时只测该版本，按 1.9.5 起的导航菜单流程检查。
+    const targets = process.env.RPH_UPSTREAM_DIR ? [['custom', defaultUpstream]]
+        : [['1.9.4', 'd312bd4b2798dad3f30307afdbd704aac1f80f1a'], ['1.9.5', 'cd7fb2b946f5985991b60597960852671013f36f']]
+            .map(([version, sha]) => [version, path.join(upstreamRoot, version, `RP-Hub-${sha}`)]);
+    for (const [version, upstream] of targets) {
+        const harness = await startHarness({ upstream, assets: process.env.RPH_PACKAGE_ROOT || root });
         try {
             for (const mobile of [false, true]) {
                 const context = await browser.newContext({ viewport: mobile ? { width: 390, height: 844 } : { width: 1280, height: 900 }, isMobile: mobile, hasTouch: mobile });
@@ -34,7 +38,7 @@ try {
                     await page.getByRole('button', { name: /开始/ }).click();
                     await name.waitFor({ state: 'hidden' });
                 }
-                if (version === '1.9.5') {
+                if (version !== '1.9.4') {
                     const open = async () => {
                         await page.locator('.app-nav-trigger:visible').first().click();
                         await page.locator('[data-rph-sync-entry]').waitFor();
@@ -115,7 +119,7 @@ try {
                     await page.locator('.rp-sync-password-modal [data-action="cancel-password"]').click();
                 }
                 const screenshot = path.join(root, `evidence/sync-195/nav-${version}-${mobile ? 'mobile-emulation' : 'desktop'}.png`);
-                if (version === '1.9.5') await page.waitForFunction(() => {
+                if (version !== '1.9.4') await page.waitForFunction(() => {
                     const layer = document.querySelector('.app-navigation-layer');
                     return !layer.classList.contains('app-navigation-enter-active')
                         && Number(getComputedStyle(layer.querySelector('.app-navigation-panel')).opacity) > .99;

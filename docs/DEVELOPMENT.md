@@ -6,7 +6,7 @@
 
 | 命令 | 范围 |
 | --- | --- |
-| `npm test` | 当前主线的 10 个独立测试脚本：图片编辑与归属、权限、同步约束、离线转换 |
+| `npm test` | 当前主线的 12 个独立测试脚本：图片编辑与归属、权限、同步约束、离线转换、测试版自更新、公告可跳过 |
 | `npm run test:package` | 主站打包内容、资源版本、ZIP 完整性 |
 | `npm run test:browser` | 工坊 API、插件云同步、图片编辑的浏览器测试 |
 | `npm run build` | 生成主站 dist 和 ZIP |
@@ -19,7 +19,7 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-浏览器默认使用 Playwright 下载的 Chromium，可用 `CHROME_PATH` 指定浏览器路径。测试在临时浏览器环境中使用模拟数据，不连接生产站点。
+浏览器默认使用 Playwright 下载的 Chromium，可用 `CHROME_PATH` 指定浏览器路径。插件 API、插件云同步和图片编辑测试默认使用固定的上游 1.9.5 页面；设置 `RPH_UPSTREAM_DIR` 指向其他上游版本的源码目录（如 2.0.0），可检查测试版在新版本上的兼容性。测试在临时浏览器环境中使用模拟数据，不连接生产站点。
 
 浏览器测试准备脚本会从上游公开仓库下载固定 commit 的 1.9.5 测试页面，核对 SHA-256 后解压到 `evidence/sync-195/upstream/`。页面依赖上游的公开 CDN 脚本，运行时需联网。旧图片匹配记录使用 `tests/fixtures/image-edit-legacy.json`，来自隔离测试的模拟数据。
 

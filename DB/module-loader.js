@@ -1,9 +1,9 @@
-/* RP-Hub workshop module loader and plugin SDK v2. */
+/* RP-Hub workshop module loader and plugin SDK v3. */
 (() => {
     'use strict';
 
-    const API_VERSION = 2;
-    const LOADER_VERSION = 'r2-workshop-2';
+    const API_VERSION = 3;
+    const LOADER_VERSION = 'r2-workshop-3';
     const LIST_KEY = 'rp_hub_workshop_modules_v1';
     const DB_NAME = 'RPHubDB';
     const DB_STORE = 'store';
@@ -13,7 +13,9 @@
     const APP_STARTUP_SETTLE_MS = 1_000;
     const CHAT_MUTATION_THROTTLE_MS = 500;
     const VALID_STATUSES = new Set(['ok', 'load-error', 'init-error', 'api-mismatch', '']);
-    const VALID_EVENTS = new Set(['ready', 'visibility', 'chat-mutation', 'persistence-flush']);
+    const VALID_EVENTS = new Set(['ready', 'visibility', 'chat-mutation', 'persistence-flush', 'generation-start', 'generation-end']);
+    // 记忆总结、二次压缩、UI 变量分析等副请求的开头文字；带这些文字的请求不算主聊天。
+    const AUXILIARY_REQUEST_MARKERS = ['你是角色扮演对话的逐轮记忆整理器', '你是角色扮演长期记忆压缩器', '只分析一个UI模板'];
     const MODULE_ID_PATTERN = /^[a-z0-9-]{3,32}$/;
 
     const state = {
@@ -41,11 +43,16 @@
         pendingWrites: new Set(),
         writeErrors: new Map(),
         nextSidebarEntryId: 1,
+        generationWatch: null,
+        chatRequestHandlers: new Set(),
+        fetchWrapped: false,
         listeners: {
             ready: new Set(),
             visibility: new Set(),
             'chat-mutation': new Set(),
-            'persistence-flush': new Set()
+            'persistence-flush': new Set(),
+            'generation-start': new Set(),
+            'generation-end': new Set()
         }
     };
 
@@ -568,33 +575,91 @@
         openPanel({ title: '模块管理', render: renderManagementPanel });
     }
 
+    // 调用插件回调：同步异常和被拒绝的 Promise 都只记日志，不影响页面和其他插件。
+    function safeCall(label, callback, ...args) {
+        try {
+            const result = callback(...args);
+            if (result && typeof result.then === 'function') result.catch((error) => log(`${label} failed`, error));
+        } catch (error) {
+            log(`${label} failed`, error);
+        }
+    }
+
     function dispatchEvent(name, payload) {
         for (const listener of [...state.listeners[name]]) {
-            try {
-                const result = listener.callback(payload);
-                if (result && typeof result.then === 'function') {
-                    result.catch((error) => log(`${name} listener failed for ${listener.id}`, error));
-                }
-            } catch (error) {
-                log(`${name} listener failed for ${listener.id}`, error);
-            }
+            safeCall(`${name} listener for ${listener.id}`, listener.callback, payload);
         }
     }
 
     function subscribe(id, name, callback) {
         if (!VALID_EVENTS.has(name)) throw new TypeError(`unsupported event: ${name}`);
         if (typeof callback !== 'function') throw new TypeError('event callback must be a function');
+        if (name.startsWith('generation-') && !state.generationWatch) {
+            state.generationWatch = appWatch(() => appGet('isGenerating') === true,
+                busy => dispatchEvent(busy ? 'generation-start' : 'generation-end'));
+        }
         const listener = { id, callback };
         state.listeners[name].add(listener);
         if (name === 'ready' && state.appSettled) queueMicrotask(() => {
-            if (!state.listeners.ready.has(listener)) return;
-            try {
-                const result = callback();
-                if (result && typeof result.then === 'function') result.catch((error) => log(`ready listener failed for ${id}`, error));
-            } catch (error) {
-                log(`ready listener failed for ${id}`, error);
-            }
+            if (state.listeners.ready.has(listener)) safeCall(`ready listener for ${id}`, callback);
         });
+    }
+
+    function appState() {
+        const app = document.getElementById('app')?.__vue_app__;
+        return (app?._instance || app?._container?._vnode?.component)?.setupState || null;
+    }
+
+    // 读页面数据（如 chatHistory、settings、currentCharacter、user、isGenerating）；返回的是页面里的原对象，只读不改。
+    function appGet(name) {
+        const value = appState()?.[String(name)];
+        return globalThis.Vue?.isRef?.(value) ? value.value : value;
+    }
+
+    // getter 里用 appGet 读到的数据一变，就调用 callback(新值, 旧值)；返回停止监听的函数。
+    function appWatch(getter, callback, options = {}) {
+        if (typeof getter !== 'function' || typeof callback !== 'function') throw new TypeError('watch getter and callback must be functions');
+        if (typeof globalThis.Vue?.watch !== 'function' || !appState()) throw new Error('页面尚未就绪，无法监听数据');
+        return globalThis.Vue.watch(getter, (value, previous) => safeCall('app watch callback', callback, value, previous),
+            { deep: options.deep === true, immediate: options.immediate === true });
+    }
+
+    function isMainChatRequest(url, body) {
+        return /chat\/completions/i.test(url) && Array.isArray(body?.messages) && appGet('isGenerating') === true
+            && !body.messages.some(message => AUXILIARY_REQUEST_MARKERS.some(marker => String(message?.content || '').includes(marker)));
+    }
+
+    // 主聊天请求发出前，依次交给插件修改请求体；某个插件出错时丢弃它的改动，其余照常。
+    function wrapFetchOnce() {
+        if (state.fetchWrapped) return;
+        state.fetchWrapped = true;
+        const nativeFetch = globalThis.fetch;
+        globalThis.fetch = async function (input, init) {
+            const url = typeof input === 'string' ? input : input?.url || '';
+            let body = null;
+            try { if (typeof init?.body === 'string' && /chat\/completions/i.test(url)) body = JSON.parse(init.body); } catch (_) { /* 非 JSON 请求原样发送 */ }
+            if (isMainChatRequest(url, body)) {
+                for (const handler of [...state.chatRequestHandlers]) {
+                    try {
+                        const draft = structuredClone(body);
+                        await handler.callback(draft);
+                        body = draft;
+                    } catch (error) {
+                        log(`chat request handler failed for ${handler.id}`, error);
+                    }
+                }
+                init = { ...init, body: JSON.stringify(body) };
+            }
+            return Reflect.apply(nativeFetch, this, [input, init]);
+        };
+    }
+
+    function onChatRequest(id, callback) {
+        if (typeof callback !== 'function') throw new TypeError('chat request handler must be a function');
+        const handler = { id, callback };
+        state.chatRequestHandlers.add(handler);
+        wrapFetchOnce();
+        return () => state.chatRequestHandlers.delete(handler);
     }
 
     function collectDirtyRows(records) {
@@ -807,6 +872,13 @@
             },
             events: {
                 on: (name, callback) => subscribe(id, name, callback)
+            },
+            app: {
+                get: appGet,
+                watch: appWatch
+            },
+            requests: {
+                onChat: callback => onChatRequest(id, callback)
             }
         };
     }

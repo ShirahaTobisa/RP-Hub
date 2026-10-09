@@ -1,0 +1,35 @@
+name: Release test build
+
+# 推送日期标签（如 2026.10.09、2026.10.09.2）时发布测试版。
+# 标签说明（git tag -a 的内容）作为更新说明，分发端同步后各站点即可拉取。
+on:
+  push:
+    tags:
+      - '20[0-9][0-9].[0-9][0-9].[0-9][0-9]'
+      - '20[0-9][0-9].[0-9][0-9].[0-9][0-9].*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-node@v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run test:package
+      - run: node scripts/package.mjs --release-dir release --version ${{ github.ref_name }}
+      - name: Create GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          git fetch --force origin "refs/tags/${env:TAG}:refs/tags/${env:TAG}"
+          gh release create $env:TAG "release/RP-Hub-$env:TAG.zip" "release/rph-bundle-$env:TAG.json" --title "测试版 $env:TAG" --notes-from-tag --verify-tag

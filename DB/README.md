@@ -9,7 +9,7 @@
 | `bootstrap.js` | 云端推拉、快照校验、恢复保护及程序更新 |
 | `image-module.js` | 图片框、记录归属、生成与图片管理 |
 | `module-loader.js` | 工坊安装文件、启用状态、插件 API 与数据持久化 |
-| `modules/` | 随主线提供的插件文件 |
+| `modules/` | 插件文件；只有 `advice-inject.js` 进部署包，柳贯一插件由用户自行导入 |
 | `app-patches.mjs` | 上游 app.js 补丁的统一定义 |
 | `styles.css` | 覆盖层样式 |
 
