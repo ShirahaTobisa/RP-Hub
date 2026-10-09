@@ -64,4 +64,4 @@ npm run build
 
 共享页面补丁说明见 [PATCHES.md](PATCHES.md)，模块职责见 [DB/README.md](DB/README.md)。旧重建工具依赖本机历史目录，日常打包请使用 `npm run build`。
 
-保留上游 [CC BY-NC 4.0 许可证](LICENSE) 及原有署名。`DB/modules/` 中的柳贯一插件是用户提供版本的适配代码，保留原来源信息，不随部署包分发；本仓库未另行确认其再分发授权。
+保留上游 [CC BY-NC 4.0 许可证](LICENSE) 及原有署名。`DB/modules/` 中的插件源文件不进部署包；其中柳贯一插件是用户提供版本的适配代码，保留原来源信息，本仓库未另行确认其再分发授权。

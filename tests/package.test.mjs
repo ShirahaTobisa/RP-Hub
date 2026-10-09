@@ -30,8 +30,7 @@ const deployEntries = [
     'DB/char-store.js',
     'DB/styles.css',
     'DB/image-module.js',
-    'DB/module-loader.js',
-    'DB/modules/advice-inject.js'
+    'DB/module-loader.js'
 ];
 const versionedAssets = [
     ['DB/styles.css', '/DB/styles.css'],

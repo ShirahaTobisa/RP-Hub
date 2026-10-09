@@ -19,9 +19,9 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-浏览器默认使用 Playwright 下载的 Chromium，可用 `CHROME_PATH` 指定浏览器路径。插件 API、插件云同步和图片编辑测试默认使用固定的上游 1.9.5 页面；设置 `RPH_UPSTREAM_DIR` 指向其他上游版本的源码目录（如 2.0.0），可检查测试版在新版本上的兼容性。测试在临时浏览器环境中使用模拟数据，不连接生产站点。
+浏览器默认使用 Playwright 下载的 Chromium，可用 `CHROME_PATH` 指定浏览器路径。插件 API、插件云同步和图片编辑测试默认使用固定的上游 2.0.0 页面；设置 `RPH_UPSTREAM_DIR` 指向其他上游版本的源码目录（如准备好的 1.9.5，或本地上游仓库），可检查测试版在其他版本上的兼容性。测试在临时浏览器环境中使用模拟数据，不连接生产站点。
 
-浏览器测试准备脚本会从上游公开仓库下载固定 commit 的 1.9.5 测试页面，核对 SHA-256 后解压到 `evidence/sync-195/upstream/`。页面依赖上游的公开 CDN 脚本，运行时需联网。旧图片匹配记录使用 `tests/fixtures/image-edit-legacy.json`，来自隔离测试的模拟数据。
+浏览器测试准备脚本会从上游公开仓库下载固定 commit 的 2.0.0（默认锚点）和 1.9.5（旧版对照）测试页面，核对 SHA-256 后解压到 `evidence/sync-195/upstream/<版本>/`。上游发布新版本时，在脚本里换上新的 commit 和 SHA-256，并改 `tests/sync-195.helpers.mjs` 的默认目录。页面依赖上游的公开 CDN 脚本，运行时需联网。旧图片匹配记录使用 `tests/fixtures/image-edit-legacy.json`，来自隔离测试的模拟数据。
 
 ## 历史资料
 

@@ -18,8 +18,7 @@ const DEPLOY_ENTRIES = [
     'DB/char-store.js',
     'DB/styles.css',
     'DB/image-module.js',
-    'DB/module-loader.js',
-    'DB/modules/advice-inject.js'
+    'DB/module-loader.js'
 ];
 
 const APP_PATCH_IMPORT = /^import\s*\{\s*patchRpHubAppJs\s*,\s*RpHubAppPatchError\s*,\s*RP_HUB_APP_PATCH_REVISION\s*\}\s*from\s*['"]\.\/DB\/app-patches\.mjs['"]\s*;\s*/;
