@@ -104,11 +104,33 @@ try {
     console.log('PASS composer button writes the advice into history and sends the fixed text once');
     chatBodies.splice(0);
 
+    // 回复末尾带 UI 模板变量块时，RPH 编辑和发请求都会去掉这个块及其后的内容；选项必须插在块前面。
+    await page.evaluate(() => {
+        const history = vm().chatHistory;
+        history[history.length - 1].content = '回复正文\n\n<ui_template_updates>\n[]\n</ui_template_updates>';
+        vm().userInput = '我关上门';
+        document.querySelector('[data-rph-workshop-composer-button="advice-inject"]').click();
+    });
+    await page.waitForFunction(() => api3Probe.events.filter(event => event === 'end').length === 3, null, { timeout: 30000 });
+    const withBlock = await page.evaluate(() => {
+        const index = vm().chatHistory.length - 3;
+        vm().editMessage(index);
+        const message = vm().chatHistory[index];
+        const result = { content: message.content, edit: message.editMessageContent };
+        vm().cancelEditMessage(index);
+        return result;
+    });
+    assert.equal(withBlock.content, '回复正文\n\n<选项>\n我关上门\n<选项/>\n\n<ui_template_updates>\n[]\n</ui_template_updates>');
+    assert.match(withBlock.edit, /<选项>\n我关上门\n<选项\/>/);
+    assert.ok(chatBodies[0].messages.some(m => m.role === 'assistant' && m.content.includes('<选项>\n我关上门\n<选项/>')));
+    console.log('PASS composer advice goes before a UI template update block, so editing and the request keep it');
+    chatBodies.splice(0);
+
     await page.evaluate(base => fetch(base + '/v1/chat/completions', { method: 'POST', body: JSON.stringify({ messages: [
         { role: 'system', content: '你是角色扮演对话的逐轮记忆整理器。' }, { role: 'user', content: '我拔剑冲上去' }] }) }), harness.url);
     assert.equal(chatBodies.length, 1);
     assert.equal(chatBodies[0].messages.length, 2);
-    assert.equal(await page.evaluate(() => api3Probe.handled), 2);
+    assert.equal(await page.evaluate(() => api3Probe.handled), 3);
     console.log('PASS auxiliary requests are not passed to chat handlers');
 
     // 工坊：从分发端目录安装、刷新后运行、发布新版后原地更新；指纹不符的文件拒绝安装。

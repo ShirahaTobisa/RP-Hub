@@ -9,10 +9,17 @@
     };
 
     RPHubSDK.register({
-        id: 'advice-inject', name: '输入转 advice', version: '1.2.1', requiresApi: 4,
+        id: 'advice-inject', name: '输入转 advice', version: '1.2.2', requiresApi: 4,
         init(ctx) {
             const get = key => ctx.storage.get(key) ?? DEFAULTS[key];
             const render = input => get('template').replace('{{input}}', () => input);
+            // 开了 UI 模板时，回复末尾有 <ui_template_updates> 变量块；RPH 编辑消息和发请求时会把这个块连同它后面的内容一起去掉，
+            // 所以 advice 要插在这个块前面，不能直接接在末尾。
+            const withAdvice = (content, input) => {
+                const block = content.search(/<ui_template_updates\b[^>]*>(?![\s\S]*<ui_template_updates\b)/i);
+                const advice = render(input);
+                return block < 0 ? `${content}\n\n${advice}` : `${content.slice(0, block).trimEnd()}\n\n${advice}\n\n${content.slice(block)}`;
+            };
             let writtenToHistory = false;
 
             // 找到含原话的最新用户消息，把原话换成 userSlot，并把 advice 追加到它前面最近的 AI 消息。
@@ -34,7 +41,7 @@
                     return;
                 }
                 messages[userIndex].content = messages[userIndex].content.replace(input, () => get('userSlot'));
-                messages[lastAssistant].content += '\n\n' + render(input);
+                messages[lastAssistant].content = withAdvice(messages[lastAssistant].content, input);
             });
 
             // 「选」按钮：把改写结果写进上一条 AI 回复（随聊天记录保存），输入框换成 userSlot 后发送。
@@ -48,7 +55,7 @@
                     const history = ctx.app.get('chatHistory');
                     const last = history?.[history.length - 1];
                     if (last?.role !== 'assistant' || typeof last.content !== 'string') return ctx.ui.toast('最后一条不是 AI 回复，无法写入');
-                    last.content += '\n\n' + render(input);
+                    last.content = withAdvice(last.content, input);
                     writtenToHistory = true;
                     ctx.app.set('userInput', get('userSlot'));
                     try {
