@@ -379,3 +379,6 @@ textarea.rph-ui-input { min-height: 6rem; resize: vertical; }
 .rph-ui-toast-stack .toast-item { padding: 0.6rem 1.1rem; border: 1px solid var(--c-border, #e5e7eb); border-radius: 999px; background: var(--c-surface, #fff); color: var(--c-text, #111827); box-shadow: 0 8px 22px rgba(15, 23, 42, 0.16); }
 :is(.rph-ui-panel, .rp-sync-modal__panel) .modal-close-button svg { width: 1.25rem; height: 1.25rem; }
 .rph-ui-body p.rph-ui-muted { margin: 0 0 0.75rem; }
+/* RPH 原生提示条是单行的，长消息会被截成省略号；改为自动换行，圆角改成单行时看着仍像药丸、多行时不变形的大小。 */
+.toast-item { border-radius: 1.3rem; }
+.toast-text { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
