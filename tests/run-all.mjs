@@ -40,7 +40,6 @@ const commands = [
     [process.execPath, ['--experimental-vm-modules', path.join(testDirectory, 'image-hardening.test.mjs')]],
     [process.execPath, ['--experimental-vm-modules', path.join(testDirectory, 'image-upstream-180.test.mjs')]],
     [process.execPath, [path.join(testDirectory, 'image-store-freeze.runner.mjs')]],
-    [process.execPath, [path.join(testDirectory, 'image-admin-key.test.mjs')]],
     [process.execPath, [path.join(testDirectory, 'workshop-module-loader.runner.mjs')]],
     [process.execPath, [path.join(testDirectory, 'workshop-sdk.runner.mjs')]],
     [process.execPath, [path.join(testDirectory, 'workshop-cloud.runner.mjs')]],

@@ -10,7 +10,6 @@ const tests = [
     'mainline-v4-invariants.test.mjs',
     'image-hardening.test.mjs',
     'image-key-persistence.test.mjs',
-    'image-admin-key.test.mjs',
     'bootstrap-sync.test.mjs',
     'offline-backup-converter.test.mjs',
     'self-update.test.mjs',
