@@ -8,7 +8,7 @@
     const MAX_WAIT_MS = 10 * 60_000;
 
     RPHubSDK.register({
-        id: 'nai2api-web', name: 'Nai2API 网页任务生图', version: '1.1.0', requiresApi: 5,
+        id: 'nai2api-web', name: 'Nai2API 网页任务生图', version: '1.1.1', requiresApi: 5,
         init(ctx) {
             const base = () => String(ctx.storage.get('base') || DEFAULT_BASE).replace(/\/+$/, '');
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -57,6 +57,29 @@
                     return image.blob();
                 }
             });
+
+            // 测试版 2026.10.11 及以前，设置页的步数滑条按直链 28 步上限建好后才读回数值，存的 50 步会显示成 28。
+            // 选中本接口时由插件自己把上限放到 50、读回存的步数（只改显示，不触发保存）。外壳修好后这里不再起作用。
+            const fixStepsSlider = () => {
+                const fields = document.querySelectorAll('[data-rph-image-param]');
+                const generator = fields[0]?.querySelector('select');
+                const steps = [...fields].map((field) => field.querySelector('input[type="range"]')).find(Boolean);
+                if (!steps || generator?.value !== 'nai2api-web' || steps.dataset.nai2apiSteps) return;
+                steps.dataset.nai2apiSteps = '1';
+                steps.max = '50';
+                const saved = Number(globalThis.RPHubImageModule?.getGenerationSettings?.()?.params?.steps);
+                if (saved) steps.value = String(saved);
+                steps.dispatchEvent(new Event('input'));
+            };
+            let observer = null;
+            ctx.app.watch(() => ctx.app.get('currentView'), (view) => {
+                observer?.disconnect();
+                observer = null;
+                if (view !== 'settings') return;
+                fixStepsSlider();
+                observer = new MutationObserver(fixStepsSlider);
+                observer.observe(document.getElementById('app'), { childList: true, subtree: true });
+            }, { immediate: true });
 
             ctx.ui.addSidebarEntry({
                 label: 'Nai2API 网页任务',

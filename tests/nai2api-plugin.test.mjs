@@ -22,6 +22,7 @@ let provider = null;
 const storage = new Map();
 manifest.init({
     image: { registerProvider(value) { provider = value; } },
+    app: { watch() {}, get() {} },
     storage: { get: (key) => storage.get(key) ?? null, set: (key, value) => storage.set(key, value), remove: (key) => storage.delete(key) },
     ui: { addSidebarEntry() {}, openPanel() {}, toast() {} }
 });
