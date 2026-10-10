@@ -50,7 +50,7 @@ Mod 是由用户在“模块管理”面板通过 URL 或文件导入安装的 J
 | `id` | 必填字符串，必须匹配 `^[a-z0-9-]{3,32}$`；也是存储隔离和卸载清理的身份。 |
 | `name` | 必填、非空字符串；显示在模块管理面板。 |
 | `version` | 必填、非空字符串；loader 不解释版本格式，只负责显示。 |
-| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `4`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`。 |
+| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `5`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`，使用 `ctx.image` 的模块声明 `5`。 |
 | `init(ctx)` | 必填函数；应用启动落定后调用。抛错会隔离为 `init-error`。 |
 
 文件加载后要立刻同步调用 `RPHubSDK.register(manifest)`。模块必须在 3 秒期限内注册，不能
