@@ -620,7 +620,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
 
     // 测试版生图设置（站点 R2 里的 /image/api/settings）：生图参数和所选生图接口。读不到时用原来的固定值。
     const generation = {
-        settings: { generator: 'direct', params: { steps: 28, scale: 6, cfg: 0, sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras', negative: '' } },
+        settings: { generator: 'direct', params: { steps: 28, scale: 6, cfg: 0, sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras', resolution: '', negative: '' } },
         providers: new Map(),
         paramHandlers: new Set()
     };
@@ -650,6 +650,21 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             generate: provider.generate
         });
         window.dispatchEvent(new CustomEvent('rph-image-providers-change'));
+    }
+
+    // 每张图的点数：公式来自 Nai2API README（2026-10-05 对照 NovelAI 官网核对），直链和网页任务共用。
+    const IMAGE_PIXELS = {
+        竖图: [832, 1216], 横图: [1216, 832], 方图: [1024, 1024],
+        '2K竖图': [1088, 1600], '2K横图': [1600, 1088], '2K方图': [1344, 1344],
+        '4K竖图': [1344, 1984], '4K横图': [1984, 1344], '4K方图': [1728, 1728]
+    };
+    function estimateImagePoints(model, size, steps) {
+        const [width, height] = IMAGE_PIXELS[size] || IMAGE_PIXELS.竖图;
+        const pixels = width * height;
+        const v5 = String(model || '').includes('diffusion-5');
+        if (steps <= 28 && pixels <= 1024 * 1024) return v5 ? 8 : 1;
+        const base = Math.ceil(0.000002951823174884865 * pixels + 0.0000005753298233447344 * pixels * steps);
+        return v5 ? Math.max(2, Math.ceil(base * 1.5)) : Math.max(2, base);
     }
 
     // 生图前改参数：只影响之后的新图，已生成的图锁住生成时的参数。
@@ -699,7 +714,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             artist: String(targetArtists || '').slice(0, 2500),
             styleKey,
             styleName,
-            size: settings.imageSize || '竖图',
+            size: `${params.resolution || ''}${settings.imageSize || '竖图'}`,
             steps: String(params.steps ?? 28),
             scale: String(params.scale ?? 6),
             cfg: String(params.cfg ?? 0),
@@ -2562,6 +2577,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         getGenerationSettings: () => structuredClone(generation.settings),
         reloadGenerationSettings,
         defaultNegativePrompt: IMAGE_GEN_NEGATIVE_PROMPT,
+        estimateImagePoints,
         getPerformanceCounters: () => readPerformanceCounters(),
         resetPerformanceCounters: (options = {}) => resetPerformanceCounters(options),
         setPerformanceRowDetailsEnabled: (enabled) => {
@@ -2580,7 +2596,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
     const CHECK_KEY = 'rph_image_storage_checked_at';
     const DAY_MS = 86_400_000;
     const FIELD_ATTR = 'data-rph-image-param';
-    const SAMPLERS = ['k_euler', 'k_euler_ancestral', 'k_dpmpp_2s_ancestral', 'k_dpmpp_2m', 'k_dpmpp_2m_sde', 'k_dpmpp_sde', 'ddim_v3'];
+    const SAMPLERS = ['k_euler', 'k_euler_ancestral', 'k_dpmpp_2s_ancestral', 'k_dpmpp_2m', 'k_dpmpp_2m_sde', 'k_dpmpp_sde'];
     const NOISE_SCHEDULES = ['karras', 'native', 'exponential', 'polyexponential'];
     const BADGE_CLASS = 'text-xs font-mono font-bold text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1 whitespace-nowrap';
     const RANGE_CLASS = 'compact-range w-full h-1.5 bg-primary-100 rounded-lg appearance-none cursor-pointer accent-primary-500';
@@ -2652,6 +2668,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         const generator = select([['direct', '直链（最高 28 步）']]);
         const sampler = select(SAMPLERS.map((value) => [value, value]));
         const noise = select(NOISE_SCHEDULES.map((value) => [value, value]));
+        const resolution = select([['', '标准'], ['2K', '2K'], ['4K', '4K']]);
         const steps = slider('生成步数', { min: 1, max: 28, step: 1, unit: ' 步' });
         const scale = slider('提示词引导值', { min: 0, max: 10, step: 0.1 });
         const cfg = slider('缩放引导值', { min: 0, max: 1, step: 0.02 });
@@ -2681,14 +2698,21 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             steps.input.max = String(provider?.maxSteps || 28);
             if (Number(steps.input.value) > Number(steps.input.max)) steps.input.value = steps.input.max;
             [steps, scale, cfg].forEach((item) => item.show());
+            const app = appProxy()?.settings || {};
+            const query = { steps: Number(steps.input.value), sampler: sampler.value, model: app.imageModel, size: `${resolution.value}${app.imageSize || '竖图'}` };
             let cost = '';
-            try { cost = provider?.costHint?.({ steps: Number(steps.input.value), sampler: sampler.value }) || ''; } catch (_) { cost = ''; }
-            steps.hint.textContent = cost || (provider ? '' : '直链接口最高按 28 步生成。');
+            try { cost = provider?.costHint?.(query) || ''; } catch (_) { cost = ''; }
+            if (!cost && !provider) {
+                const points = imageModule()?.estimateImagePoints?.(query.model, query.size, Math.min(28, query.steps));
+                cost = `直链最高按 28 步生成${points ? `，当前设置每张图约 ${points} 点` : ''}。`;
+            }
+            steps.hint.textContent = cost;
         };
 
         generator.value = settings.generator || 'direct';
         sampler.value = params.sampler || 'k_dpmpp_2m_sde';
         noise.value = params.noise_schedule || 'karras';
+        resolution.value = params.resolution || '';
         steps.input.value = String(params.steps ?? 28);
         scale.input.value = String(params.scale ?? 6);
         cfg.input.value = String(params.cfg ?? 0);
@@ -2706,7 +2730,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                     generator: generator.value,
                     params: {
                         steps: Number(steps.input.value), scale: Number(scale.input.value), cfg: Number(cfg.input.value),
-                        sampler: sampler.value, noise_schedule: noise.value,
+                        sampler: sampler.value, noise_schedule: noise.value, resolution: resolution.value,
                         negative: negative.value.trim() === defaultNegative.trim() ? '' : negative.value
                     }
                 };
@@ -2719,10 +2743,10 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                 }
             }, 400);
         };
-        for (const control of [generator, sampler, noise, negative, steps.input, scale.input, cfg.input]) control.addEventListener('change', save);
+        for (const control of [generator, resolution, sampler, noise, negative, steps.input, scale.input, cfg.input]) control.addEventListener('change', save);
         resetNegative.addEventListener('click', () => { negative.value = imageModule()?.defaultNegativePrompt || ''; save(); });
         window.addEventListener('rph-image-providers-change', () => { fillProviders(); refresh(); });
-        grid.append(cell('生图接口', generator), cell('采样器', sampler), cell('噪声调度', noise), steps.wrap, scale.wrap, cfg.wrap, negativeCell, status);
+        grid.append(cell('生图接口', generator), cell('分辨率', resolution), cell('采样器', sampler), cell('噪声调度', noise), steps.wrap, scale.wrap, cfg.wrap, negativeCell, status);
     }
 
     function ensureFields() {

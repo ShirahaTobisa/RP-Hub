@@ -171,7 +171,7 @@ ctx.requests.onChat(body => {
 - `registerProvider({ id, label, maxSteps, costHint, generate })`：注册一个生图接口。它会出现在 RPH「设置」→「生图设置」→「生图接口」里；用户选中后，每张新图都由插件生成：
   - `generate({ params, token })` 返回图片 `Blob`（PNG、JPEG、WebP、AVIF 或 GIF）。`params` 是这张图的全部生图参数（`tag`、`model`、`artist`、`size`、`steps`、`scale`、`cfg`、`sampler`、`negative`、`noise_schedule`、`seed` 等），`token` 是用户的生图密钥。
   - 生成好的图由外壳上传到站点 R2，存放位置按参数计算，和直链生图相同；插件不能指定位置。
-  - `maxSteps`（1–50）决定设置页步数滑条的上限；`costHint({ steps })` 可返回一句计费提示，显示在滑条下面。
+  - `maxSteps`（1–50）决定设置页步数滑条的上限；`costHint({ steps, model, size })` 可返回一句计费提示，显示在滑条下面；`size` 已含分辨率，如 `2K竖图`。按 Nai2API 价格估算点数可直接用 `RPHubImageModule.estimateImagePoints(model, size, steps)`。
   - `id` 用 3～32 位小写字母、数字或短横线；用户选了某个接口但对应插件没加载时，生图会报错提示，不会悄悄改走直链。
 - `onParams(handler)`：每张新图生成参数前调用，可以直接修改传入的参数对象（如按角色换画师、追加负面词），只能改 `tag`、`artist`、`negative`、`size`、`steps`、`scale`、`cfg`、`sampler`、`noise_schedule`。已经生成的图锁住生成时的参数，不受影响。返回取消订阅的函数。
 

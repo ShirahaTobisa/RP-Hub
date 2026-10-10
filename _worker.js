@@ -977,13 +977,15 @@ async function writeImageTombstone(bucket, object, reason = 'manual-delete') {
 
 // ---- 测试版生图设置（存在 R2，不进 RPH 设置数据）与 R2 存储管理 ----
 const IMAGE_SETTINGS_KEY = `${IMAGE_PREFIX}/_settings.json`;
-const IMAGE_SAMPLERS = ['k_euler', 'k_euler_ancestral', 'k_dpmpp_2s_ancestral', 'k_dpmpp_2m', 'k_dpmpp_2m_sde', 'k_dpmpp_sde', 'ddim_v3'];
+const IMAGE_SAMPLERS = ['k_euler', 'k_euler_ancestral', 'k_dpmpp_2s_ancestral', 'k_dpmpp_2m', 'k_dpmpp_2m_sde', 'k_dpmpp_sde'];
+// 分辨率和 RPH 的「生图比例」拼成尺寸名，如「2K竖图」；上游 2026-08-21 删掉了 2K/4K 选项，这里补回。
+const IMAGE_RESOLUTIONS = ['', '2K', '4K'];
 const IMAGE_NOISE_SCHEDULES = ['karras', 'native', 'exponential', 'polyexponential'];
 // generator：'direct' 是现在的直链；其他值是生图插件注册的接口 id。负面提示词留空表示用生图模块自带的默认值。
 const IMAGE_SETTINGS_DEFAULTS = Object.freeze({
     storageLimitGb: 9,
     generator: 'direct',
-    params: Object.freeze({ steps: 28, scale: 6, cfg: 0, sampler: IMAGE_DEFAULT_SAMPLER, noise_schedule: 'karras', negative: '' })
+    params: Object.freeze({ steps: 28, scale: 6, cfg: 0, sampler: IMAGE_DEFAULT_SAMPLER, noise_schedule: 'karras', resolution: '', negative: '' })
 });
 const R2_FREE_BYTES = 10 * 1024 ** 3;
 const STORAGE_CLEANUP_BATCH = 300;
@@ -1010,6 +1012,7 @@ function normalizeImageSettings(value = {}) {
             cfg: clampNumber(params.cfg, 0, 1, defaults.cfg, 2),
             sampler: IMAGE_SAMPLERS.includes(params.sampler) ? params.sampler : defaults.sampler,
             noise_schedule: IMAGE_NOISE_SCHEDULES.includes(params.noise_schedule) ? params.noise_schedule : defaults.noise_schedule,
+            resolution: IMAGE_RESOLUTIONS.includes(params.resolution) ? params.resolution : defaults.resolution,
             negative: typeof params.negative === 'string' ? params.negative.slice(0, 2000) : defaults.negative
         }
     };

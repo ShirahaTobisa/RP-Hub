@@ -35,11 +35,11 @@ const call = async (path, init = {}) => {
 };
 
 let result = await call('/image/api/settings');
-assert.deepEqual(result.body.settings, { storageLimitGb: 9, generator: 'direct', params: { steps: 28, scale: 6, cfg: 0, sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras', negative: '' } });
-result = await call('/image/api/settings', { method: 'PUT', body: JSON.stringify({ storageLimitGb: 0.001, generator: 'nai2api-web', params: { steps: 99, scale: 7.25, sampler: 'bogus' } }) });
+assert.deepEqual(result.body.settings, { storageLimitGb: 9, generator: 'direct', params: { steps: 28, scale: 6, cfg: 0, sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras', resolution: '', negative: '' } });
+result = await call('/image/api/settings', { method: 'PUT', body: JSON.stringify({ storageLimitGb: 0.001, generator: 'nai2api-web', params: { steps: 99, scale: 7.25, sampler: 'bogus', resolution: '8K' } }) });
 assert.equal(result.body.settings.storageLimitGb, 9, 'a limit that rounds to 0 would plan deleting every image');
 assert.equal(result.body.settings.generator, 'nai2api-web');
-assert.deepEqual(result.body.settings.params, { steps: 50, scale: 7.3, cfg: 0, sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras', negative: '' });
+assert.deepEqual(result.body.settings.params, { steps: 50, scale: 7.3, cfg: 0, sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras', resolution: '', negative: '' });
 result = await call('/image/api/settings', { method: 'PUT', body: JSON.stringify({ params: { steps: 35 } }) });
 assert.equal(result.body.settings.params.steps, 35);
 assert.equal(result.body.settings.params.scale, 7.3, 'saving one parameter keeps the others');
