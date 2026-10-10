@@ -1635,16 +1635,21 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             || row?.getAttribute?.('data-rph-character-uuid')
             || ''
         );
-        let value = await resolveCharacterAttribution(row, catalog, scanReads);
-        let verdictCatalog = catalog;
-        if (!value?.uuid || value.source !== 'active-character') {
-            verdictCatalog = await readCharacterCatalog({ forVerdict: true });
-            value = await resolveCharacterAttribution(row, verdictCatalog, new Map(), { forceForVerdict: true });
-        }
-        if (!explicitUuid) {
-            const rescue = resolveRuntimeAttribution(row, verdictCatalog);
-            if (rescue?.retry) return rescue;
-            if (rescue?.uuid && rescue.uuid !== value?.uuid) value = rescue;
+        // 先看页面当前状态（当前角色 + 这条消息在聊天里的位置），最快也最准；读不到时才翻页面标题和本地聊天记录兜底。
+        let value = explicitUuid ? null : resolveRuntimeAttribution(row, catalog);
+        if (value?.retry) return value;
+        if (!value?.uuid) {
+            value = await resolveCharacterAttribution(row, catalog, scanReads);
+            let verdictCatalog = catalog;
+            if (!value?.uuid || value.source !== 'active-character') {
+                verdictCatalog = await readCharacterCatalog({ forVerdict: true });
+                value = await resolveCharacterAttribution(row, verdictCatalog, new Map(), { forceForVerdict: true });
+            }
+            if (!explicitUuid) {
+                const rescue = resolveRuntimeAttribution(row, verdictCatalog);
+                if (rescue?.retry) return rescue;
+                if (rescue?.uuid) value = rescue;
+            }
         }
         state.rowAttributionCache.set(row, {
             revision: getRowRevision(row),
