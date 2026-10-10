@@ -124,7 +124,7 @@ async function device(seed, mobile = false) {
     await page.evaluate(async ({seed,uuid}) => {
         localStorage.setItem('roleplay_hub_update_id','999999999');
         localStorage.setItem('rp_hub_sync_password_v1','isolated-image-edit');
-        const character = {uuid,name:'测试角色',description:'隔离验收',first_mes:'准备完成',worldInfo:[],regexScripts:[],uiTemplates:[]};
+        const character = {uuid,name:'测试角色',description:'隔离验收',first_mes:'准备完成',worldInfo:[],regexScripts:seed.regexScripts||[],uiTemplates:[]};
         const user = {uuid:'fixture-user',name:'隔离用户',person:'second'};
         const db = await fixture.db();
         await fixture.write(db, [
@@ -235,6 +235,20 @@ try {
         await edit(page,'换提示词\nimage###a different prompt###');
         assert.equal(await frame(page).locator('img').count(),0);
         passed('changed prompt has a generation entry and does not reuse old image');
+    }
+    // 美化正则只改显示文字，让页面上的生图标记和原文对不上：仍要认出是当前角色，不报错、不发生图请求。
+    {
+        const old = oldRuns.cases.find(item => item.host !== 'package-0901');
+        const expected = canonical(old.before.imageUrl);
+        const beforePosts = posts();
+        const page = await device({ content: edited, records: old.after.records,
+            regexScripts: [{ name: '美化', regex: '/white clouds/g', replacement: '白云', placement: [2], markdownOnly: true, promptOnly: false, enabled: true }] });
+        await page.waitForTimeout(1500);
+        await frame(page).first().waitFor();
+        assert.equal(await frame(page).first().getAttribute('data-character-uuid'), uuid);
+        assert.equal(posts(), beforePosts);
+        assert.equal(await page.locator('.toast-item', { hasText: '无法确认图片所属角色' }).count(), 0);
+        passed('display-only regex that rewrites the image prompt still attributes the row without errors or generation');
     }
     assert.deepEqual(report.pageErrors,[]);
     report.ok = true;
