@@ -13,6 +13,7 @@ const tests = [
     'bootstrap-sync.test.mjs',
     'offline-backup-converter.test.mjs',
     'self-update.test.mjs',
+    'image-storage.test.mjs',
     'update-notice.test.mjs',
     'static-cache.test.mjs'
 ];

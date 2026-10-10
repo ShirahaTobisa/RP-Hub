@@ -723,7 +723,10 @@ async function handleImageRender(request, env) {
     }
     assertImageTokenProvider(primary.params, token);
 
-    const upstreamResponse = await fetchImageWithTimeout(buildImageUpstreamUrl(primary.params, token, env));
+    const imageSettings = await readImageSettings(bucket);
+    const upstreamResponse = imageSettings.mode === 'web'
+        ? await fetchWebJobImage(primary.params, token, env, imageSettings.steps)
+        : await fetchImageWithTimeout(buildImageUpstreamUrl(primary.params, token, env));
     if (!upstreamResponse.ok) {
         return error(`生图服务返回异常：HTTP ${upstreamResponse.status}`, upstreamResponse.status);
     }
@@ -947,6 +950,155 @@ async function writeImageTombstone(bucket, object, reason = 'manual-delete') {
     );
 }
 
+// ---- 测试版生图设置（存在 R2，不进 RPH 设置数据）与 R2 存储管理 ----
+const IMAGE_SETTINGS_KEY = `${IMAGE_PREFIX}/_settings.json`;
+const IMAGE_SETTINGS_DEFAULTS = Object.freeze({ mode: 'direct', steps: 28, storageLimitGb: 9 });
+const R2_FREE_BYTES = 10 * 1024 ** 3;
+// 免费版 Worker 每次请求最多向外发 50 个请求：1 次提交 + 最多 40 次查询 + 1 次取图。
+const WEB_JOB_MAX_POLLS = 40;
+const STORAGE_CLEANUP_BATCH = 300;
+
+function normalizeImageSettings(value = {}) {
+    const steps = Math.round(Number(value.steps));
+    // 上限至少 0.1 GB：填 0 或太小的数会把所有图都列进清理计划，按无效处理。
+    const limit = Math.round(Number(value.storageLimitGb) * 10) / 10;
+    return {
+        mode: value.mode === 'web' ? 'web' : 'direct',
+        steps: Number.isFinite(steps) ? Math.min(50, Math.max(1, steps)) : IMAGE_SETTINGS_DEFAULTS.steps,
+        storageLimitGb: Number.isFinite(limit) && limit >= 0.1 ? Math.min(1024, limit) : IMAGE_SETTINGS_DEFAULTS.storageLimitGb
+    };
+}
+
+async function readImageSettings(bucket) {
+    const object = await bucket.get(IMAGE_SETTINGS_KEY);
+    if (!object) return { ...IMAGE_SETTINGS_DEFAULTS };
+    try {
+        return normalizeImageSettings(JSON.parse(await object.text()));
+    } catch (_) {
+        return { ...IMAGE_SETTINGS_DEFAULTS };
+    }
+}
+
+async function writeImageSettings(bucket, value) {
+    const settings = normalizeImageSettings(value);
+    await bucket.put(IMAGE_SETTINGS_KEY, JSON.stringify(settings), {
+        httpMetadata: { contentType: 'application/json; charset=utf-8' }
+    });
+    return settings;
+}
+
+const STORAGE_CATEGORIES = [
+    [`${IMAGE_OBJECT_PREFIX}/`, 'images', '生成的图片'],
+    [`${IMAGE_THUMB_PREFIX}/`, 'thumbs', '缩略图'],
+    [`${IMAGE_PREFIX}/`, 'imageMeta', '生图记录'],
+    ['rp-sync/', 'sync', '云同步数据'],
+    [`${APP_UPDATE_PREFIX}/`, 'appUpdate', '在线更新的页面']
+];
+
+// 统计整个存储桶；清理计划从最旧的图开始，连同缩略图一起算，直到总量回到上限以下。
+async function buildStorageReport(bucket) {
+    const categories = new Map(STORAGE_CATEGORIES.map(([, id, label]) => [id, { id, label, bytes: 0, count: 0 }]));
+    categories.set('other', { id: 'other', label: '其他', bytes: 0, count: 0 });
+    const images = [];
+    const thumbSizes = new Map();
+    let totalBytes = 0;
+    let cursor;
+    do {
+        const page = await bucket.list({ cursor, limit: 1000 });
+        for (const object of page.objects || []) {
+            const size = Number(object.size || 0);
+            totalBytes += size;
+            const id = STORAGE_CATEGORIES.find(([prefix]) => object.key.startsWith(prefix))?.[1] || 'other';
+            const category = categories.get(id);
+            category.bytes += size;
+            category.count += 1;
+            if (id === 'images' && parseImageObjectKey(object.key)) {
+                images.push({ key: object.key, size, uploaded: object.uploaded ? new Date(object.uploaded).getTime() : 0 });
+            } else if (id === 'thumbs') {
+                thumbSizes.set(object.key, size);
+            }
+        }
+        cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    const settings = await readImageSettings(bucket);
+    const limitBytes = settings.storageLimitGb * 1024 ** 3;
+    const keys = [];
+    let freed = 0;
+    for (const image of images.sort((a, b) => a.uploaded - b.uploaded)) {
+        if (totalBytes - freed <= limitBytes) break;
+        keys.push(image.key);
+        freed += image.size + (thumbSizes.get(createImageThumbKeyFromImageKey(image.key)) || 0);
+    }
+    return {
+        ok: true,
+        totalBytes,
+        totalHuman: formatBytes(totalBytes),
+        freeBytes: R2_FREE_BYTES,
+        limitBytes,
+        limitHuman: formatBytes(limitBytes),
+        over: totalBytes > limitBytes,
+        categories: [...categories.values()].map((item) => ({ ...item, human: formatBytes(item.bytes) })),
+        cleanup: { keys, count: keys.length, bytes: freed, human: formatBytes(freed), enough: totalBytes - freed <= limitBytes }
+    };
+}
+
+// 按清理计划删除一批最旧的图（写删除记录，聊天里显示“已删除”而不是重新生成）；剩下的由前端继续调用。
+async function runStorageCleanup(bucket) {
+    const report = await buildStorageReport(bucket);
+    const batch = new Set(report.cleanup.keys.slice(0, STORAGE_CLEANUP_BATCH));
+    const objects = (await listImageObjects(bucket)).filter((object) => batch.has(object.key));
+    let deletedBytes = 0;
+    for (const object of objects) {
+        await writeImageTombstone(bucket, object, 'storage-cleanup');
+        deletedBytes += object.size;
+    }
+    const keys = objects.flatMap((object) => object.thumbKey ? [object.key, object.thumbKey] : [object.key]);
+    for (let index = 0; index < keys.length; index += 1000) await bucket.delete(keys.slice(index, index + 1000));
+    return {
+        ok: true,
+        deletedCount: objects.length,
+        deletedHuman: formatBytes(deletedBytes),
+        remaining: Math.max(0, report.cleanup.count - objects.length)
+    };
+}
+
+// 网页任务接口（Nai2API 的 POST /api/web/jobs）：支持 1–50 步；超过 28 步按官方价格计费。
+async function fetchWebJobImage(params, token, env, steps) {
+    if (!params.tag) throw createHttpError('缺少生图提示词。', 400);
+    const base = getImageProviderOverride(params, env) || getImageProviderBase(params.provider, token);
+    const auth = { authorization: `Bearer ${token}`, 'user-agent': 'RPH-R2-Image-Cache' };
+    const body = {
+        tag: params.tag, model: params.model, artist: params.artist || '', size: params.size, steps,
+        scale: params.scale, cfg: params.cfg, sampler: params.sampler, negative: params.negative || '',
+        nocache: params.nocache, noise_schedule: params.noise_schedule
+    };
+    if (params.reroll_nonce) body.reroll_nonce = params.reroll_nonce;
+    for (const [key, value] of params.extra_params || []) body[key] = value;
+    const readJob = async (response) => {
+        const value = await response.json().catch(() => null);
+        if (!response.ok || !value?.id) {
+            const status = response.status === 404 ? 502 : response.status || 502;
+            const reason = response.status === 404 ? '该生图服务不支持网页任务接口' : (value?.error || value?.message || `HTTP ${response.status}`);
+            throw createHttpError(`网页任务失败：${reason}`, status);
+        }
+        return value;
+    };
+    let job = await readJob(await fetch(new URL('/api/web/jobs', base), {
+        method: 'POST',
+        headers: { ...auth, 'content-type': 'application/json' },
+        body: JSON.stringify(body)
+    }));
+    for (let poll = 0; job.status !== 'done' && poll < WEB_JOB_MAX_POLLS; poll += 1) {
+        if (job.status === 'failed') throw createHttpError(`网页任务失败：${job.error || '生成失败'}`, 502);
+        await new Promise((resolve) => setTimeout(resolve, poll < 10 ? 3000 : 6000));
+        job = await readJob(await fetch(new URL(`/api/jobs/${encodeURIComponent(job.id)}`, base), { headers: auth }));
+    }
+    if (job.status !== 'done') throw createHttpError('网页任务等待超时，请稍后重试。', 504);
+    return fetch(new URL(`/api/jobs/${encodeURIComponent(job.id)}/content`, base), {
+        headers: { ...auth, accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif' }
+    });
+}
+
 function imageAdminHtml() {
     return new Response(`<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>角色图片管理</title>
@@ -973,6 +1125,7 @@ button,input,a{font:inherit;color:inherit}.hidden{display:none!important}svg{wid
 :root{--eye-off:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24M1 1l22 22'/%3E%3C/svg%3E")}
 .check{position:absolute;top:7px;right:7px;width:20px;height:20px;border-radius:50%;border:2px solid #fff;background:rgba(0,0,0,.25);box-shadow:0 1px 4px rgba(0,0,0,.3);display:none}.selecting .check{display:block}.photo.selected{box-shadow:0 0 0 3px var(--accent) inset}.photo.selected .check{background:var(--accent)}.photo.selected .check::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:10px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
 .empty{padding:70px 20px;text-align:center;color:var(--muted)}
+.storage{grid-column:1/-1;max-width:720px}.storage h3{margin:18px 0 10px;font-size:13px}.meter{position:relative;height:12px;border-radius:999px;background:var(--raised);overflow:hidden}.meter-bar{height:100%;border-radius:inherit;background:var(--accent)}.meter-bar.over{background:var(--danger)}.meter-limit{position:absolute;top:0;bottom:0;width:3px;background:var(--text)}.meter-text{margin-top:8px;color:var(--muted)}.big{font-size:22px;font-weight:700;color:var(--text)}.cat{display:grid;grid-template-columns:110px minmax(0,1fr) 90px;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line)}.cat .meter{height:8px}.cat-size{text-align:right;color:var(--muted)}.cleanup{margin-top:18px;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}.cleanup p{margin:0 0 10px}
 .select-bar{position:fixed;left:calc(50% + 120px);bottom:18px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;padding:8px 8px 8px 16px;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:0 10px 30px -12px rgba(0,0,0,.35);z-index:5;white-space:nowrap}
 .viewer{position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:rgba(10,10,14,.94)}.viewer img{max-width:calc(100vw - 140px);max-height:calc(100vh - 100px);object-fit:contain;border-radius:6px;user-select:none}.viewer-top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;color:#ddd}.viewer-top .btn{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.14);color:#fff}.viewer-top .btn.danger{color:#ff9d9d}
 .nav{position:absolute;top:50%;width:44px;height:44px;margin-top:-22px;border:0;border-radius:50%;background:rgba(255,255,255,.1);color:#fff;font-size:26px;cursor:pointer}.nav:hover{background:rgba(255,255,255,.2)}.nav:disabled{opacity:.2;cursor:default}.prev{left:14px}.next{right:14px}
@@ -994,7 +1147,7 @@ button,input,a{font:inherit;color:inherit}.hidden{display:none!important}svg{wid
 <section id="viewer" class="viewer hidden"><div class="viewer-top"><span id="viewerInfo"></span><div class="actions"><a id="viewerDownload" class="btn" download>下载</a><button id="viewerDelete" class="btn danger">删除</button><button id="closeViewer" class="btn">关闭</button></div></div><button id="prev" class="nav prev" aria-label="上一张">‹</button><img id="viewerImage" alt=""><button id="next" class="nav next" aria-label="下一张">›</button></section>
 <div id="dialog" class="dialog hidden"><div class="dialog-box" role="dialog" aria-modal="true"><h3 id="dialogTitle"></h3><p id="dialogText"></p><div class="dialog-actions"><button id="dialogCancel" class="btn">取消</button><button id="dialogOk" class="btn danger-fill">删除</button></div></div></div>
 <script>
-var passwordStorageKey='rp_hub_sync_password_v1',themeStorageKey='rphub-appearance',blurStorageKey='rph_image_admin_blur',ALL='__all__',BATCH=60,EXPORT_WARN_BYTES=500*1024*1024;
+var passwordStorageKey='rp_hub_sync_password_v1',themeStorageKey='rphub-appearance',blurStorageKey='rph_image_admin_blur',ALL='__all__',STORAGE='__storage__',BATCH=60,EXPORT_WARN_BYTES=500*1024*1024;
 function $(id){return document.getElementById(id);}
 var passwordInput=$('password'),authBox=$('auth'),appBox=$('app'),authMsg=$('authMsg'),stats=$('stats'),notice=$('notice'),filter=$('filter'),characters=$('characters'),gallery=$('gallery'),groupTitle=$('groupTitle'),groupMeta=$('groupMeta'),selectBar=$('selectBar'),selectCount=$('selectCount'),deleteSelectedButton=$('deleteSelected'),viewer=$('viewer'),viewerImage=$('viewerImage'),viewerInfo=$('viewerInfo'),viewerDownload=$('viewerDownload'),blurToggle=$('blurToggle'),exportButton=$('exportZip');
 var data=null,current=ALL,selecting=false,selected=new Set(),shown=0,viewIndex=-1,thumbQueue=[],thumbBusy=0,exporting=false;
@@ -1014,14 +1167,14 @@ function setNotice(s,b){notice.textContent=s||'';notice.classList.toggle('error'
 function groups(){return (data&&data.characters)||[];}
 function allImages(){var list=[];groups().forEach(function(g){g.images.forEach(function(img){list.push(img);});});return list.sort(function(a,b){return String(b.uploaded).localeCompare(String(a.uploaded));});}
 var cachedAll=null;
-function images(){if(current===ALL)return cachedAll||(cachedAll=allImages());var list=groups();for(var i=0;i<list.length;i++)if(list[i].id===current)return list[i].images;return [];}
-function viewName(){if(current===ALL)return '全部图片';var g=groups().filter(function(x){return x.id===current;})[0];return g?g.name:'';}
+function images(){if(current===STORAGE)return [];if(current===ALL)return cachedAll||(cachedAll=allImages());var list=groups();for(var i=0;i<list.length;i++)if(list[i].id===current)return list[i].images;return [];}
+function viewName(){if(current===STORAGE)return '存储空间';if(current===ALL)return '全部图片';var g=groups().filter(function(x){return x.id===current;})[0];return g?g.name:'';}
 function renderStats(){var all=allImages();stats.textContent=all.length+' 张图片 / '+fmt(sum(all));}
-function renderCharacters(){var q=filter.value.trim().toLowerCase(),list=groups().filter(function(g){return !q||String(g.name||'').toLowerCase().indexOf(q)>=0;});var html='<button class="char'+(current===ALL?' active':'')+'" data-group="'+ALL+'"><span class="avatar"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></span><span class="char-name">全部图片</span><span class="char-count">'+allImages().length+'</span></button>';html+=list.map(function(g){return '<button class="char'+(g.id===current?' active':'')+'" data-group="'+esc(g.id)+'" title="'+esc(g.name)+'"><span class="avatar">'+esc(String(g.name||'?').replace(/^[“"'「『【[(（]+/,'').slice(0,1)||'?')+'</span><span class="char-name">'+esc(g.name)+'</span><span class="char-count">'+g.images.length+'</span></button>';}).join('');if(q&&!list.length)html+='<div class="empty">没有匹配的角色</div>';characters.innerHTML=html;}
-function renderHead(){var list=images();groupTitle.textContent=viewName();groupMeta.textContent=list.length+' 张 · '+fmt(sum(list));exportButton.disabled=!list.length||exporting;$('selectMode').disabled=!list.length;}
+function renderCharacters(){var q=filter.value.trim().toLowerCase(),list=groups().filter(function(g){return !q||String(g.name||'').toLowerCase().indexOf(q)>=0;});var html='<button class="char'+(current===ALL?' active':'')+'" data-group="'+ALL+'"><span class="avatar"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></span><span class="char-name">全部图片</span><span class="char-count">'+allImages().length+'</span></button><button class="char'+(current===STORAGE?' active':'')+'" data-group="'+STORAGE+'"><span class="avatar"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span><span class="char-name">存储空间</span><span class="char-count"></span></button>';html+=list.map(function(g){return '<button class="char'+(g.id===current?' active':'')+'" data-group="'+esc(g.id)+'" title="'+esc(g.name)+'"><span class="avatar">'+esc(String(g.name||'?').replace(/^[“"'「『【[(（]+/,'').slice(0,1)||'?')+'</span><span class="char-name">'+esc(g.name)+'</span><span class="char-count">'+g.images.length+'</span></button>';}).join('');if(q&&!list.length)html+='<div class="empty">没有匹配的角色</div>';characters.innerHTML=html;}
+function renderHead(){var list=images(),storage=current===STORAGE;groupTitle.textContent=viewName();groupMeta.textContent=storage?'R2 存储桶用量与清理':list.length+' 张 · '+fmt(sum(list));[blurToggle,exportButton,$('selectMode')].forEach(function(b){b.classList.toggle('hidden',storage);});exportButton.disabled=!list.length||exporting;$('selectMode').disabled=!list.length;}
 function tile(img,index){return '<button class="photo'+(selected.has(img.key)?' selected':'')+'" data-index="'+index+'"><img loading="lazy" decoding="async" src="'+esc(img.hasThumb?thumbUrl(img.key):imgUrl(img.key))+'" alt=""'+(img.hasThumb?'':' data-needs-thumb="1"')+'>'+(current===ALL?'<span class="photo-owner">'+esc(img.characterName)+'</span>':'')+'<span class="photo-size">'+esc(img.sizeHuman)+'</span><span class="check"></span></button>';}
 function appendBatch(){var list=images();if(shown>=list.length)return;var html='',end=Math.min(list.length,shown+BATCH);for(var i=shown;i<end;i++)html+=tile(list[i],i);shown=end;gallery.insertAdjacentHTML('beforeend',html);}
-function renderGallery(){shown=0;gallery.innerHTML='';renderHead();if(!images().length){gallery.innerHTML='<div class="empty">'+(groups().length?'这里没有图片':'还没有图片')+'</div>';return;}appendBatch();}
+function renderGallery(){shown=0;gallery.innerHTML='';renderHead();if(current===STORAGE){renderStorage();return;}if(!images().length){gallery.innerHTML='<div class="empty">'+(groups().length?'这里没有图片':'还没有图片')+'</div>';return;}appendBatch();}
 function selectGroup(id){current=id;setSelecting(false);document.body.classList.add('show-main');renderCharacters();renderGallery();$('scroll').scrollTop=0;}
 function syncSelectBar(){$('selectMode').classList.toggle('on',selecting);selectBar.classList.toggle('hidden',!selecting);selectCount.textContent='已选 '+selected.size+' 张';deleteSelectedButton.disabled=!selected.size;gallery.classList.toggle('selecting',selecting);}
 function setSelecting(on){selecting=on;selected.clear();gallery.querySelectorAll('.photo.selected').forEach(function(n){n.classList.remove('selected');});syncSelectBar();}
@@ -1039,6 +1192,9 @@ function fileName(img,index){var ext=(String(img.contentType||'').split('/')[1]|
 var crcTable=null;function crc32(bytes){if(!crcTable){crcTable=new Uint32Array(256);for(var n=0;n<256;n++){var c=n;for(var k=0;k<8;k++)c=c&1?0xedb88320^(c>>>1):c>>>1;crcTable[n]=c>>>0;}}var crc=0xffffffff;for(var i=0;i<bytes.length;i++)crc=crcTable[(crc^bytes[i])&255]^(crc>>>8);return (crc^0xffffffff)>>>0;}
 function safePart(s){return String(s||'未命名').replace(/[<>:"|?*]/g,'_').replace(/[\\/]/g,'_').trim().slice(0,80)||'未命名';}
 async function exportZip(){var list=images().slice();if(!list.length||exporting)return;var total=sum(list);if(total>EXPORT_WARN_BYTES&&!await ask('导出 '+fmt(total),'图片较多，打包会占用较多内存，手机上可能失败。建议按角色分别导出。仍要继续吗？','继续',false))return;exporting=true;renderHead();var parts=[],central=[],offset=0,enc=new TextEncoder(),now=new Date(),dosTime=(now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1),dosDate=((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate(),counters={};try{for(var i=0;i<list.length;i++){var img=list[i];setNotice('正在打包 '+(i+1)+' / '+list.length+'…');var res=await fetch(imgUrl(img.key),{headers:{'x-rp-sync-password':pass()}});if(!res.ok)throw new Error('第 '+(i+1)+' 张下载失败：HTTP '+res.status);var bytes=new Uint8Array(await res.arrayBuffer()),folder=safePart(img.characterName);counters[folder]=(counters[folder]||0)+1;var name=enc.encode((current===ALL?folder+'/':'')+fileName(img,counters[folder]-1)),crc=crc32(bytes),head=new DataView(new ArrayBuffer(30));head.setUint32(0,0x04034b50,true);head.setUint16(4,20,true);head.setUint16(6,0x0800,true);head.setUint16(10,dosTime,true);head.setUint16(12,dosDate,true);head.setUint32(14,crc,true);head.setUint32(18,bytes.length,true);head.setUint32(22,bytes.length,true);head.setUint16(26,name.length,true);parts.push(head.buffer,name,bytes);var dir=new DataView(new ArrayBuffer(46));dir.setUint32(0,0x02014b50,true);dir.setUint16(4,20,true);dir.setUint16(6,20,true);dir.setUint16(8,0x0800,true);dir.setUint16(12,dosTime,true);dir.setUint16(14,dosDate,true);dir.setUint32(16,crc,true);dir.setUint32(20,bytes.length,true);dir.setUint32(24,bytes.length,true);dir.setUint16(28,name.length,true);dir.setUint32(42,offset,true);central.push(dir.buffer,name);offset+=30+name.length+bytes.length;}var size=0;central.forEach(function(p){size+=p.byteLength;});var end=new DataView(new ArrayBuffer(22));end.setUint32(0,0x06054b50,true);end.setUint16(8,list.length,true);end.setUint16(10,list.length,true);end.setUint32(12,size,true);end.setUint32(16,offset,true);var blob=new Blob(parts.concat(central,[end.buffer]),{type:'application/zip'}),link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=safePart(viewName())+'.zip';document.body.appendChild(link);link.click();link.remove();setTimeout(function(){URL.revokeObjectURL(link.href);},60000);setNotice('已导出 '+list.length+' 张 · '+fmt(total)+'。');}catch(e){setNotice('导出失败：'+e.message,true);}finally{exporting=false;renderHead();}}
+function bar(part,whole,cls){return '<div class="meter"><div class="meter-bar'+(cls?' '+cls:'')+'" style="width:'+Math.min(100,whole?part/whole*100:0).toFixed(2)+'%"></div></div>';}
+async function renderStorage(){gallery.innerHTML='<div class="storage empty">正在统计存储桶…</div>';try{var r=await api('/image/api/storage');if(current!==STORAGE)return;var scale=Math.max(r.freeBytes,r.totalBytes),html='<div class="storage"><div class="big">'+esc(r.totalHuman)+'</div><div class="meter" style="margin-top:8px"><div class="meter-bar'+(r.over?' over':'')+'" style="width:'+Math.min(100,r.totalBytes/scale*100).toFixed(2)+'%"></div><div class="meter-limit" style="left:'+Math.min(100,r.limitBytes/scale*100).toFixed(2)+'%"></div></div><div class="meter-text">免费额度 '+fmt(r.freeBytes)+' · 清理上限 '+esc(r.limitHuman)+'（竖线）</div><h3>按类别</h3>';r.categories.filter(function(c){return c.bytes>0;}).sort(function(a,b){return b.bytes-a.bytes;}).forEach(function(c){html+='<div class="cat"><span>'+esc(c.label)+'</span>'+bar(c.bytes,r.totalBytes)+'<span class="cat-size">'+esc(c.human)+'</span></div>';});html+='<div class="cleanup">'+(r.over?'<p>已超出清理上限。从最早的图开始删除 <b>'+r.cleanup.count+'</b> 张，可腾出 <b>'+esc(r.cleanup.human)+'</b>'+(r.cleanup.enough?'。':'；只删图片仍降不到上限，其余是同步数据等其他内容。')+'</p><button id="runCleanup" class="btn danger-fill"'+(r.cleanup.count?'':' disabled')+'>立即清理</button>':'<p>未超出清理上限。</p>')+'<p class="sub" style="margin:10px 0 0">清理上限在 RPH「设置」→「测试版生图设置」里修改。删除的图在聊天里显示为「已删除」，不会重新生成。</p></div></div>';gallery.innerHTML=html;var run=$('runCleanup');if(run)run.onclick=function(){cleanupStorage(r.cleanup.count,r.cleanup.human);};}catch(e){gallery.innerHTML='<div class="storage empty">'+esc(e.message)+'</div>';}}
+async function cleanupStorage(count,human){if(!await ask('清理旧图','将从最早的图开始删除 '+count+' 张，腾出 '+human+'。删除后不能恢复。','清理'))return;try{var done=0,res;for(var i=0;i<50;i++){setNotice('正在清理… 已删除 '+done+' 张');res=await api('/image/api/storage/cleanup',{method:'POST',body:'{}'});done+=res.deletedCount;if(!res.remaining||!res.deletedCount)break;}setNotice('已清理 '+done+' 张。');data=await api('/image/api/library');cachedAll=null;renderStats();renderCharacters();renderStorage();}catch(e){setNotice('清理失败：'+e.message,true);}}
 async function load(){setNotice('');stats.textContent='读取中…';try{data=await api('/image/api/library');cachedAll=null;if(current!==ALL&&!groups().some(function(g){return g.id===current;}))current=ALL;renderStats();renderCharacters();renderGallery();syncSelectBar();}catch(e){stats.textContent='读取失败';setNotice(e.message,true);}}
 function checkAuth(p){return api('/image/api/auth-status',{method:'GET',headers:{'x-rp-sync-password':p||pass()}}).then(function(r){return r.authenticated;}).catch(function(){return false;});}
 function showApp(){authBox.classList.add('hidden');appBox.classList.remove('hidden');load();}
@@ -1130,6 +1286,21 @@ async function handleImageAdmin(request, env, url) {
         const bytes = await readThumbnailBytes(request);
         const savedKey = await putImageThumbnail(bucket, key, bytes);
         return json({ ok: true, key: savedKey, bytes: bytes.byteLength });
+    }
+    if (url.pathname === `${IMAGE_ADMIN_PATH}/api/settings`) {
+        if (request.method === 'GET') return json({ ok: true, settings: await readImageSettings(bucket) });
+        if (request.method !== 'PUT') return error('Method not allowed.', 405);
+        const body = await request.json().catch(() => null);
+        if (!body || typeof body !== 'object') return error('Invalid JSON body.');
+        return json({ ok: true, settings: await writeImageSettings(bucket, { ...await readImageSettings(bucket), ...body }) });
+    }
+    if (url.pathname === `${IMAGE_ADMIN_PATH}/api/storage`) {
+        if (request.method !== 'GET') return error('Method not allowed.', 405);
+        return json(await buildStorageReport(bucket));
+    }
+    if (url.pathname === `${IMAGE_ADMIN_PATH}/api/storage/cleanup`) {
+        if (request.method !== 'POST') return error('Method not allowed.', 405);
+        return json(await runStorageCleanup(bucket));
     }
     if (url.pathname === `${IMAGE_ADMIN_PATH}/api/delete`) {
         if (request.method !== 'POST') return error('Method not allowed.', 405);

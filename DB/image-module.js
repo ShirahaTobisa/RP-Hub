@@ -2494,3 +2494,189 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         }
     };
 })();
+
+/* 测试版生图设置：插在 RPH 设置页「生图设置」小节下面；设置值存在站点的 R2（/image/api/settings），
+ * 不写进 RPH 自己的设置数据，聊天页面保存设置时不会被覆盖。另外每天最多检查一次存储用量，超出清理上限时弹窗询问。 */
+(() => {
+    'use strict';
+    const PASSWORD_KEY = 'rp_hub_sync_password_v1';
+    const CHECK_KEY = 'rph_image_storage_checked_at';
+    const DAY_MS = 86_400_000;
+    const SECTION_ATTR = 'data-rph-test-image-settings';
+
+    function headers() {
+        let password = '';
+        try { password = localStorage.getItem(PASSWORD_KEY) || ''; } catch (_) { /* storage blocked */ }
+        return { 'x-rp-sync-password': password, 'content-type': 'application/json' };
+    }
+
+    async function api(path, init = {}) {
+        const response = await fetch(path, { ...init, headers: { ...headers(), ...(init.headers || {}) } });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok || body.ok === false) throw new Error(body.error || `HTTP ${response.status}`);
+        return body;
+    }
+
+    function appProxy() {
+        const app = document.getElementById('app')?.__vue_app__;
+        return app?._instance?.proxy || app?._container?._vnode?.component?.proxy || null;
+    }
+
+    function findAnchor() {
+        const heading = [...document.querySelectorAll('h4.settings-subheading')].find((node) => node.textContent.trim() === '生图设置');
+        return heading?.closest('.pt-6') || null;
+    }
+
+    function field(label, control, hint = '') {
+        const wrap = document.createElement('div');
+        wrap.className = 'min-w-0';
+        const title = document.createElement('label');
+        title.className = 'settings-label';
+        title.textContent = label;
+        wrap.append(title, control);
+        if (hint) {
+            const note = document.createElement('p');
+            note.className = 'text-xs text-gray-500 mt-1';
+            note.dataset.hint = '';
+            note.textContent = hint;
+            wrap.appendChild(note);
+        }
+        return wrap;
+    }
+
+    function stepsHint(mode, steps) {
+        if (mode !== 'web') return '直链接口最高按 28 步生成。';
+        return steps > 28 ? `超过 28 步按官方价格计费：竖图 V4.5 约 ${Math.max(2, Math.ceil(0.000002951823174884865 * 832 * 1216 + 0.0000005753298233447344 * 832 * 1216 * steps))} 点/张（28 步只要 1 点）。` : '28 步以内按标准价格计费。';
+    }
+
+    function buildSection() {
+        const section = document.createElement('div');
+        section.className = 'pt-6 border-t border-gray-100 mt-6';
+        section.setAttribute(SECTION_ATTR, '');
+        const heading = document.createElement('h4');
+        heading.className = 'settings-subheading mb-4';
+        heading.textContent = '测试版生图设置';
+        const grid = document.createElement('div');
+        grid.className = 'grid grid-cols-1 md:grid-cols-2 gap-4';
+        const mode = document.createElement('select');
+        mode.className = 'settings-control';
+        mode.innerHTML = '<option value="direct">直链（默认，最高 28 步）</option><option value="web">网页任务（1–50 步）</option>';
+        const steps = document.createElement('input');
+        steps.type = 'number';
+        steps.min = '1';
+        steps.max = '50';
+        steps.className = 'settings-control';
+        const limit = document.createElement('input');
+        limit.type = 'number';
+        limit.min = '0.1';
+        limit.step = '0.5';
+        limit.className = 'settings-control';
+        const usage = document.createElement('div');
+        usage.className = 'settings-control';
+        usage.style.display = 'flex';
+        usage.style.alignItems = 'center';
+        usage.style.justifyContent = 'space-between';
+        usage.style.gap = '8px';
+        usage.innerHTML = '<span data-usage>读取中…</span><a href="/image" target="_blank" rel="noopener" class="text-primary-600 text-xs">图片管理</a>';
+        const stepsField = field('生成步数', steps, '');
+        grid.append(field('生图接口', mode), stepsField, field('存储清理上限（GB）', limit, '超出时会提示清理最早的图。免费 R2 为 10 GB。'), field('R2 已用', usage));
+        const status = document.createElement('p');
+        status.className = 'text-xs text-gray-500 mt-3';
+        section.append(heading, grid, status);
+
+        let saveTimer = null;
+        const refreshHint = () => {
+            stepsField.querySelector('[data-hint]')?.remove();
+            const note = document.createElement('p');
+            note.className = 'text-xs text-gray-500 mt-1';
+            note.dataset.hint = '';
+            note.textContent = stepsHint(mode.value, Number(steps.value) || 28);
+            stepsField.appendChild(note);
+            steps.disabled = mode.value !== 'web';
+        };
+        const save = () => {
+            clearTimeout(saveTimer);
+            refreshHint();
+            saveTimer = setTimeout(async () => {
+                try {
+                    const result = await api('/image/api/settings', {
+                        method: 'PUT',
+                        body: JSON.stringify({ mode: mode.value, steps: Number(steps.value), storageLimitGb: Number(limit.value) })
+                    });
+                    steps.value = result.settings.steps;
+                    limit.value = result.settings.storageLimitGb;
+                    status.textContent = '已保存，下一张图开始生效。';
+                } catch (error) {
+                    status.textContent = `保存失败：${error.message}`;
+                }
+            }, 500);
+        };
+        mode.addEventListener('change', save);
+        steps.addEventListener('change', save);
+        limit.addEventListener('change', save);
+        api('/image/api/settings').then(({ settings }) => {
+            mode.value = settings.mode;
+            steps.value = settings.steps;
+            limit.value = settings.storageLimitGb;
+            refreshHint();
+        }, (error) => { status.textContent = `读取失败：${error.message}（需要先在「同步」里输入过同步密码）`; });
+        api('/image/api/storage').then((report) => {
+            usage.querySelector('[data-usage]').textContent = `${report.totalHuman} / 10 GB${report.over ? '（超出上限）' : ''}`;
+        }, () => { usage.querySelector('[data-usage]').textContent = '读取失败'; });
+        return section;
+    }
+
+    function ensureSection() {
+        if (document.querySelector(`[${SECTION_ATTR}]`)) return;
+        const anchor = findAnchor();
+        if (anchor) anchor.after(buildSection());
+    }
+
+    // 只在设置页打开时观察页面变化，离开就停，不影响聊天时的性能。
+    let observer = null;
+    function onView(view) {
+        observer?.disconnect();
+        observer = null;
+        if (view !== 'settings') return;
+        ensureSection();
+        observer = new MutationObserver(ensureSection);
+        observer.observe(document.getElementById('app'), { childList: true, subtree: true });
+    }
+
+    async function checkStorage() {
+        let last = 0;
+        try { last = Number(localStorage.getItem(CHECK_KEY)) || 0; } catch (_) { /* storage blocked */ }
+        if (Date.now() - last < DAY_MS || !window.RPHubUI) return;
+        let report;
+        try { report = await api('/image/api/storage'); } catch (_) { return; }
+        try { localStorage.setItem(CHECK_KEY, String(Date.now())); } catch (_) { /* storage blocked */ }
+        if (!report.over || !report.cleanup.count) return;
+        const ok = await window.RPHubUI.confirm({
+            title: 'R2 存储超出清理上限',
+            message: `已用 ${report.totalHuman}，清理上限 ${report.limitHuman}（免费额度 10 GB，超出会收费）。\n\n要从最早的图开始删除 ${report.cleanup.count} 张，腾出 ${report.cleanup.human} 吗？删除的图在聊天里显示为「已删除」，不会重新生成。`,
+            confirmText: '清理',
+            cancelText: '今天不再提醒',
+            danger: true
+        });
+        if (!ok) return;
+        let deleted = 0;
+        try {
+            for (let round = 0; round < 50; round += 1) {
+                const result = await api('/image/api/storage/cleanup', { method: 'POST', body: '{}' });
+                deleted += result.deletedCount;
+                if (!result.remaining || !result.deletedCount) break;
+            }
+            window.RPHubUI.toast(`已清理 ${deleted} 张旧图。`, { kind: 'success' });
+        } catch (error) {
+            window.RPHubUI.toast(`清理失败：${error.message}`, { kind: 'error' });
+        }
+    }
+
+    const start = setInterval(() => {
+        const proxy = appProxy();
+        if (!proxy || !globalThis.Vue?.watch) return;
+        clearInterval(start);
+        globalThis.Vue.watch(() => proxy.currentView, onView, { immediate: true });
+        setTimeout(checkStorage, 15_000);
+    }, 1000);
+})();
