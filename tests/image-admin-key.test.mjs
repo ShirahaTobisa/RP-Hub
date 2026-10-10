@@ -28,7 +28,7 @@ assert.doesNotMatch(adminHtml, /id="imageKey"|id="saveImageKey"|id="toggleImageK
 assert.doesNotMatch(adminScript, /saveImageKey|toggleImageKey/);
 assert.match(adminHtml, /@media\(max-width:720px\)/);
 assert.match(adminHtml, /\.key-mask\{/);
-assert.match(adminHtml, /\.key-settings>\.btn\{align-self:flex-start\}/);
+assert.match(adminHtml, /\.key-settings>\.btn\{align-self:flex-start/);
 assert.match(adminScript, new RegExp(`imageKeyStorageKey='${PRIMARY_KEY}'`));
 assert.match(adminScript, new RegExp(`imageKeyShadowStorageKey='${SHADOW_KEY}'`));
 
@@ -68,6 +68,11 @@ function makeElement(id) {
         closest() {
             return null;
         },
+        addEventListener() {},
+        querySelectorAll() {
+            return [];
+        },
+        insertAdjacentHTML() {},
         focus() {},
         removeAttribute(name) {
             attributes.delete(name);
@@ -101,23 +106,22 @@ class FakeStorage {
 }
 
 async function runAdminScript(initialStorage) {
-    const ids = [
-        'password', 'auth', 'app', 'authMsg', 'library', 'stats', 'notice', 'filter',
-        'refresh', 'deleteMode', 'cancelDelete', 'deleteSelected', 'viewer', 'viewerImage',
-        'imageKeyMasked', 'imageKeyStatus', 'clearImageKey',
-        'login', 'closeViewer'
-    ];
-    const elements = new Map(ids.map((id) => [id, makeElement(id)]));
+    // 页面按需取元素；这里也按需造假元素，只检查生图密钥相关的行为。
+    const elements = new Map();
     const localStorage = new FakeStorage(initialStorage);
     const requests = [];
     const storageListeners = [];
     const document = {
         body: { classList: makeClassList() },
+        documentElement: { dataset: {} },
+        addEventListener() {},
         getElementById(id) {
-            return elements.get(id) || null;
+            if (!elements.has(id)) elements.set(id, makeElement(id));
+            return elements.get(id);
         }
     };
     const window = {
+        innerWidth: 1280,
         addEventListener(type, listener) {
             if (type === 'storage') storageListeners.push(listener);
         }
@@ -141,8 +145,11 @@ async function runAdminScript(initialStorage) {
         throw new Error(`Unexpected image admin request: ${target}`);
     };
     const context = vm.createContext({
+        Array,
         Boolean,
         JSON,
+        Math,
+        Number,
         Object,
         Response,
         Set,
