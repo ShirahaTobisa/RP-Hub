@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import worker from '../_worker.js';
 
-// 测试版生图设置（存在 R2）、R2 存储统计与清理、网页任务生图（Nai2API POST /api/web/jobs）。
+// 测试版生图设置（存在 R2）、R2 存储统计与清理、生图插件上传图片。
 const PASSWORD = 'fixture-sync-password';
 const GB = 1024 ** 3;
 
@@ -35,11 +35,14 @@ const call = async (path, init = {}) => {
 };
 
 let result = await call('/image/api/settings');
-assert.deepEqual(result.body.settings, { mode: 'direct', steps: 28, storageLimitGb: 9 });
-result = await call('/image/api/settings', { method: 'PUT', body: JSON.stringify({ mode: 'web', steps: 99, storageLimitGb: 0.001 }) });
-assert.deepEqual(result.body.settings, { mode: 'web', steps: 50, storageLimitGb: 9 }, 'a limit that rounds to 0 would plan deleting every image');
-result = await call('/image/api/settings', { method: 'PUT', body: JSON.stringify({ steps: 35 }) });
-assert.deepEqual(result.body.settings, { mode: 'web', steps: 35, storageLimitGb: 9 });
+assert.deepEqual(result.body.settings, { storageLimitGb: 9, generator: 'direct', params: { steps: 28, scale: 6, cfg: 0, sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras', negative: '' } });
+result = await call('/image/api/settings', { method: 'PUT', body: JSON.stringify({ storageLimitGb: 0.001, generator: 'nai2api-web', params: { steps: 99, scale: 7.25, sampler: 'bogus' } }) });
+assert.equal(result.body.settings.storageLimitGb, 9, 'a limit that rounds to 0 would plan deleting every image');
+assert.equal(result.body.settings.generator, 'nai2api-web');
+assert.deepEqual(result.body.settings.params, { steps: 50, scale: 7.3, cfg: 0, sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras', negative: '' });
+result = await call('/image/api/settings', { method: 'PUT', body: JSON.stringify({ params: { steps: 35 } }) });
+assert.equal(result.body.settings.params.steps, 35);
+assert.equal(result.body.settings.params.scale, 7.3, 'saving one parameter keeps the others');
 assert.equal((await worker.fetch(new Request('https://rph.example/image/api/settings'), env, { waitUntil() {} })).status, 401);
 console.log('PASS image settings are stored in R2, clamped, merged and require the sync password');
 
@@ -66,35 +69,17 @@ assert.ok([...bucket.store.keys()].some((key) => key.startsWith('rp-images/_dele
 assert.equal((await call('/image/api/storage')).body.over, false);
 console.log('PASS storage report groups usage, plans oldest-first cleanup and deletes with tombstones');
 
-// 网页任务：提交 → 查询到完成 → 取图 → 存进 R2；步数取设置里的值。
-const upstream = [];
+// 生图插件：浏览器里生成好图片后 PUT 上传，外壳按参数算出存放位置；需要同步密码，只收图片。
 const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
-const realFetch = globalThis.fetch;
-const realTimeout = globalThis.setTimeout;
-globalThis.fetch = async (input, init = {}) => {
-    const url = new URL(String(input));
-    upstream.push({ path: url.pathname, method: init.method || 'GET', auth: init.headers?.authorization, body: init.body ? JSON.parse(init.body) : null });
-    assert.equal(url.origin, 'https://nai.sta1n.cn');
-    if (url.pathname === '/api/web/jobs') return Response.json({ id: 'job_1', status: 'queued' }, { status: 202 });
-    if (url.pathname === '/api/jobs/job_1') return Response.json({ id: 'job_1', status: 'done', imageUrl: '/api/images/i/content' });
-    if (url.pathname === '/api/jobs/job_1/content') return new Response(png, { headers: { 'content-type': 'image/png' } });
-    return new Response('missing', { status: 404 });
-};
-globalThis.setTimeout = (fn) => { fn(); return 0; };
-try {
-    const query = new URLSearchParams({ tag: '1girl', character_name: '丙', model: 'nai-diffusion-4-5-full', size: '竖图', steps: '40', scale: '6', cfg: '0', sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras', nocache: '0', provider: 'sta1n', token: 'STA1N-fixture' });
-    const response = await worker.fetch(new Request(`https://rph.example/api/rp-image?${query}`, { method: 'POST' }), env, { waitUntil() {} });
-    assert.equal(response.status, 200, await response.clone().text());
-    assert.equal(response.headers.get('x-rp-image-cache'), 'MISS');
-    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), png);
-} finally {
-    globalThis.fetch = realFetch;
-    globalThis.setTimeout = realTimeout;
-}
-assert.deepEqual(upstream.map((item) => item.path), ['/api/web/jobs', '/api/jobs/job_1', '/api/jobs/job_1/content']);
-assert.equal(upstream[0].method, 'POST');
-assert.equal(upstream[0].auth, 'Bearer STA1N-fixture');
-assert.equal(upstream[0].body.steps, 35);
-assert.equal(upstream[0].body.tag, '1girl');
-assert.ok([...bucket.store.keys()].some((key) => key.startsWith('rp-images/characters/丙/')));
-console.log('PASS web-job mode submits, polls and stores the image using the configured steps');
+const query = new URLSearchParams({ tag: '1girl', character_name: '丙', model: 'nai-diffusion-4-5-full', size: '竖图', steps: '35', scale: '6', cfg: '0', sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras', nocache: '0', provider: 'sta1n' });
+const upload = (headers, body = png) => worker.fetch(new Request(`https://rph.example/api/rp-image?${query}`, { method: 'PUT', headers, body }), env, { waitUntil() {} });
+assert.equal((await upload({ 'content-type': 'image/png' })).status, 401);
+assert.equal((await upload({ 'content-type': 'text/html', 'x-rp-sync-password': PASSWORD }, '<script>')).status, 415);
+const uploaded = await upload({ 'content-type': 'image/png', 'x-rp-sync-password': PASSWORD });
+assert.equal(uploaded.status, 200, await uploaded.clone().text());
+const storedKey = decodeURIComponent(uploaded.headers.get('x-rp-image-key'));
+assert.ok(storedKey.startsWith('rp-images/characters/丙/'));
+const read = await worker.fetch(new Request(`https://rph.example/api/rp-image?${query}`), env, { waitUntil() {} });
+assert.equal(read.headers.get('x-rp-image-cache'), 'HIT', 'the uploaded image is found at the same place a direct-link image would be');
+assert.deepEqual(new Uint8Array(await read.arrayBuffer()), png);
+console.log('PASS plugin uploads are stored where the same params would be cached, and need the sync password');

@@ -658,7 +658,7 @@ function createLimitedBodyStream(body, maxBytes, label, emptyStatus = 400, timeo
 }
 
 async function handleImageRender(request, env) {
-    if (request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'POST') {
+    if (request.method !== 'GET' && request.method !== 'HEAD' && request.method !== 'POST' && request.method !== 'PUT') {
         return error('Method not allowed.', 405);
     }
     if (request.url.length > IMAGE_MAX_REQUEST_URL_LENGTH) {
@@ -700,6 +700,7 @@ async function handleImageRender(request, env) {
         }
     }
 
+    if (request.method === 'PUT') return storeUploadedImage(request, env, bucket, primary);
     if (request.method !== 'POST') {
         return new Response(null, {
             status: 404,
@@ -723,10 +724,7 @@ async function handleImageRender(request, env) {
     }
     assertImageTokenProvider(primary.params, token);
 
-    const imageSettings = await readImageSettings(bucket);
-    const upstreamResponse = imageSettings.mode === 'web'
-        ? await fetchWebJobImage(primary.params, token, env, imageSettings.steps)
-        : await fetchImageWithTimeout(buildImageUpstreamUrl(primary.params, token, env));
+    const upstreamResponse = await fetchImageWithTimeout(buildImageUpstreamUrl(primary.params, token, env));
     if (!upstreamResponse.ok) {
         return error(`生图服务返回异常：HTTP ${upstreamResponse.status}`, upstreamResponse.status);
     }
@@ -754,6 +752,33 @@ async function handleImageRender(request, env) {
     const stored = await bucket.get(primary.key);
     if (!stored) throw createHttpError('图片写入 R2 后无法读取。', 502);
     return imageResponse(stored.body, contentType, {
+        'content-length': String(imageBytes.byteLength),
+        'x-rp-image-cache': 'MISS',
+        'x-rp-image-key': imageHeaderValue(primary.key)
+    });
+}
+
+// 生图插件在浏览器里生成好图片后上传到这里；存放位置由参数算出（和直链生图同一个位置），插件不能指定。
+async function storeUploadedImage(request, env, bucket, primary) {
+    if (getSyncPassword(env) && !await isRequestAuthorized(request, env)) {
+        return error('Sync password required.', 401, { authRequired: true });
+    }
+    const contentType = (request.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
+    if (!IMAGE_RASTER_CONTENT_TYPES.has(contentType)) return error('只接受 PNG、JPEG、WebP、AVIF 或 GIF 图片。', 415);
+    const contentLength = Number(request.headers.get('content-length') || 0);
+    if (contentLength > IMAGE_MAX_BYTES) return error(`图片过大：${contentLength}/${IMAGE_MAX_BYTES}`, 413);
+    const imageBytes = await readLimitedBody(request.body, IMAGE_MAX_BYTES, '图片', 413, contentLength, IMAGE_FETCH_TIMEOUT_MS);
+    if (!imageBytes.byteLength) return error('图片为空。', 400);
+    await bucket.put(primary.key, imageBytes, {
+        httpMetadata: { contentType },
+        customMetadata: {
+            checksum: primary.checksum,
+            characterName: primary.params.character_name,
+            provider: 'plugin',
+            createdAt: String(Date.now())
+        }
+    });
+    return imageResponse(imageBytes, contentType, {
         'content-length': String(imageBytes.byteLength),
         'x-rp-image-cache': 'MISS',
         'x-rp-image-key': imageHeaderValue(primary.key)
@@ -952,30 +977,51 @@ async function writeImageTombstone(bucket, object, reason = 'manual-delete') {
 
 // ---- 测试版生图设置（存在 R2，不进 RPH 设置数据）与 R2 存储管理 ----
 const IMAGE_SETTINGS_KEY = `${IMAGE_PREFIX}/_settings.json`;
-const IMAGE_SETTINGS_DEFAULTS = Object.freeze({ mode: 'direct', steps: 28, storageLimitGb: 9 });
+const IMAGE_SAMPLERS = ['k_euler', 'k_euler_ancestral', 'k_dpmpp_2s_ancestral', 'k_dpmpp_2m', 'k_dpmpp_2m_sde', 'k_dpmpp_sde', 'ddim_v3'];
+const IMAGE_NOISE_SCHEDULES = ['karras', 'native', 'exponential', 'polyexponential'];
+// generator：'direct' 是现在的直链；其他值是生图插件注册的接口 id。负面提示词留空表示用生图模块自带的默认值。
+const IMAGE_SETTINGS_DEFAULTS = Object.freeze({
+    storageLimitGb: 9,
+    generator: 'direct',
+    params: Object.freeze({ steps: 28, scale: 6, cfg: 0, sampler: IMAGE_DEFAULT_SAMPLER, noise_schedule: 'karras', negative: '' })
+});
 const R2_FREE_BYTES = 10 * 1024 ** 3;
-// 免费版 Worker 每次请求最多向外发 50 个请求：1 次提交 + 最多 40 次查询 + 1 次取图。
-const WEB_JOB_MAX_POLLS = 40;
 const STORAGE_CLEANUP_BATCH = 300;
 
+function clampNumber(value, min, max, fallback, digits = 0) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return fallback;
+    const factor = 10 ** digits;
+    return Math.min(max, Math.max(min, Math.round(number * factor) / factor));
+}
+
 function normalizeImageSettings(value = {}) {
-    const steps = Math.round(Number(value.steps));
     // 上限至少 0.1 GB：填 0 或太小的数会把所有图都列进清理计划，按无效处理。
     const limit = Math.round(Number(value.storageLimitGb) * 10) / 10;
+    const params = value.params && typeof value.params === 'object' ? value.params : {};
+    const defaults = IMAGE_SETTINGS_DEFAULTS.params;
+    const generator = String(value.generator || '').trim();
     return {
-        mode: value.mode === 'web' ? 'web' : 'direct',
-        steps: Number.isFinite(steps) ? Math.min(50, Math.max(1, steps)) : IMAGE_SETTINGS_DEFAULTS.steps,
-        storageLimitGb: Number.isFinite(limit) && limit >= 0.1 ? Math.min(1024, limit) : IMAGE_SETTINGS_DEFAULTS.storageLimitGb
+        storageLimitGb: Number.isFinite(limit) && limit >= 0.1 ? Math.min(1024, limit) : IMAGE_SETTINGS_DEFAULTS.storageLimitGb,
+        generator: /^[a-z0-9-]{3,32}$/.test(generator) || generator === 'direct' ? generator : 'direct',
+        params: {
+            steps: clampNumber(params.steps, 1, 50, defaults.steps),
+            scale: clampNumber(params.scale, 0, 10, defaults.scale, 1),
+            cfg: clampNumber(params.cfg, 0, 1, defaults.cfg, 2),
+            sampler: IMAGE_SAMPLERS.includes(params.sampler) ? params.sampler : defaults.sampler,
+            noise_schedule: IMAGE_NOISE_SCHEDULES.includes(params.noise_schedule) ? params.noise_schedule : defaults.noise_schedule,
+            negative: typeof params.negative === 'string' ? params.negative.slice(0, 2000) : defaults.negative
+        }
     };
 }
 
 async function readImageSettings(bucket) {
     const object = await bucket.get(IMAGE_SETTINGS_KEY);
-    if (!object) return { ...IMAGE_SETTINGS_DEFAULTS };
+    if (!object) return normalizeImageSettings();
     try {
         return normalizeImageSettings(JSON.parse(await object.text()));
     } catch (_) {
-        return { ...IMAGE_SETTINGS_DEFAULTS };
+        return normalizeImageSettings();
     }
 }
 
@@ -1062,43 +1108,6 @@ async function runStorageCleanup(bucket) {
     };
 }
 
-// 网页任务接口（Nai2API 的 POST /api/web/jobs）：支持 1–50 步；超过 28 步按官方价格计费。
-async function fetchWebJobImage(params, token, env, steps) {
-    if (!params.tag) throw createHttpError('缺少生图提示词。', 400);
-    const base = getImageProviderOverride(params, env) || getImageProviderBase(params.provider, token);
-    const auth = { authorization: `Bearer ${token}`, 'user-agent': 'RPH-R2-Image-Cache' };
-    const body = {
-        tag: params.tag, model: params.model, artist: params.artist || '', size: params.size, steps,
-        scale: params.scale, cfg: params.cfg, sampler: params.sampler, negative: params.negative || '',
-        nocache: params.nocache, noise_schedule: params.noise_schedule
-    };
-    if (params.reroll_nonce) body.reroll_nonce = params.reroll_nonce;
-    for (const [key, value] of params.extra_params || []) body[key] = value;
-    const readJob = async (response) => {
-        const value = await response.json().catch(() => null);
-        if (!response.ok || !value?.id) {
-            const status = response.status === 404 ? 502 : response.status || 502;
-            const reason = response.status === 404 ? '该生图服务不支持网页任务接口' : (value?.error || value?.message || `HTTP ${response.status}`);
-            throw createHttpError(`网页任务失败：${reason}`, status);
-        }
-        return value;
-    };
-    let job = await readJob(await fetch(new URL('/api/web/jobs', base), {
-        method: 'POST',
-        headers: { ...auth, 'content-type': 'application/json' },
-        body: JSON.stringify(body)
-    }));
-    for (let poll = 0; job.status !== 'done' && poll < WEB_JOB_MAX_POLLS; poll += 1) {
-        if (job.status === 'failed') throw createHttpError(`网页任务失败：${job.error || '生成失败'}`, 502);
-        await new Promise((resolve) => setTimeout(resolve, poll < 10 ? 3000 : 6000));
-        job = await readJob(await fetch(new URL(`/api/jobs/${encodeURIComponent(job.id)}`, base), { headers: auth }));
-    }
-    if (job.status !== 'done') throw createHttpError('网页任务等待超时，请稍后重试。', 504);
-    return fetch(new URL(`/api/jobs/${encodeURIComponent(job.id)}/content`, base), {
-        headers: { ...auth, accept: 'image/avif,image/webp,image/png,image/jpeg,image/gif' }
-    });
-}
-
 function imageAdminHtml() {
     return new Response(`<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>角色图片管理</title>
@@ -1125,7 +1134,7 @@ button,input,a{font:inherit;color:inherit}.hidden{display:none!important}svg{wid
 :root{--eye-off:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24M1 1l22 22'/%3E%3C/svg%3E")}
 .check{position:absolute;top:7px;right:7px;width:20px;height:20px;border-radius:50%;border:2px solid #fff;background:rgba(0,0,0,.25);box-shadow:0 1px 4px rgba(0,0,0,.3);display:none}.selecting .check{display:block}.photo.selected{box-shadow:0 0 0 3px var(--accent) inset}.photo.selected .check{background:var(--accent)}.photo.selected .check::after{content:"";position:absolute;left:5px;top:1px;width:5px;height:10px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
 .empty{padding:70px 20px;text-align:center;color:var(--muted)}
-.storage{grid-column:1/-1;max-width:720px}.storage h3{margin:18px 0 10px;font-size:13px}.meter{position:relative;height:12px;border-radius:999px;background:var(--raised);overflow:hidden}.meter-bar{height:100%;border-radius:inherit;background:var(--accent)}.meter-bar.over{background:var(--danger)}.meter-limit{position:absolute;top:0;bottom:0;width:3px;background:var(--text)}.meter-text{margin-top:8px;color:var(--muted)}.big{font-size:22px;font-weight:700;color:var(--text)}.cat{display:grid;grid-template-columns:110px minmax(0,1fr) 90px;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line)}.cat .meter{height:8px}.cat-size{text-align:right;color:var(--muted)}.cleanup{margin-top:18px;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}.cleanup p{margin:0 0 10px}
+.storage{grid-column:1/-1;max-width:720px}.storage h3{margin:18px 0 10px;font-size:13px}.meter{position:relative;height:12px;border-radius:999px;background:var(--raised);overflow:hidden}.meter-bar{height:100%;border-radius:inherit;background:var(--accent)}.meter-bar.over{background:var(--danger)}.meter-limit{position:absolute;top:0;bottom:0;width:3px;background:var(--text)}.meter-text{margin-top:8px;color:var(--muted)}.big{font-size:22px;font-weight:700;color:var(--text)}.cat{display:grid;grid-template-columns:110px minmax(0,1fr) 90px;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--line)}.cat .meter{height:8px}.cat-size{text-align:right;color:var(--muted)}.cleanup{margin-top:18px;padding:14px;border:1px solid var(--line);border-radius:10px;background:var(--surface)}.cleanup p{margin:0 0 10px}.limit-row{display:flex;align-items:center;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid var(--line)}.limit-input{width:80px;height:32px;margin:0 4px;padding:0 8px;border:1px solid var(--line);border-radius:8px;background:var(--raised)}
 .select-bar{position:fixed;left:calc(50% + 120px);bottom:18px;transform:translateX(-50%);display:flex;align-items:center;gap:8px;padding:8px 8px 8px 16px;border:1px solid var(--line);border-radius:12px;background:var(--surface);box-shadow:0 10px 30px -12px rgba(0,0,0,.35);z-index:5;white-space:nowrap}
 .viewer{position:fixed;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:rgba(10,10,14,.94)}.viewer img{max-width:calc(100vw - 140px);max-height:calc(100vh - 100px);object-fit:contain;border-radius:6px;user-select:none}.viewer-top{position:absolute;top:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;color:#ddd}.viewer-top .btn{background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.14);color:#fff}.viewer-top .btn.danger{color:#ff9d9d}
 .nav{position:absolute;top:50%;width:44px;height:44px;margin-top:-22px;border:0;border-radius:50%;background:rgba(255,255,255,.1);color:#fff;font-size:26px;cursor:pointer}.nav:hover{background:rgba(255,255,255,.2)}.nav:disabled{opacity:.2;cursor:default}.prev{left:14px}.next{right:14px}
@@ -1193,7 +1202,7 @@ var crcTable=null;function crc32(bytes){if(!crcTable){crcTable=new Uint32Array(2
 function safePart(s){return String(s||'未命名').replace(/[<>:"|?*]/g,'_').replace(/[\\/]/g,'_').trim().slice(0,80)||'未命名';}
 async function exportZip(){var list=images().slice();if(!list.length||exporting)return;var total=sum(list);if(total>EXPORT_WARN_BYTES&&!await ask('导出 '+fmt(total),'图片较多，打包会占用较多内存，手机上可能失败。建议按角色分别导出。仍要继续吗？','继续',false))return;exporting=true;renderHead();var parts=[],central=[],offset=0,enc=new TextEncoder(),now=new Date(),dosTime=(now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1),dosDate=((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate(),counters={};try{for(var i=0;i<list.length;i++){var img=list[i];setNotice('正在打包 '+(i+1)+' / '+list.length+'…');var res=await fetch(imgUrl(img.key),{headers:{'x-rp-sync-password':pass()}});if(!res.ok)throw new Error('第 '+(i+1)+' 张下载失败：HTTP '+res.status);var bytes=new Uint8Array(await res.arrayBuffer()),folder=safePart(img.characterName);counters[folder]=(counters[folder]||0)+1;var name=enc.encode((current===ALL?folder+'/':'')+fileName(img,counters[folder]-1)),crc=crc32(bytes),head=new DataView(new ArrayBuffer(30));head.setUint32(0,0x04034b50,true);head.setUint16(4,20,true);head.setUint16(6,0x0800,true);head.setUint16(10,dosTime,true);head.setUint16(12,dosDate,true);head.setUint32(14,crc,true);head.setUint32(18,bytes.length,true);head.setUint32(22,bytes.length,true);head.setUint16(26,name.length,true);parts.push(head.buffer,name,bytes);var dir=new DataView(new ArrayBuffer(46));dir.setUint32(0,0x02014b50,true);dir.setUint16(4,20,true);dir.setUint16(6,20,true);dir.setUint16(8,0x0800,true);dir.setUint16(12,dosTime,true);dir.setUint16(14,dosDate,true);dir.setUint32(16,crc,true);dir.setUint32(20,bytes.length,true);dir.setUint32(24,bytes.length,true);dir.setUint16(28,name.length,true);dir.setUint32(42,offset,true);central.push(dir.buffer,name);offset+=30+name.length+bytes.length;}var size=0;central.forEach(function(p){size+=p.byteLength;});var end=new DataView(new ArrayBuffer(22));end.setUint32(0,0x06054b50,true);end.setUint16(8,list.length,true);end.setUint16(10,list.length,true);end.setUint32(12,size,true);end.setUint32(16,offset,true);var blob=new Blob(parts.concat(central,[end.buffer]),{type:'application/zip'}),link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=safePart(viewName())+'.zip';document.body.appendChild(link);link.click();link.remove();setTimeout(function(){URL.revokeObjectURL(link.href);},60000);setNotice('已导出 '+list.length+' 张 · '+fmt(total)+'。');}catch(e){setNotice('导出失败：'+e.message,true);}finally{exporting=false;renderHead();}}
 function bar(part,whole,cls){return '<div class="meter"><div class="meter-bar'+(cls?' '+cls:'')+'" style="width:'+Math.min(100,whole?part/whole*100:0).toFixed(2)+'%"></div></div>';}
-async function renderStorage(){gallery.innerHTML='<div class="storage empty">正在统计存储桶…</div>';try{var r=await api('/image/api/storage');if(current!==STORAGE)return;var scale=Math.max(r.freeBytes,r.totalBytes),html='<div class="storage"><div class="big">'+esc(r.totalHuman)+'</div><div class="meter" style="margin-top:8px"><div class="meter-bar'+(r.over?' over':'')+'" style="width:'+Math.min(100,r.totalBytes/scale*100).toFixed(2)+'%"></div><div class="meter-limit" style="left:'+Math.min(100,r.limitBytes/scale*100).toFixed(2)+'%"></div></div><div class="meter-text">免费额度 '+fmt(r.freeBytes)+' · 清理上限 '+esc(r.limitHuman)+'（竖线）</div><h3>按类别</h3>';r.categories.filter(function(c){return c.bytes>0;}).sort(function(a,b){return b.bytes-a.bytes;}).forEach(function(c){html+='<div class="cat"><span>'+esc(c.label)+'</span>'+bar(c.bytes,r.totalBytes)+'<span class="cat-size">'+esc(c.human)+'</span></div>';});html+='<div class="cleanup">'+(r.over?'<p>已超出清理上限。从最早的图开始删除 <b>'+r.cleanup.count+'</b> 张，可腾出 <b>'+esc(r.cleanup.human)+'</b>'+(r.cleanup.enough?'。':'；只删图片仍降不到上限，其余是同步数据等其他内容。')+'</p><button id="runCleanup" class="btn danger-fill"'+(r.cleanup.count?'':' disabled')+'>立即清理</button>':'<p>未超出清理上限。</p>')+'<p class="sub" style="margin:10px 0 0">清理上限在 RPH「设置」→「测试版生图设置」里修改。删除的图在聊天里显示为「已删除」，不会重新生成。</p></div></div>';gallery.innerHTML=html;var run=$('runCleanup');if(run)run.onclick=function(){cleanupStorage(r.cleanup.count,r.cleanup.human);};}catch(e){gallery.innerHTML='<div class="storage empty">'+esc(e.message)+'</div>';}}
+async function renderStorage(){gallery.innerHTML='<div class="storage empty">正在统计存储桶…</div>';try{var r=await api('/image/api/storage');if(current!==STORAGE)return;var scale=Math.max(r.freeBytes,r.totalBytes),html='<div class="storage"><div class="big">'+esc(r.totalHuman)+'</div><div class="meter" style="margin-top:8px"><div class="meter-bar'+(r.over?' over':'')+'" style="width:'+Math.min(100,r.totalBytes/scale*100).toFixed(2)+'%"></div><div class="meter-limit" style="left:'+Math.min(100,r.limitBytes/scale*100).toFixed(2)+'%"></div></div><div class="meter-text">免费额度 '+fmt(r.freeBytes)+' · 清理上限 '+esc(r.limitHuman)+'（竖线）</div><h3>按类别</h3>';r.categories.filter(function(c){return c.bytes>0;}).sort(function(a,b){return b.bytes-a.bytes;}).forEach(function(c){html+='<div class="cat"><span>'+esc(c.label)+'</span>'+bar(c.bytes,r.totalBytes)+'<span class="cat-size">'+esc(c.human)+'</span></div>';});html+='<div class="cleanup">'+(r.over?'<p>已超出清理上限。从最早的图开始删除 <b>'+r.cleanup.count+'</b> 张，可腾出 <b>'+esc(r.cleanup.human)+'</b>'+(r.cleanup.enough?'。':'；只删图片仍降不到上限，其余是同步数据等其他内容。')+'</p><button id="runCleanup" class="btn danger-fill"'+(r.cleanup.count?'':' disabled')+'>立即清理</button>':'<p>未超出清理上限。</p>')+'<div class="limit-row"><label>清理上限 <input id="limitInput" class="limit-input" type="number" min="0.1" step="0.5" value="'+(Math.round(r.limitBytes/1073741824*10)/10)+'"> GB</label><button id="saveLimit" class="btn">保存</button></div><p class="sub" style="margin:10px 0 0">超出上限时，聊天页每天最多提醒一次，由你决定是否清理。删除的图在聊天里显示为「已删除」，不会重新生成。</p></div></div>';gallery.innerHTML=html;var run=$('runCleanup');if(run)run.onclick=function(){cleanupStorage(r.cleanup.count,r.cleanup.human);};$('saveLimit').onclick=async function(){try{var res=await api('/image/api/settings',{method:'PUT',body:JSON.stringify({storageLimitGb:Number($('limitInput').value)})});setNotice('清理上限已改为 '+res.settings.storageLimitGb+' GB。');renderStorage();}catch(e){setNotice('保存失败：'+e.message,true);}};}catch(e){gallery.innerHTML='<div class="storage empty">'+esc(e.message)+'</div>';}}
 async function cleanupStorage(count,human){if(!await ask('清理旧图','将从最早的图开始删除 '+count+' 张，腾出 '+human+'。删除后不能恢复。','清理'))return;try{var done=0,res;for(var i=0;i<50;i++){setNotice('正在清理… 已删除 '+done+' 张');res=await api('/image/api/storage/cleanup',{method:'POST',body:'{}'});done+=res.deletedCount;if(!res.remaining||!res.deletedCount)break;}setNotice('已清理 '+done+' 张。');data=await api('/image/api/library');cachedAll=null;renderStats();renderCharacters();renderStorage();}catch(e){setNotice('清理失败：'+e.message,true);}}
 async function load(){setNotice('');stats.textContent='读取中…';try{data=await api('/image/api/library');cachedAll=null;if(current!==ALL&&!groups().some(function(g){return g.id===current;}))current=ALL;renderStats();renderCharacters();renderGallery();syncSelectBar();}catch(e){stats.textContent='读取失败';setNotice(e.message,true);}}
 function checkAuth(p){return api('/image/api/auth-status',{method:'GET',headers:{'x-rp-sync-password':p||pass()}}).then(function(r){return r.authenticated;}).catch(function(){return false;});}
@@ -1292,7 +1301,8 @@ async function handleImageAdmin(request, env, url) {
         if (request.method !== 'PUT') return error('Method not allowed.', 405);
         const body = await request.json().catch(() => null);
         if (!body || typeof body !== 'object') return error('Invalid JSON body.');
-        return json({ ok: true, settings: await writeImageSettings(bucket, { ...await readImageSettings(bucket), ...body }) });
+        const current = await readImageSettings(bucket);
+        return json({ ok: true, settings: await writeImageSettings(bucket, { ...current, ...body, params: { ...current.params, ...(body.params || {}) } }) });
     }
     if (url.pathname === `${IMAGE_ADMIN_PATH}/api/storage`) {
         if (request.method !== 'GET') return error('Method not allowed.', 405);

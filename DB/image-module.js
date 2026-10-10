@@ -618,6 +618,64 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         return model || IMAGE_GEN_DEFAULT_MODEL;
     }
 
+    // 测试版生图设置（站点 R2 里的 /image/api/settings）：生图参数和所选生图接口。读不到时用原来的固定值。
+    const generation = {
+        settings: { generator: 'direct', params: { steps: 28, scale: 6, cfg: 0, sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras', negative: '' } },
+        providers: new Map(),
+        paramHandlers: new Set()
+    };
+
+    async function reloadGenerationSettings() {
+        try {
+            const headers = { 'x-rp-sync-password': safeLocalGet('rp_hub_sync_password_v1') || '' };
+            const response = await fetch('/image/api/settings', { headers, credentials: 'same-origin' });
+            const body = await response.json().catch(() => null);
+            if (response.ok && body?.settings) generation.settings = body.settings;
+        } catch (error) {
+            log('image settings unavailable; using defaults', error);
+        }
+        return generation.settings;
+    }
+
+    // 插件注册的生图接口：generate({ params, token, signal }) 返回图片 Blob，外壳负责上传存进 R2。
+    function registerImageProvider(provider) {
+        const id = String(provider?.id || '').trim();
+        if (!/^[a-z0-9-]{3,32}$/.test(id) || id === 'direct') throw new TypeError('image provider id must be 3-32 lowercase letters, digits or dashes');
+        if (typeof provider.generate !== 'function') throw new TypeError('image provider generate must be a function');
+        generation.providers.set(id, {
+            id,
+            label: String(provider.label || id).slice(0, 40),
+            maxSteps: Math.min(50, Math.max(1, Math.round(Number(provider.maxSteps) || 28))),
+            costHint: typeof provider.costHint === 'function' ? provider.costHint : null,
+            generate: provider.generate
+        });
+        window.dispatchEvent(new CustomEvent('rph-image-providers-change'));
+    }
+
+    // 生图前改参数：只影响之后的新图，已生成的图锁住生成时的参数。
+    function onImageParams(handler) {
+        if (typeof handler !== 'function') throw new TypeError('image params handler must be a function');
+        generation.paramHandlers.add(handler);
+        return () => generation.paramHandlers.delete(handler);
+    }
+    reloadGenerationSettings();
+
+    function applyParamHandlers(snapshot) {
+        for (const handler of generation.paramHandlers) {
+            try {
+                const draft = structuredClone(snapshot);
+                const result = handler(draft);
+                const next = result && typeof result === 'object' ? result : draft;
+                for (const key of ['tag', 'artist', 'negative', 'size', 'steps', 'scale', 'cfg', 'sampler', 'noise_schedule']) {
+                    if (next[key] !== undefined) snapshot[key] = String(next[key]);
+                }
+            } catch (error) {
+                log('image params handler failed', error);
+            }
+        }
+        return snapshot;
+    }
+
     function buildImageParamsSnapshot(prompt, options = {}) {
         const characterUuid = String(options.characterUuid || '');
         if (!characterUuid) return null;
@@ -631,7 +689,8 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             ? createRerollSeed(options.previousSeed)
             : deriveImageSeed(safePrompt, options.occurrenceIndex, characterUuid);
         const settings = state.settings || {};
-        return {
+        const params = generation.settings.params || {};
+        return applyParamHandlers({
             prompt: safePrompt,
             tag: safePrompt.slice(0, 2000),
             source: 'module',
@@ -641,18 +700,18 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             styleKey,
             styleName,
             size: settings.imageSize || '竖图',
-            steps: '40',
-            scale: '6',
-            cfg: '0',
-            sampler: 'k_dpmpp_2m_sde',
-            negative: IMAGE_GEN_NEGATIVE_PROMPT,
+            steps: String(params.steps ?? 28),
+            scale: String(params.scale ?? 6),
+            cfg: String(params.cfg ?? 0),
+            sampler: String(params.sampler || 'k_dpmpp_2m_sde'),
+            negative: String(params.negative || IMAGE_GEN_NEGATIVE_PROMPT),
             nocache: options.reroll ? '1' : '0',
             rerollNonce,
-            noise_schedule: 'karras',
+            noise_schedule: String(params.noise_schedule || 'karras'),
             seed,
             characterUuid,
             characterName: String(options.characterName || '未命名角色')
-        };
+        });
     }
 
     function buildDescriptor(prompt, occurrenceIndex, context) {
@@ -1780,7 +1839,18 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             if (token && (!provider || !tokenProvider || provider === tokenProvider)) headers[IMAGE_TOKEN_HEADER] = token;
             const syncPassword = safeLocalGet('rp_hub_sync_password_v1');
             if (syncPassword) headers['x-rp-sync-password'] = syncPassword;
-            const response = await fetch(url, { method: 'POST', headers });
+            const generator = String(generation.settings.generator || 'direct');
+            let response;
+            if (generator === 'direct') {
+                response = await fetch(url, { method: 'POST', headers });
+            } else {
+                // 选了插件提供的生图接口：插件在浏览器里生成，外壳把图片上传存进 R2（存放位置和直链生图相同）。
+                const provider = generation.providers.get(generator);
+                if (!provider) throw new Error(`生图接口「${generator}」的插件没有加载，请在模块管理里启用它，或在设置里改回直链`);
+                const blob = await provider.generate({ params: Object.fromEntries(url.searchParams), token });
+                if (!(blob instanceof Blob) || !blob.type.startsWith('image/')) throw new Error(`生图接口「${provider.label}」没有返回图片`);
+                response = await fetch(url, { method: 'PUT', headers: { ...headers, 'content-type': blob.type }, body: blob });
+            }
             if (!response.ok) {
                 const payload = await response.json().catch(() => null);
                 throw new Error(payload?.error || `图片生成失败：HTTP ${response.status}`);
@@ -2486,6 +2556,12 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         normalizeImageRenderRecord,
         getFrozenImageRenderRecord: (prompt, occurrenceIndex, context = {}) => getFrozenRecord(prompt, occurrenceIndex, context),
         flushRecords: () => flushRecordsWithoutBlockingSync(),
+        registerImageProvider,
+        onImageParams,
+        listImageProviders: () => [...generation.providers.values()].map(({ id, label, maxSteps, costHint }) => ({ id, label, maxSteps, costHint })),
+        getGenerationSettings: () => structuredClone(generation.settings),
+        reloadGenerationSettings,
+        defaultNegativePrompt: IMAGE_GEN_NEGATIVE_PROMPT,
         getPerformanceCounters: () => readPerformanceCounters(),
         resetPerformanceCounters: (options = {}) => resetPerformanceCounters(options),
         setPerformanceRowDetailsEnabled: (enabled) => {
@@ -2495,14 +2571,19 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
     };
 })();
 
-/* 测试版生图设置：插在 RPH 设置页「生图设置」小节下面；设置值存在站点的 R2（/image/api/settings），
- * 不写进 RPH 自己的设置数据，聊天页面保存设置时不会被覆盖。另外每天最多检查一次存储用量，超出清理上限时弹窗询问。 */
+/* 生图参数：直接并进 RPH 设置页「生图设置」的格子里（接口、采样器、步数、引导值、负面提示词）。
+ * 设置值存在站点的 R2（/image/api/settings），不写进 RPH 自己的设置数据，聊天页面保存设置时不会被覆盖。
+ * 另外每天最多检查一次存储用量，超出清理上限时弹窗询问。 */
 (() => {
     'use strict';
     const PASSWORD_KEY = 'rp_hub_sync_password_v1';
     const CHECK_KEY = 'rph_image_storage_checked_at';
     const DAY_MS = 86_400_000;
-    const SECTION_ATTR = 'data-rph-test-image-settings';
+    const FIELD_ATTR = 'data-rph-image-param';
+    const SAMPLERS = ['k_euler', 'k_euler_ancestral', 'k_dpmpp_2s_ancestral', 'k_dpmpp_2m', 'k_dpmpp_2m_sde', 'k_dpmpp_sde', 'ddim_v3'];
+    const NOISE_SCHEDULES = ['karras', 'native', 'exponential', 'polyexponential'];
+    const BADGE_CLASS = 'text-xs font-mono font-bold text-gray-600 bg-gray-50 border border-gray-200 rounded-lg px-2.5 py-1 whitespace-nowrap';
+    const RANGE_CLASS = 'compact-range w-full h-1.5 bg-primary-100 rounded-lg appearance-none cursor-pointer accent-primary-500';
 
     function headers() {
         let password = '';
@@ -2517,119 +2598,136 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         return body;
     }
 
+    const imageModule = () => globalThis.RPHubImageModule;
+
     function appProxy() {
         const app = document.getElementById('app')?.__vue_app__;
         return app?._instance?.proxy || app?._container?._vnode?.component?.proxy || null;
     }
 
-    function findAnchor() {
+    function findGrid() {
         const heading = [...document.querySelectorAll('h4.settings-subheading')].find((node) => node.textContent.trim() === '生图设置');
-        return heading?.closest('.pt-6') || null;
+        return heading?.closest('.pt-6')?.querySelector('.grid') || null;
     }
 
-    function field(label, control, hint = '') {
-        const wrap = document.createElement('div');
-        wrap.className = 'min-w-0';
-        const title = document.createElement('label');
-        title.className = 'settings-label';
-        title.textContent = label;
-        wrap.append(title, control);
-        if (hint) {
-            const note = document.createElement('p');
-            note.className = 'text-xs text-gray-500 mt-1';
-            note.dataset.hint = '';
-            note.textContent = hint;
-            wrap.appendChild(note);
-        }
+    function element(tag, className = '', text = '') {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text) node.textContent = text;
+        return node;
+    }
+
+    function cell(label, control, wide = false) {
+        const wrap = element('div', wide ? 'min-w-0 md:col-span-2' : 'min-w-0');
+        wrap.setAttribute(FIELD_ATTR, '');
+        wrap.append(element('label', 'settings-label', label), control);
         return wrap;
     }
 
-    function stepsHint(mode, steps) {
-        if (mode !== 'web') return '直链接口最高按 28 步生成。';
-        return steps > 28 ? `超过 28 步按官方价格计费：竖图 V4.5 约 ${Math.max(2, Math.ceil(0.000002951823174884865 * 832 * 1216 + 0.0000005753298233447344 * 832 * 1216 * steps))} 点/张（28 步只要 1 点）。` : '28 步以内按标准价格计费。';
+    function select(options) {
+        const node = element('select', 'settings-control');
+        for (const [value, label] of options) node.appendChild(Object.assign(document.createElement('option'), { value, textContent: label }));
+        return node;
     }
 
-    function buildSection() {
-        const section = document.createElement('div');
-        section.className = 'pt-6 border-t border-gray-100 mt-6';
-        section.setAttribute(SECTION_ATTR, '');
-        const heading = document.createElement('h4');
-        heading.className = 'settings-subheading mb-4';
-        heading.textContent = '测试版生图设置';
-        const grid = document.createElement('div');
-        grid.className = 'grid grid-cols-1 md:grid-cols-2 gap-4';
-        const mode = document.createElement('select');
-        mode.className = 'settings-control';
-        mode.innerHTML = '<option value="direct">直链（默认，最高 28 步）</option><option value="web">网页任务（1–50 步）</option>';
-        const steps = document.createElement('input');
-        steps.type = 'number';
-        steps.min = '1';
-        steps.max = '50';
-        steps.className = 'settings-control';
-        const limit = document.createElement('input');
-        limit.type = 'number';
-        limit.min = '0.1';
-        limit.step = '0.5';
-        limit.className = 'settings-control';
-        const usage = document.createElement('div');
-        usage.className = 'settings-control';
-        usage.style.display = 'flex';
-        usage.style.alignItems = 'center';
-        usage.style.justifyContent = 'space-between';
-        usage.style.gap = '8px';
-        usage.innerHTML = '<span data-usage>读取中…</span><a href="/image" target="_blank" rel="noopener" class="text-primary-600 text-xs">图片管理</a>';
-        const stepsField = field('生成步数', steps, '');
-        grid.append(field('生图接口', mode), stepsField, field('存储清理上限（GB）', limit, '超出时会提示清理最早的图。免费 R2 为 10 GB。'), field('R2 已用', usage));
-        const status = document.createElement('p');
-        status.className = 'text-xs text-gray-500 mt-3';
-        section.append(heading, grid, status);
+    // 和记忆系统「补录并发数」一样的滑条：标题 + 右侧数值 + 滑轨。
+    function slider(label, { min, max, step, unit = '' }) {
+        const wrap = element('div', 'min-w-0 md:col-span-2');
+        wrap.setAttribute(FIELD_ATTR, '');
+        const head = element('div', 'flex justify-between items-center mb-2');
+        const value = element('span', BADGE_CLASS);
+        head.append(element('label', 'text-sm font-semibold text-gray-700', label), value);
+        const input = element('input', RANGE_CLASS);
+        Object.assign(input, { type: 'range', min: String(min), max: String(max), step: String(step) });
+        const hint = element('p', 'text-xs text-gray-500 mt-2');
+        const show = () => { value.textContent = `${input.value}${unit}`; };
+        input.addEventListener('input', show);
+        wrap.append(head, input, hint);
+        return { wrap, input, hint, show };
+    }
 
-        let saveTimer = null;
-        const refreshHint = () => {
-            stepsField.querySelector('[data-hint]')?.remove();
-            const note = document.createElement('p');
-            note.className = 'text-xs text-gray-500 mt-1';
-            note.dataset.hint = '';
-            note.textContent = stepsHint(mode.value, Number(steps.value) || 28);
-            stepsField.appendChild(note);
-            steps.disabled = mode.value !== 'web';
+    function buildFields(grid) {
+        const settings = imageModule()?.getGenerationSettings?.() || { generator: 'direct', params: {} };
+        const params = settings.params || {};
+        const generator = select([['direct', '直链（最高 28 步）']]);
+        const sampler = select(SAMPLERS.map((value) => [value, value]));
+        const noise = select(NOISE_SCHEDULES.map((value) => [value, value]));
+        const steps = slider('生成步数', { min: 1, max: 28, step: 1, unit: ' 步' });
+        const scale = slider('提示词引导值', { min: 0, max: 10, step: 0.1 });
+        const cfg = slider('缩放引导值', { min: 0, max: 1, step: 0.02 });
+        const negative = element('textarea', 'settings-control');
+        negative.rows = 4;
+        negative.style.resize = 'vertical';
+        const negativeCell = cell('负面提示词', negative, true);
+        const resetNegative = element('button', 'text-xs text-primary-600 mt-1', '恢复默认负面提示词');
+        resetNegative.type = 'button';
+        const status = element('p', 'text-xs text-gray-500 md:col-span-2');
+        status.setAttribute(FIELD_ATTR, '');
+        negativeCell.appendChild(resetNegative);
+
+        const providers = () => imageModule()?.listImageProviders?.() || [];
+        const current = () => providers().find((item) => item.id === generator.value) || null;
+        const fillProviders = () => {
+            const selected = generator.value || settings.generator;
+            generator.replaceChildren(Object.assign(document.createElement('option'), { value: 'direct', textContent: '直链（最高 28 步）' }));
+            for (const item of providers()) generator.appendChild(Object.assign(document.createElement('option'), { value: item.id, textContent: `${item.label}（插件，最高 ${item.maxSteps} 步）` }));
+            if (selected !== 'direct' && !providers().some((item) => item.id === selected)) {
+                generator.appendChild(Object.assign(document.createElement('option'), { value: selected, textContent: `${selected}（插件未加载）` }));
+            }
+            generator.value = selected;
         };
+        const refresh = () => {
+            const provider = current();
+            steps.input.max = String(provider?.maxSteps || 28);
+            if (Number(steps.input.value) > Number(steps.input.max)) steps.input.value = steps.input.max;
+            [steps, scale, cfg].forEach((item) => item.show());
+            let cost = '';
+            try { cost = provider?.costHint?.({ steps: Number(steps.input.value), sampler: sampler.value }) || ''; } catch (_) { cost = ''; }
+            steps.hint.textContent = cost || (provider ? '' : '直链接口最高按 28 步生成。');
+        };
+
+        generator.value = settings.generator || 'direct';
+        sampler.value = params.sampler || 'k_dpmpp_2m_sde';
+        noise.value = params.noise_schedule || 'karras';
+        steps.input.value = String(params.steps ?? 28);
+        scale.input.value = String(params.scale ?? 6);
+        cfg.input.value = String(params.cfg ?? 0);
+        negative.value = params.negative || imageModule()?.defaultNegativePrompt || '';
+        fillProviders();
+        refresh();
+
+        let timer = null;
         const save = () => {
-            clearTimeout(saveTimer);
-            refreshHint();
-            saveTimer = setTimeout(async () => {
+            refresh();
+            clearTimeout(timer);
+            timer = setTimeout(async () => {
+                const defaultNegative = imageModule()?.defaultNegativePrompt || '';
+                const body = {
+                    generator: generator.value,
+                    params: {
+                        steps: Number(steps.input.value), scale: Number(scale.input.value), cfg: Number(cfg.input.value),
+                        sampler: sampler.value, noise_schedule: noise.value,
+                        negative: negative.value.trim() === defaultNegative.trim() ? '' : negative.value
+                    }
+                };
                 try {
-                    const result = await api('/image/api/settings', {
-                        method: 'PUT',
-                        body: JSON.stringify({ mode: mode.value, steps: Number(steps.value), storageLimitGb: Number(limit.value) })
-                    });
-                    steps.value = result.settings.steps;
-                    limit.value = result.settings.storageLimitGb;
-                    status.textContent = '已保存，下一张图开始生效。';
+                    await api('/image/api/settings', { method: 'PUT', body: JSON.stringify(body) });
+                    await imageModule()?.reloadGenerationSettings?.();
+                    status.textContent = '生图参数已保存，所有设备共用；只影响之后的新图，已生成的图不会重新生成。';
                 } catch (error) {
-                    status.textContent = `保存失败：${error.message}`;
+                    status.textContent = `保存失败：${error.message}（需要先在「同步」里输入过同步密码）`;
                 }
-            }, 500);
+            }, 400);
         };
-        mode.addEventListener('change', save);
-        steps.addEventListener('change', save);
-        limit.addEventListener('change', save);
-        api('/image/api/settings').then(({ settings }) => {
-            mode.value = settings.mode;
-            steps.value = settings.steps;
-            limit.value = settings.storageLimitGb;
-            refreshHint();
-        }, (error) => { status.textContent = `读取失败：${error.message}（需要先在「同步」里输入过同步密码）`; });
-        api('/image/api/storage').then((report) => {
-            usage.querySelector('[data-usage]').textContent = `${report.totalHuman} / 10 GB${report.over ? '（超出上限）' : ''}`;
-        }, () => { usage.querySelector('[data-usage]').textContent = '读取失败'; });
-        return section;
+        for (const control of [generator, sampler, noise, negative, steps.input, scale.input, cfg.input]) control.addEventListener('change', save);
+        resetNegative.addEventListener('click', () => { negative.value = imageModule()?.defaultNegativePrompt || ''; save(); });
+        window.addEventListener('rph-image-providers-change', () => { fillProviders(); refresh(); });
+        grid.append(cell('生图接口', generator), cell('采样器', sampler), cell('噪声调度', noise), steps.wrap, scale.wrap, cfg.wrap, negativeCell, status);
     }
 
-    function ensureSection() {
-        if (document.querySelector(`[${SECTION_ATTR}]`)) return;
-        const anchor = findAnchor();
-        if (anchor) anchor.after(buildSection());
+    function ensureFields() {
+        const grid = findGrid();
+        if (grid && !grid.querySelector(`[${FIELD_ATTR}]`)) buildFields(grid);
     }
 
     // 只在设置页打开时观察页面变化，离开就停，不影响聊天时的性能。
@@ -2638,8 +2736,9 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         observer?.disconnect();
         observer = null;
         if (view !== 'settings') return;
-        ensureSection();
-        observer = new MutationObserver(ensureSection);
+        imageModule()?.reloadGenerationSettings?.().then(ensureFields);
+        ensureFields();
+        observer = new MutationObserver(ensureFields);
         observer.observe(document.getElementById('app'), { childList: true, subtree: true });
     }
 

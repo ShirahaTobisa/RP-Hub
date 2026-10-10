@@ -1,6 +1,6 @@
 # RP-Hub 创意工坊 Mod 作者指南
 
-这份指南描述当前 `DB/module-loader.js` 的 API 4，兼容原有 API 1～3 模块。指南和 `examples/` 都是教材，
+这份指南描述当前 `DB/module-loader.js` 的 API 5，兼容原有 API 1～4 模块。指南和 `examples/` 都是教材，
 不会进入 `dist/` 或发布 ZIP。
 
 ## 1. 这是什么与信任模型
@@ -163,6 +163,19 @@ ctx.requests.onChat(body => {
     body.messages.push({ role: 'system', content: '本轮额外要求' });
 });
 ```
+
+### `ctx.image`（API 5）
+
+生图相关的扩展点，由生图模块实现。
+
+- `registerProvider({ id, label, maxSteps, costHint, generate })`：注册一个生图接口。它会出现在 RPH「设置」→「生图设置」→「生图接口」里；用户选中后，每张新图都由插件生成：
+  - `generate({ params, token })` 返回图片 `Blob`（PNG、JPEG、WebP、AVIF 或 GIF）。`params` 是这张图的全部生图参数（`tag`、`model`、`artist`、`size`、`steps`、`scale`、`cfg`、`sampler`、`negative`、`noise_schedule`、`seed` 等），`token` 是用户的生图密钥。
+  - 生成好的图由外壳上传到站点 R2，存放位置按参数计算，和直链生图相同；插件不能指定位置。
+  - `maxSteps`（1–50）决定设置页步数滑条的上限；`costHint({ steps })` 可返回一句计费提示，显示在滑条下面。
+  - `id` 用 3～32 位小写字母、数字或短横线；用户选了某个接口但对应插件没加载时，生图会报错提示，不会悄悄改走直链。
+- `onParams(handler)`：每张新图生成参数前调用，可以直接修改传入的参数对象（如按角色换画师、追加负面词），只能改 `tag`、`artist`、`negative`、`size`、`steps`、`scale`、`cfg`、`sampler`、`noise_schedule`。已经生成的图锁住生成时的参数，不受影响。返回取消订阅的函数。
+
+完整例子见 `DB/modules/nai2api-web.js`（Nai2API 网页任务，支持 1–50 步）。
 
 ### `ctx.log`、版本与上游信息
 

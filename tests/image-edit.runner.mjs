@@ -12,7 +12,7 @@ const browser = await chromium.launch({ executablePath: chrome, headless: true }
 const contexts = [], report = { passed: [], pageErrors: [], imageRequests: [], snapshots: [] }, scripts = new Map();
 report.moduleSha256 = crypto.createHash('sha256').update(await fs.readFile(path.join(process.env.RPH_PACKAGE_ROOT || root,'DB/image-module.js'))).digest('hex');
 const imageFiles = new Set();
-let remote, uploaded = new Map(), createRequest;
+let remote, uploaded = new Map(), createRequest, generationSettings = null;
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64');
 const fixtureImage = { contentType:'image/svg+xml', body:'<svg xmlns="http://www.w3.org/2000/svg" width="300" height="180"><rect width="300" height="180" rx="8" fill="#dbeafe"/><path d="M0 140L85 65L155 120L225 40L300 110V180H0Z" fill="#60a5fa"/><text x="150" y="160" text-anchor="middle" font-size="16">隔离测试图</text></svg>' };
 const uuid = 'image-edit-diagnostic-card', recordKey = `rp_hub_image_renders_${uuid}`;
@@ -82,10 +82,12 @@ async function device(seed, mobile = false) {
             if (url.pathname === '/seed.html') return route.fulfill({ contentType:'text/html', body:'<!doctype html><title>Isolated seed</title>' });
             if (url.pathname === '/api/rp-image') {
                 const key = canonical(url); report.imageRequests.push({ method:req.method(), key });
-                if (req.method() === 'POST') imageFiles.add(key);
+                if (req.method() === 'POST' || req.method() === 'PUT') imageFiles.add(key);
+                if (req.method() === 'PUT') report.imageRequests.at(-1).contentType = req.headers()['content-type'];
                 return imageFiles.has(key) ? route.fulfill(fixtureImage) : route.fulfill({ status:404, json:{error:'fixture original missing'} });
             }
             if (url.pathname === '/api/rp-image-thumb') return route.fulfill({json:{ok:true}});
+            if (url.pathname === '/image/api/settings') return route.fulfill({json: generationSettings ? {ok:true, settings:generationSettings} : {}});
             if (url.pathname === '/api/rp-sync') {
                 if (url.searchParams.get('action') === 'upload-part') {
                     const index = Number(url.searchParams.get('index')); uploaded.set(index, req.postDataBuffer());
@@ -249,6 +251,30 @@ try {
         assert.equal(posts(), beforePosts);
         assert.equal(await page.locator('.toast-item', { hasText: '无法确认图片所属角色' }).count(), 0);
         passed('display-only regex that rewrites the image prompt still attributes the row without errors or generation');
+    }
+    // 选了插件提供的生图接口：插件在浏览器里生成图片，外壳用 PUT 上传到同一个存放位置，不再走直链 POST。
+    {
+        const old = oldRuns.cases.find(item => item.host !== 'package-0901');
+        generationSettings = { generator: 'test-gen', params: { steps: 35, scale: 6, cfg: 0, sampler: 'k_euler', noise_schedule: 'karras', negative: '' } };
+        const page = await device({ content: edited, records: old.after.records });
+        await page.evaluate(async () => {
+            globalThis.providerCalls = [];
+            RPHubImageModule.registerImageProvider({ id: 'test-gen', label: '测试接口', maxSteps: 50, async generate({ params, token }) {
+                providerCalls.push({ tag: params.tag, token: Boolean(token) });
+                return new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' });
+            } });
+            await RPHubImageModule.reloadGenerationSettings();
+        });
+        const before = report.imageRequests.length;
+        await frame(page).locator('.rp-image-reroll-button').click();
+        await page.waitForFunction(() => providerCalls.length === 1);
+        await page.waitForFunction(n => document.querySelectorAll('[data-chat-index="0"] .rp-generated-image-frame img')[0]?.src.includes('_rph_retry'), null);
+        const sent = report.imageRequests.slice(before);
+        assert.ok(sent.some(r => r.method === 'PUT' && r.contentType === 'image/png'), JSON.stringify(sent));
+        assert.ok(!sent.some(r => r.method === 'POST'), 'plugin generation must not also call the direct link');
+        assert.equal(await page.evaluate(() => providerCalls[0].tag), 'blue sky, white clouds, landscape');
+        generationSettings = null;
+        passed('plugin image provider generates in the browser and uploads with PUT instead of the direct link');
     }
     assert.deepEqual(report.pageErrors,[]);
     report.ok = true;

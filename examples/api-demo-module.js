@@ -1,4 +1,4 @@
-// 接口示范 mod：把 RP-Hub 测试版插件接口（API 4）的每一项各用一次，写插件时照着抄。
+// 接口示范 mod：把 RP-Hub 测试版插件接口（API 5）的每一项各用一次，写插件时照着抄。
 // 默认不改动任何聊天内容；“请求改写示范”要在面板里手动打开。
 (() => {
     'use strict';
@@ -7,8 +7,8 @@
     RPHubSDK.register({
         id: 'api-demo',
         name: '接口示范',
-        version: '1.0.0',
-        requiresApi: 4,
+        version: '1.1.0',
+        requiresApi: 5,
         init(ctx) {
             // ② 日志、版本、上游信息
             ctx.log('已加载', ctx.version, ctx.upstream.updateInfo);
@@ -52,6 +52,9 @@
                     ctx.app.set('userInput', `（接口示范）当前角色：${character}`);
                 }
             });
+
+            // ⑪ ctx.image：生图前看一眼（或修改）参数；注册生图接口见 DB/modules/nai2api-web.js
+            ctx.image.onParams((params) => record(`新图参数：${params.steps} 步 · ${params.sampler}`));
 
             // ⑨ ctx.ui.addSidebarEntry + openPanel + toast，⑩ ctx.appDb 只读查询
             ctx.ui.addSidebarEntry({

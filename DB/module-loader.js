@@ -2,8 +2,8 @@
 (() => {
     'use strict';
 
-    const API_VERSION = 4;
-    const LOADER_VERSION = 'r2-workshop-4';
+    const API_VERSION = 5;
+    const LOADER_VERSION = 'r2-workshop-5';
     const LIST_KEY = 'rp_hub_workshop_modules_v1';
     const DB_NAME = 'RPHubDB';
     const DB_STORE = 'store';
@@ -952,8 +952,18 @@
             },
             requests: {
                 onChat: callback => onChatRequest(id, callback)
+            },
+            // API 5：生图接口和生图参数，由生图模块（DB/image-module.js）实现。
+            image: {
+                registerProvider: (provider) => imageModule().registerImageProvider(provider),
+                onParams: (handler) => imageModule().onImageParams(handler)
             }
         };
+    }
+
+    function imageModule() {
+        if (!globalThis.RPHubImageModule?.registerImageProvider) throw new Error('生图模块没有加载，无法使用 ctx.image');
+        return globalThis.RPHubImageModule;
     }
 
     function setRuntimeStatus(runtime, status) {
