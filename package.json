@@ -10,7 +10,7 @@
   "scripts": {
     "test": "node tests/run-core.mjs",
     "test:package": "node tests/package.test.mjs",
-    "test:browser": "node scripts/prepare-test-fixtures.mjs && node tests/workshop-sdk.runner.mjs && node tests/workshop-app-api.runner.mjs && node tests/workshop-cloud.runner.mjs && node tests/image-edit.runner.mjs && node tests/site-backup.runner.mjs && node tests/run-log.runner.mjs",
+    "test:browser": "node scripts/prepare-test-fixtures.mjs && node tests/workshop-sdk.runner.mjs && node tests/workshop-app-api.runner.mjs && node tests/workshop-cloud.runner.mjs && node tests/image-edit.runner.mjs && node tests/site-backup.runner.mjs && node tests/run-log.runner.mjs && node tests/nai2api-steps.runner.mjs",
     "test:history": "node tests/run-all.mjs",
     "build": "node scripts/package.mjs --release-dir release"
   },
