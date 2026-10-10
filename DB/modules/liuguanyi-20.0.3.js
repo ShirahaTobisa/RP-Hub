@@ -1,7 +1,7 @@
-// Adapted from RP-Hub 终极美化 & 全功能增强 v19.5.4, author 苏萝萝.
+// Adapted from RP-Hub 终极美化 & 全功能增强 v20.0.3, author 苏萝萝.
 // Workshop edition: no image-generation integration; persistent data supports cloud sync.
 RPHubSDK.register({
-    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '19.5.4-rph.1', requiresApi: 2,
+    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.0.3-rph.1', requiresApi: 2,
     async init(ctx) {
     'use strict';
     if (globalThis.__rphLiuguanyiInitialized) return;
@@ -73,8 +73,13 @@ RPHubSDK.register({
         } finally { db?.close(); }
         await ctx.data.set('legacy-migrated', true);
     }
+
     const SPLASH_IMG_URL = 'https://img.scdn.io/i/6a8a449fb590e_1787446431.webp';
     const CACHE_KEY = 'rphub_custom_splash_b64';
+    const DB_NAME = 'RPHubDB';
+    const LEGACY_DB_NAME = String.fromCharCode(83, 105, 108, 108, 121, 84, 97, 118, 101, 114, 110, 68, 66);
+    const DB_VERSION = 1;
+    const STORE = 'store';
     const NOTE_KEY = 'rphub_notes_v1';
     const MOMENTS_KEY = 'rphub_moments_v1';
     const SPLIT_API_KEY = 'rphub_split_apis_v2';
@@ -459,6 +464,19 @@ RPHubSDK.register({
             .replace(/\u0000RPHUB_STYLE_QUOTE_(\d+)\u0000/g, (_, index) => protectedBlocks[Number(index)] || '');
         return { text: filtered, count: hits.length, hits };
     }
+    function sanitizeOutgoingAssistantMessages(messages) {
+        // 不在请求层清洗 assistant 历史，避免改变模型上下文；只在最终 assistant 正文显示/落盘阶段处理。
+        return;
+    }
+    function sanitizeAssistantCliches() {
+        // 兼容旧入口；真实处理由原始响应恢复链调用 filterStylePlainText。
+        return;
+    }
+    // 剥掉生图提示词。官方生图格式为 image###提示词###（可能跨行），
+    // embeddings 分流链路仍需要它做输入清洗。
+    function stripImageGenPrompts(text) {
+        return String(text || '').replace(/image###[\s\S]*?###/gi, '');
+    }
 
     // 官方页面会在响应进入 chatHistory 后再执行 filterBlockedStyleText()。
     // 插件不能改官方闭包，所以在网络层旁路保存主聊天的原始 assistant 输出，待官方处理完成后恢复正文。
@@ -607,6 +625,7 @@ RPHubSDK.register({
                         msg.content = stripNextResponseProtocol(msg.content);
                     }
                 });
+                sanitizeOutgoingAssistantMessages(parsedBody.messages);
             }
 
             const reroute = (newUrl, key, options = {}) => {
@@ -640,6 +659,17 @@ RPHubSDK.register({
 
             if (/embeddings/i.test(url)) {
                 if (!isOfficialApiEndpoint(url)) return _nativeFetch.call(this, input, newInit);
+                // 输入清洗：剥掉生图提示词（分流与主通道一致处理，保证缓存键与实际发送内容一致）
+                if (parsedBody && typeof parsedBody.input === 'string' && parsedBody.input.trim().length > 0) {
+                    const cleaned = stripImageGenPrompts(parsedBody.input);
+                    if (cleaned !== parsedBody.input) parsedBody.input = cleaned;
+                } else if (parsedBody && Array.isArray(parsedBody.input)) {
+                    parsedBody.input = parsedBody.input.map(item => {
+                        const s = typeof item === 'string' ? item : String(item?.text || item?.input || '');
+                        const cleaned = stripImageGenPrompts(s);
+                        return typeof item === 'string' ? cleaned : Object.assign({}, item, { text: cleaned });
+                    });
+                }
                 if (parsedBody) newInit.body = JSON.stringify(parsedBody);
 
                 const modelKey = getEmbeddingModelKey(parsedBody);
@@ -818,6 +848,14 @@ RPHubSDK.register({
         }
     }, 250);
 
+function getCharKey() {
+        try {
+            const st = getVueState();
+            const c = st && unref(st.currentCharacter);
+            if (c && (c.id || c.name)) return String(c.id || c.name);
+        } catch (e) {}
+        return 'default';
+    }
 
 
     function mkBtn(label, main, handler) {
@@ -879,15 +917,17 @@ RPHubSDK.register({
         }
     }
 
-
     // ================= 📝 模块：经典记忆可编辑（真生效，AI 收到编辑后的 summary） =================
     function injectClassicMemoryEditButtons() {
-        // 官方 1.9.5 记忆卡片类名已改为 article.memory-summary（旧版 article.rounded-xl 已废弃）
-        const cards = document.querySelectorAll('article.memory-summary, article.rounded-xl');
+        // ===== V20 原生派（官方 2.0.0） =====
+        // 官方记忆项从 1.9.8 的 article.memory-summary（内部 .mb-2.5 / .whitespace-pre-line）
+        // 全面重构为 ol.memory-timeline > li.memory-item，子结构：
+        //   .memory-item__head（含 .memory-item__turn 轮次、.memory-item__chars 字数、.memory-item__retry 重试键）
+        //   .memory-item__text（摘要正文）
+        // 旧锚点全部失效 → 编辑/删除入口全挂。这里对齐新 DOM，同时兼容旧结构。
+        const cards = document.querySelectorAll('li.memory-item, article.memory-summary');
         if (cards.length === 0) return;
         const st = getVueState();
-        // 1.9.5 官方不再导出 classicMemories 真 ref（1.9.4 有），改用官方导出的
-        // displayedClassicMemories —— 它正是当前页卡片的渲染源，字段完整（含 id/summary/turn）。
         const memories = st && Array.isArray(unref(st.displayedClassicMemories))
             ? unref(st.displayedClassicMemories)
             : (st && Array.isArray(unref(st.classicMemories)) ? unref(st.classicMemories) : null);
@@ -895,45 +935,45 @@ RPHubSDK.register({
         let injected = 0;
         cards.forEach(card => {
             if (card.querySelector('.sakura-mem-edit')) return;
-            // 判断是不是记忆卡片（有"第 X 轮" + 摘要区）
-            const turnText = (card.querySelector('.text-sm.font-medium') || {}).textContent || '';
-            const summaryEl = card.querySelector('.whitespace-pre-line');
-            if (!/第\s*\d+/.test(turnText) || !summaryEl) return;
+            // 新版：.memory-item__text；旧版兼容：.whitespace-pre-line
+            const summaryEl = card.querySelector('.memory-item__text, .whitespace-pre-line');
+            if (!summaryEl) return;
             const summaryText = (summaryEl.textContent || '').trim();
             if (!summaryText) return;
-            // 用摘要文本精确匹配（卡片直接显示 memory.summary，两者一致）
             const mem = memories.find(m => (m.summary || '').trim() === summaryText);
             if (!mem) return;
-            // 加编辑按钮（官方卡片头类名为 mb-2.5 —— 含点号，CSS 类选择器无法直接写，
-            // 必须用属性选择器；兼容旧版 mb-3）
-            const header = card.querySelector('[class*="mb-2.5"]') || card.querySelector('.mb-3') || card.firstElementChild;
+            // 新版头容器：.memory-item__head；旧版兼容：mb-2.5 / mb-3 / firstElementChild
+            const header = card.querySelector('.memory-item__head') || card.querySelector('[class*="mb-2.5"]') || card.querySelector('.mb-3') || card.firstElementChild;
             if (!header) return;
-            // 三个按钮（重试/编辑/删除）统一收进官方"重试"所在的右侧容器，
-            // 顺序：重试（官方）→ 编辑 → 删除。
-            const retryBtn = card.querySelector('button[title*="重新生成"]');
-            const actions = retryBtn && retryBtn.parentElement ? retryBtn.parentElement : header;
-            if (actions !== header) actions.classList.add('sakura-mem-actions');
-            const btn = document.createElement('button');
-            btn.type = 'button';
-            btn.className = 'sakura-mem-edit';
-            btn.title = '编辑这条总结';
-            btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>';
-            btn.dataset.memId = String(mem.id || '');
-            actions.appendChild(btn);
-            // 官方只提供"清空全部记忆"，没有单条删除入口（1.9.5 记忆卡片上只有"重试"）。
-            // 补一个删除按钮：走官方存储层直写 classic_memories + 正门重载，与编辑同机制。
-            const delBtn = document.createElement('button');
-            delBtn.type = 'button';
-            delBtn.className = 'sakura-mem-del';
-            delBtn.title = '删除这条总结';
-            delBtn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>';
-            delBtn.dataset.memId = String(mem.id || '');
+            // 官方重试键（新版 .memory-item__retry；旧版 button[title*="重新生成"]）作为锚点
+            const retryBtn = header.querySelector('.memory-item__retry') || card.querySelector('button[title*="重新生成"]');
+            const anchor = retryBtn || header;
+            const mkIconBtn = (cls, title, svg) => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.className = cls;
+                b.title = title;
+                b.innerHTML = svg;
+                b.dataset.memId = String(mem.id || '');
+                return b;
+            };
+            const btn = mkIconBtn('sakura-mem-edit', '编辑这条总结',
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>');
+            const delBtn = mkIconBtn('sakura-mem-del', '删除这条总结',
+                '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>');
             delBtn.addEventListener('click', ev => {
                 ev.preventDefault();
                 ev.stopPropagation();
                 deleteClassicMemoryEntry(mem);
             });
-            actions.appendChild(delBtn);
+            // 新版头容器为 flex + gap，官方 retry 已是紧凑方块，直接相邻插入
+            if (anchor === header) {
+                header.appendChild(btn);
+                header.appendChild(delBtn);
+            } else {
+                anchor.insertAdjacentElement('afterend', delBtn);
+                anchor.insertAdjacentElement('afterend', btn);
+            }
             injected++;
         });
         if (injected) console.log(`[苏萝萝] 已注入 ${injected} 个经典记忆编辑按钮`);
@@ -976,7 +1016,7 @@ RPHubSDK.register({
             try { await sakuraMemHotReload(); } catch (_) {}
         }
         // 兜底：直接从 DOM 摘掉卡片（重载失败时也能立即消失）
-        const card = document.querySelector(`.sakura-mem-del[data-mem-id="${String(memory.id)}"]`)?.closest('article');
+        const card = document.querySelector(`.sakura-mem-del[data-mem-id="${String(memory.id)}"]`)?.closest('li.memory-item, article.memory-summary, article');
         if (card) card.remove();
         alert(`已删除第 ${turnLabel} 轮的总结记忆`);
     }
@@ -1048,8 +1088,8 @@ RPHubSDK.register({
                 try { await sakuraMemHotReload(); } catch (_) {}
             }
             // 更新 DOM 显示
-            const card = document.querySelector(`[data-mem-id="${String(memory.id)}"]`)?.closest('article');
-            const summaryEl = card && card.querySelector('.whitespace-pre-line');
+            const card = document.querySelector(`[data-mem-id="${String(memory.id)}"]`)?.closest('li.memory-item, article.memory-summary, article');
+            const summaryEl = card && card.querySelector('.memory-item__text, .whitespace-pre-line');
             if (summaryEl) summaryEl.textContent = newVal;
             alert('已保存，AI 将收到编辑后的记忆');
             mask.remove();
@@ -1067,6 +1107,7 @@ RPHubSDK.register({
     }
 
     // ================= 📖 模块二：名场面回忆手记（高光收录） =================
+    let lastMomentSaveError = null;
     let _momentsCache = null;
     let _momentsHydrated = false;
     // pluginStorage 遗留数据读取（v19.4.7 及更早的扁平数组 / 更早的分桶对象），一次性搬进 IDB。
@@ -1354,6 +1395,8 @@ function gpEsc(str) {
     if (!str) return '';
     return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '"');
 }
+const GRAMOPHONE_DB_NAME = 'sakura_gramophone_db';
+const GRAMOPHONE_DB_STORE = 'tracks';
 const GRAMOPHONE_STORAGE_KEY = 'sakura_gramophone_playlist_v6';
 const GRAMOPHONE_SETTINGS_KEY = 'sakura_gramophone_settings_v1';
 
@@ -1362,6 +1405,7 @@ const DEFAULT_TRACKS = [];
 
 let _gpAudio = null;
 let _gpBlobUrlCache = new Map(); // LRU blob URL 缓存池（上限 2 首），杜绝 62MB 级重复 IO 与内存峰值抖动
+let _gpDb = null;
 let _gpPlaylist = [];
 let _gpCurrentIndex = 0;
 let _gpIsPlaying = false;
@@ -1370,7 +1414,6 @@ let _gpVolume = 0.35;
 let _gpPanelOpen = false;
 let _gpCurrentPage = 1;
 const GP_PAGE_SIZE = 5;
-
 
 // 2. 歌单与设置持久化
 function loadGramophoneData() {
@@ -1679,12 +1722,7 @@ function addDirectUrlTrack() {
     });
 }
 
-function importLocalTrackFiles(e) {
-    return ctx.persistence.track('music-import', () => importTrackFiles(e)).catch(error => {
-        ctx.ui.toast('音乐导入失败：' + error.message);
-    });
-}
-async function importTrackFiles(e) {
+async function importLocalTrackFiles(e) {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
     for (const file of files) {
@@ -2047,7 +2085,8 @@ function injectGramophoneButton() {
     const gBtn = document.createElement('button');
     gBtn.id = 'sakura-gramophone-trigger';
     gBtn.type = 'button';
-    gBtn.className = 'relative rounded-full w-8 h-8 flex items-center justify-center border transition-all active:scale-95 bg-white text-gray-500 hover:text-pink-600';
+    // V20 原生派：挂入官方 2.0.0 的 .island-button，与发图/上下文/剧情分支同规格同质感
+    gBtn.className = 'island-button';
     gBtn.title = '暗夜留声机（随身听）';
     gBtn.innerHTML = `
 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.75">
@@ -2074,7 +2113,6 @@ function injectGramophoneButton() {
         gBtn.classList.add('sgp-btn-spin');
     }
 }
-
 
     // 自定义命名弹窗：替代浏览器原生 prompt，暗夜绒面风格与手记展柜统一。
     // onConfirm(title) 在确认时回调；取消/Esc/点遮罩均静默关闭。
@@ -2218,6 +2256,7 @@ function injectGramophoneButton() {
 
                 // 自定义命名弹窗替代原生 prompt；确认后执行收录。
                 openMomentNamingDialog(defaultTitle, async (inputTitle) => {
+
                     const moment = {
                         id: 'moment_' + Date.now(),
                         title: inputTitle,
@@ -2257,35 +2296,27 @@ function injectGramophoneButton() {
 
     // ================= 📝 模块：全屏输入编辑器（长文畅写，回车不误发） =================
     function injectFullscreenComposer() {
-        const ta = document.querySelector('textarea[placeholder="输入消息..."]');
-        if (!ta) return;
-        const wrap = ta.closest('.flex.items-end') || ta.parentElement;
-        if (!wrap) return;
-        if (wrap.querySelector('.sakura-fs-btn')) return;
-        // 不移动 textarea、不改变 Vue 绑定；按钮仅作为同层的绝对定位覆盖层。
-        // 这样输入法弹出时官方 textarea 的 DOM 结构完全不变。
-        if (getComputedStyle(wrap).position === 'static') wrap.style.position = 'relative';
+        // ===== V20 原生派（官方 2.0.0） =====
+        // 官方输入区重构为 .input-island > textarea.island-input + .island-toolbar，
+        // 旧版依赖的 .flex.items-end 与 nextElementSibling 已完全失效（nextElementSibling 现在是宽度巨大的工具栏，
+        // 会把按钮推出屏幕）。策略：全屏按钮直接作为原生 .island-button
+        // 挂载进工具栏左侧工具组，完全跟随官方方块玻璃风格，不再做任何绝对定位。
+        const island = document.querySelector('.input-island');
+        if (!island) return;
+        if (island.querySelector('.sakura-fs-btn')) return;
+        const toolbar = island.querySelector('.island-toolbar');
+        if (!toolbar) return;
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'sakura-fs-btn';
+        // 复用官方 .island-button 尺寸与动效，仅额外挂 .sakura-fs-btn 作为事件委托钩子
+        btn.className = 'sakura-fs-btn island-button';
         btn.title = '全屏编辑';
         btn.setAttribute('aria-label', '全屏编辑');
-        btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
-        const sendGroup = ta.nextElementSibling;
-        const place = () => {
-            const reserve = sendGroup ? Math.max(0, sendGroup.getBoundingClientRect().width) : 0;
-            btn.style.right = (reserve + 7) + 'px';
-            btn.style.top = '50%';
-        };
-        btn.style.position = 'absolute';
-        btn.style.transform = 'translateY(-50%)';
-        btn.style.zIndex = '3';
-        // 只给原 textarea 增加右侧内边距，不包裹、不搬运它。
-        const currentPad = parseFloat(getComputedStyle(ta).paddingRight) || 0;
-        if (currentPad < 40) ta.style.paddingRight = '40px';
-        wrap.appendChild(btn);
-        place();
-        requestAnimationFrame(place);
+        btn.innerHTML = '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 3H5a2 2 0 0 0-2 2v3"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 8V5a2 2 0 0 0-2-2h-3"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 16v3a2 2 0 0 0 2 2h3"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
+        // 工具栏左侧第一个子容器就是工具组（flex items-center gap-0.5）
+        const leftGroup = toolbar.firstElementChild;
+        if (leftGroup) leftGroup.appendChild(btn);
+        else toolbar.appendChild(btn);
     }
 
     function openFullscreenComposer() {
@@ -2872,11 +2903,19 @@ function injectGramophoneButton() {
             const st = getVueState();
             const viewText = modelBtn.closest('.management-view')?.innerText || '';
 
-            if ((viewText.includes('记忆引擎设置') || viewText.includes('记忆系统')) && memConf.url && memConf.key) {
-                // 1.9.5 起向量模型按钮文案为“向量模型”，且模式名为 enhanced；兼容旧版“向量嵌入模型”/vector。
-                const memMode = String(st?.memorySettings?.mode || '');
-                const isVector = viewText.includes('向量嵌入模型') || viewText.includes('向量模型')
-                    || memMode === 'vector' || memMode === 'enhanced';
+            // 🎯 按钮级身份判定：只读「这个按钮自己所属 settings-field 的 label」。
+            // 绝不能拿整页文本做 includes —— 增强模式下「总结模型」与「向量模型」两个 label
+            // 同时存在，includes('向量模型') 必然命中，会导致点总结框也弹向量模型（历史 Bug）。
+            const field = modelBtn.closest('.settings-field');
+            const fieldLabel = (field?.querySelector('label')?.textContent || '').trim();
+            // title 兜底：未选模型时官方 title 为「请选择总结模型 / 请选择向量模型」
+            const btnTitle = (modelBtn.getAttribute('title') || '').trim();
+            const isVectorField = fieldLabel.includes('向量模型') || fieldLabel.includes('向量嵌入模型')
+                || btnTitle.includes('向量模型') || btnTitle.includes('向量嵌入模型');
+            const isSummaryField = fieldLabel.includes('总结模型') || btnTitle.includes('总结模型');
+
+            if ((isVectorField || isSummaryField) && memConf.url && memConf.key) {
+                const isVector = isVectorField;
                 e.preventDefault();
                 e.stopImmediatePropagation();
                 e.stopPropagation();
@@ -2916,7 +2955,7 @@ function injectGramophoneButton() {
 
     // ================= 1. 全站美化 CSS（双端响应式高光 + 移动端性能优化） =================
 
-    // 工坊在应用启动后初始化，再应用界面样式。
+    // 🚀 CSS 注入提前到 document-start：消除页面切换时官方默认样式闪烁（FOUC）
     const css = `
     /* v15.2 视觉重构：克制层级、减少大面积渐变与重阴影 */
     .sakura-mask{background:rgba(28,18,24,.42)!important;backdrop-filter:blur(8px) saturate(105%)!important;-webkit-backdrop-filter:blur(8px) saturate(105%)!important}
@@ -2944,10 +2983,7 @@ function injectGramophoneButton() {
     .sakura-btn:hover{background:#fff4f7!important;border-color:#d99aae!important;color:#a24d6c!important}
     .sakura-btn--main{background:#c95f7d!important;border-color:#c95f7d!important;color:#fff!important;box-shadow:0 3px 10px rgba(201,95,125,.18)!important}
     .sakura-btn--main:hover{background:#b9506e!important;border-color:#b9506e!important}
-    .sakura-fs-btn{display:inline-flex!important;align-items:center!important;justify-content:center!important;flex:0 0 34px!important;width:34px!important;height:34px!important;margin:0 6px!important;padding:0!important;border:0!important;border-radius:9px!important;background:transparent!important;color:rgba(150,112,128,.78)!important;box-shadow:none!important;cursor:pointer!important;transition:background .15s ease,color .15s ease,transform .12s ease!important}
-    .sakura-fs-btn:hover{background:rgba(255,235,243,.72)!important;color:#b45d79!important}
-    .sakura-fs-btn:active{transform:scale(.92)!important;background:rgba(255,235,243,.9)!important}
-    .sakura-fs-btn svg{width:17px!important;height:17px!important}
+    /* V20 原生派：全屏入口改为 .island-button 原生方块，样式全部交还官方 */
     .sakura-fs-composer{align-items:center!important;padding:12px!important}
     #sakura-fs-composer .sakura-box{width:min(760px,calc(100vw - 24px))!important;max-width:760px!important;height:auto!important;max-height:calc(100dvh - 24px)!important;overflow:hidden!important}
     #sakura-fs-composer .sakura-body{max-height:calc(100dvh - 150px)!important;overflow-y:auto!important;min-height:0!important}
@@ -2970,12 +3006,20 @@ function injectGramophoneButton() {
     @keyframes sakuraSpin{100%{transform:rotate(360deg)}}
     @keyframes sakuraBloom{0%{transform:rotate(0) scale(.8);opacity:.5}50%{transform:rotate(180deg) scale(1.1);opacity:1}100%{transform:rotate(360deg) scale(.8);opacity:.5}}
     .entry-transition{display:none!important}
-    #custom-splash-screen{position:fixed;inset:0;z-index:999999;background:#ffeef3;overflow:hidden;display:flex;align-items:flex-start;justify-content:flex-end;padding:max(18px, env(safe-area-inset-top)) max(18px, env(safe-area-inset-right));opacity:0;transition:opacity .5s cubic-bezier(.22,1,.36,1), transform .6s cubic-bezier(.22,1,.36,1), filter .6s cubic-bezier(.22,1,.36,1);will-change:opacity, transform, filter}
+    #custom-splash-screen{position:fixed;inset:0;z-index:999999;background:#ffeef3;overflow:hidden;cursor:pointer;opacity:0;transition:opacity .5s cubic-bezier(.22,1,.36,1), transform .6s cubic-bezier(.22,1,.36,1), filter .6s cubic-bezier(.22,1,.36,1);will-change:opacity, transform, filter;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
     #custom-splash-screen.splash-ready{opacity:1}
     #custom-splash-screen.splash-fade-out{opacity:0!important;transform:scale(1.03);filter:blur(8px);pointer-events:none}
-    .splash-bg-layer{position:absolute;inset:-2%;background-position:center center;background-repeat:no-repeat;background-size:cover;will-change:transform;animation:kenBurnsZoom 4s cubic-bezier(.16,1,.3,1) forwards;filter:brightness(1.02) contrast(1.02)}
-    .splash-skip-btn{position:relative;z-index:10;background:rgba(255,255,255,.85);backdrop-filter:blur(16px);-webkit-backdrop-filter:blur(16px);border:1.5px solid rgba(255,255,255,.95);border-radius:9999px;padding:6px 16px;color:#ff4d80;font-size:12.5px;font-weight:700;letter-spacing:.5px;box-shadow:0 4px 18px rgba(255,107,149,.28);display:inline-flex;align-items:center;gap:4px;cursor:pointer;user-select:none;transition:all .15s ease;animation:sakuraPulse 2.5s infinite ease-in-out}
-    .splash-skip-btn:active{transform:scale(0.92);background:rgba(255,240,245,.95)}
+    .splash-bg-layer{position:absolute;inset:-2%;background-position:center center;background-repeat:no-repeat;background-size:cover;will-change:transform;animation:kenBurnsZoom 3s cubic-bezier(.16,1,.3,1) forwards;filter:brightness(1.02) contrast(1.02);pointer-events:none;-webkit-user-drag:none;user-select:none}
+    /* 底部极细进度条：3 秒走满，颜色跟随主题色 */
+    .splash-progress{position:absolute;left:0;right:0;bottom:0;height:3px;z-index:10;background:rgba(255,255,255,.22);overflow:hidden;pointer-events:none}
+    .splash-progress-bar{height:100%;width:0;background:var(--sakura-theme-color,#ff6b95);box-shadow:0 0 8px color-mix(in srgb,var(--sakura-theme-color,#ff6b95) 70%,transparent);border-radius:0 99px 99px 0;transition:width .1s linear}
+    /* 🖥️ 桌面端适配：进度条加粗、鼠标指针、禁止拖图与选中 */
+    @media (min-width: 768px) and (hover: hover) and (pointer: fine){
+        .splash-progress{height:4px}
+        #custom-splash-screen{cursor:pointer}
+        #custom-splash-screen *{cursor:pointer}
+        #custom-splash-screen img,#custom-splash-screen .splash-bg-layer{-webkit-user-drag:none;user-drag:none;pointer-events:none}
+    }
     .sidebar-nav-button.bg-primary-50,.advanced-nav-trigger.bg-primary-50,.advanced-nav.is-open .advanced-nav-trigger{background:linear-gradient(135deg,rgba(255,248,250,.98),rgba(255,238,245,.9))!important;color:#d43b60!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.8),0 2px 8px rgba(255,107,149,.12)!important}
     .sidebar-nav-button:hover,.advanced-nav-trigger:hover{background:rgba(255,245,248,.75)!important;color:#ff4d79!important}
     .sidebar-nav-button.bg-primary-50::before,.advanced-nav.is-open .advanced-nav-trigger::before{content:''!important;display:block!important;position:absolute!important;left:.35rem!important;top:50%!important;width:3.5px!important;height:1.25rem!important;border-radius:999px!important;background:linear-gradient(180deg,#ff8da8,#ff4d79)!important;transform:translateY(-50%)!important;box-shadow:0 0 8px rgba(255,77,121,.6)!important}
@@ -3037,8 +3081,9 @@ function injectGramophoneButton() {
         .sakura-mask{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;background:rgba(70,20,40,.5)!important}
         .sakura-provider-menu{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;background:rgba(255,255,255,1)!important}
         .toast-item,.toast-stack > div{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;background:rgba(255,255,255,.98)!important}
-        .splash-skip-btn{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;background:rgba(255,255,255,.98)!important}
-        textarea.chat-input-scrollbar.chat-input-scrollbar,.app-main textarea.chat-input-scrollbar{backdrop-filter:none!important;-webkit-backdrop-filter:none!important;background:linear-gradient(135deg,#fff2f5,#ffe6ee)!important;transition:border-color .15s ease,box-shadow .15s ease,background-color .15s ease!important}
+        .splash-progress{background:rgba(255,255,255,.28)!important}
+        .splash-progress-bar{box-shadow:none!important}
+        /* V20 原生派：移除对 2.0.0 .island-input 的粉色渐变强加，输入区背景交还官方玻璃岛 */
         .sakura-model-row{transition:transform .12s ease,border-color .12s ease!important}
         .sakura-provider-option{transition:background .12s ease!important}
         /* 🚀 移动端官方组件毛玻璃降级 */
@@ -3086,6 +3131,13 @@ function injectGramophoneButton() {
     .sakura-model-prefix-tag{display:inline-flex;align-items:center;padding:1.5px 6px;font-size:10px;font-weight:800;border-radius:6px;background:#ffe4ec;color:#c2255c;border:1px solid #ffb8cd;letter-spacing:.2px;white-space:nowrap;line-height:1.2}
     .sakura-model-core-name{font-size:12.5px;color:#6b213f;line-height:1.45;word-break:break-all;font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;letter-spacing:-0.1px}
     .sakura-model-check{font-size:14px;color:#ff4d79;font-weight:800;margin-left:6px;flex-shrink:0}
+/* v19.5.5 显示修复①：官方 1.9.6 模型选择器选中态为 bg-primary-50 浅底 + text-primary-800 深字，
+   插件原先把所有 text-primary-* 一刀切映射成亮粉 #ff6b95，浅粉底+亮粉字对比度仅约 2:1，模型名直接糊掉。
+   这里让深阶 primary 文字回归深色，并精准保护官方模型列表/模型按钮的文字可读性。 */
+[class*="text-primary-700"],[class*="text-primary-800"],[class*="text-primary-900"]{color:#5c2040!important}
+.model-selector-list button[aria-pressed="true"],.model-selector-list button[aria-pressed="true"] span,.model-selector-list [class*="font-mono"],.model-selector-list [class*="text-primary-"]{color:#7a1f45!important}
+.settings-model-button,.settings-model-button *{color:#5c2040!important}
+.model-setting-row .font-mono,.model-setting-row [class*="text-gray-"]{color:#3f3f46!important}
     .sakura-note-area{flex:1;width:100%;min-height:44vh;resize:none;padding:13px 15px;font-family:inherit;font-size:13.5px;line-height:1.75;color:#5c3a4d;background:rgba(255,250,252,.95);border:1.5px solid #ffccd5;border-radius:18px;outline:none;box-sizing:border-box;transition:border-color .18s ease,box-shadow .18s ease;-webkit-tap-highlight-color:transparent}
     .sakura-note-area:focus{border-color:#ff6b95;box-shadow:0 0 0 3.5px rgba(255,107,149,.22);background:#ffffff}
     .sakura-note-area::placeholder{color:rgba(190,130,155,.72);line-height:1.7}
@@ -3100,23 +3152,83 @@ function injectGramophoneButton() {
     [class*="text-teal-"],[class*="text-emerald-"]{color:#ff4d79!important}
     [class*="bg-teal-50"],[class*="bg-emerald-50"]{background:linear-gradient(135deg,rgba(255,240,245,.95),rgba(255,225,235,.88))!important;color:#d43b60!important}
     [class*="hover:border-teal-"],[class*="border-teal-"]{border-color:#ffb3c6!important}
-    .toast-item,.toast-stack > div{min-width:300px!important;padding:12px 24px!important;background:rgba(255,255,255,.94)!important;backdrop-filter:blur(16px) saturate(1.4)!important;-webkit-backdrop-filter:blur(16px) saturate(1.4)!important;border:1px solid #ffccd5!important;border-radius:9999px!important;box-shadow:0 8px 24px rgba(0,0,0,.06),0 2px 8px rgba(255,107,149,.15)!important;color:#374151!important;white-space:nowrap!important}.toast-item svg{color:#ff6b95!important;filter:drop-shadow(0 0 4px rgba(255,107,149,.4))!important}.toast-item.bg-red-50 svg{color:#e83a5e!important}.typing-indicator{background:transparent!important;padding:4px 6px!important}.typing-indicator span{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;box-shadow:0 0 6px rgba(255,107,149,.6)!important;width:8px!important;height:8px!important}.typing-timer-badge{background:rgba(255,245,248,.75)!important;border-color:rgba(255,182,193,.5)!important;color:#9e4668!important}.cot-ui,.native-thinking-card{background:rgba(255,255,255,.9)!important;border:1.5px solid #ffccd5!important;border-radius:18px!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.9)!important}.cot-ui.is-live,.native-thinking-card.is-live{border-color:#ff6b95!important;animation:sakuraPulse 2.5s infinite ease-in-out!important}.cot-ui.is-open,.native-thinking-card.is-open{border-color:#ffb3c6!important;box-shadow:0 4px 14px rgba(255,107,149,.15)!important}.cot-ui.is-open .cot-header{background:rgba(255,240,245,.8)!important;color:#ff6b95!important}.cot-header:hover{background:rgba(255,240,245,.6)!important;color:#ff6b95!important}.thinking-summary-dots,.live-dots,.ui-build-dots{color:#ff6b95!important}.thinking-summary-dots i,.live-dots i,.ui-build-dots i{background:#ff6b95!important;box-shadow:0 0 4px rgba(255,107,149,.6)!important}.thinking-summary-bulb{color:#ff7597!important}.settings-create-button,button.settings-create-button{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;border:1px solid #ffccd5!important;color:#ffffff!important;box-shadow:0 4px 12px rgba(255,107,149,.35)!important;border-radius:0.75rem!important;transition:all .15s ease!important}.settings-create-button:active{transform:scale(0.92)!important;background:linear-gradient(135deg,#ff7597 0%,#e83a5e 100%)!important}[class*="bg-primary-"],[class*="bg-blue-600"],[class*="bg-blue-500"],[class*="bg-indigo-"],[class*="bg-violet-"],[class*="from-primary-"],[class*="to-primary-"],[class*="from-blue-"],[class*="from-indigo-"],[class*="to-indigo-"],[class*="to-violet-"],[class*="from-purple-"],.modal-primary-button{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;border-color:#ff6b95!important;color:#ffffff!important}[class*="bg-primary-50"],[class*="bg-blue-50"],[class*="bg-indigo-50"],.sidebar-nav-button.bg-primary-50{background:rgba(255,240,245,.9)!important;border-color:rgba(255,182,193,.6)!important;box-shadow:inset 0 0 0 1px rgba(255,107,149,.2)!important}div[data-role="user"] .msg-bubble-glass{background:linear-gradient(135deg,rgba(255,242,246,.96),rgba(255,230,238,.92))!important;border:1.5px solid #ffb3c6!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 4px 14px rgba(255,107,149,.15)!important;color:#4a2030!important}div[data-role="user"] .markdown-body{color:inherit!important}[class*="text-primary-"],[class*="text-blue-"],[class*="text-indigo-"],[class*="text-violet-"],.segmented-switch__option.is-active,.thinking-summary-dots,.settings-help-trigger:hover,.settings-help-trigger.is-open{color:#ff6b95!important}[class*="border-primary-"],[class*="border-blue-"],[class*="border-indigo-"],.settings-help-trigger:hover{border-color:#ffb3c6!important}[class*="ring-primary-"],[class*="ring-blue-"],[class*="ring-indigo-"],.settings-model-button:hover,.settings-model-button:focus-visible{--tw-ring-color:rgba(255,107,149,.35)!important;box-shadow:0 0 0 3px rgba(255,107,149,.25)!important;border-color:#ffb3c6!important}.sidebar-nav-button.bg-primary-50::before{background:#ff6b95!important}input[type="checkbox"]:checked,input[type="radio"]:checked{background-color:#ff6b95!important;border-color:#ff6b95!important}.toggle:checked,[class*="toggle-primary"]:checked,[class*="toggle-accent"]:checked{background-color:#ff6b95!important;border-color:#ff6b95!important}.settings-toggle-input:checked + .settings-toggle,.settings-toggle-input:checked + .settings-toggle--indigo,.settings-toggle-input:checked + .settings-toggle--solid,.settings-toggle-input:checked + .settings-toggle--compact{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;border-color:#ff6b95!important}div.w-7.h-7.rounded-full.bg-blue-600,div.w-9.h-9.rounded-full.bg-blue-600,div[class*="rounded-full"][class*="bg-blue-"],div.w-9.h-9.rounded-full div{background:linear-gradient(135deg,#ff9ebb,#ff6b95)!important;color:#fff!important}div.h-3.rounded-full.bg-gray-200 div.bg-primary-500{background:linear-gradient(90deg,#ffb3c6,#ff6b95)!important;box-shadow:0 0 8px rgba(255,107,149,.5)!important}span.w-1.h-5.rounded-full{background:linear-gradient(180deg,#ff9ebb,#ff6b95)!important;box-shadow:0 0 4px rgba(255,107,149,.6)!important}input[type="range"],input[type="range"].compact-range{accent-color:#ff6b95!important}input[type="range"]::-webkit-slider-runnable-track,input[type="range"].compact-range::-webkit-slider-runnable-track{background:rgba(255,200,215,.6)!important;height:6px!important;border-radius:3px!important}input[type="range"]::-webkit-slider-thumb,input[type="range"].compact-range::-webkit-slider-thumb{background:#ff6b95!important;border:2px solid #ffffff!important;box-shadow:0 2px 6px rgba(255,107,149,.45)!important;margin-top:-5px!important;border-radius:50%!important}textarea.chat-input-scrollbar{background:linear-gradient(135deg,rgba(255,240,245,.92),rgba(255,225,235,.78))!important;border:1.5px solid #ffb3c6!important;border-radius:22px!important;color:#5c3a4d!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 4px 16px rgba(255,140,170,.2)!important;-webkit-tap-highlight-color:transparent!important}textarea.chat-input-scrollbar:focus{border-color:#ff6b95!important;box-shadow:0 0 0 3px rgba(255,107,149,.25)!important;outline:none!important}textarea.chat-input-scrollbar::placeholder{color:transparent!important;font-size:0!important}textarea.chat-input-scrollbar::-webkit-input-placeholder{color:transparent!important;font-size:0!important}div.relative.w-full.flex.items-end:has(textarea:placeholder-shown)::before{content:"快输入消息喵！"!important;position:absolute!important;left:18px!important;top:50%!important;transform:translateY(-50%)!important;color:rgba(185,120,145,.75)!important;font-size:14px!important;font-weight:500!important;pointer-events:none!important;z-index:5!important;transition:opacity .15s ease!important}div.relative.w-full.flex.items-end:has(textarea:focus)::before{opacity:0!important}button[title*="发送"]{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 50%,#ff477e 100%)!important;border:2px solid #ffffff!important;border-radius:50%!important;box-shadow:0 4px 12px rgba(255,105,180,.45)!important;position:relative!important;outline:none!important;-webkit-tap-highlight-color:transparent!important;-webkit-touch-callout:none!important;user-select:none!important;transition:all .15s cubic-bezier(.34,1.56,.64,1)!important}button[title*="发送"] svg{display:none!important;opacity:0!important;visibility:hidden!important}button[title*="发送"]::before{content:""!important;display:block!important;position:absolute!important;top:50%!important;left:50%!important;width:22px!important;height:22px!important;transform:translate(-50%,-50%)!important;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='65' rx='22' ry='16' fill='%23ffffff'/%3E%3Ccircle cx='23' cy='42' r='9' fill='%23ffffff'/%3E%3Ccircle cx='41' cy='30' r='9' fill='%23ffffff'/%3E%3Ccircle cx='59' cy='30' r='9' fill='%23ffffff'/%3E%3Ccircle cx='77' cy='42' r='9' fill='%23ffffff'/%3E%3Cellipse cx='50' cy='66' rx='14' ry='10' fill='%23ff7597'/%3E%3Ccircle cx='23' cy='42' r='5.5' fill='%23ff7597'/%3E%3Ccircle cx='41' cy='30' r='5.5' fill='%23ff7597'/%3E%3Ccircle cx='59' cy='30' r='5.5' fill='%23ff7597'/%3E%3Ccircle cx='77' cy='42' r='5.5' fill='%23ff7597'/%3E%3C/svg%3E")!important;background-size:contain!important;background-repeat:no-repeat!important;transition:transform .15s cubic-bezier(.34,1.56,.64,1)!important;z-index:10!important}button[title*="发送"]:active{background:linear-gradient(135deg,#ff7597 0%,#e83a5e 100%)!important;transform:scale(0.85)!important;box-shadow:0 2px 6px rgba(255,75,130,.5)!important}button[title*="发送"]:active::before{transform:translate(-50%,-50%) scale(0.8) rotate(-15deg)!important}button[title*="中止"],button[title*="停止"]{background:linear-gradient(135deg,#ff7b90,#e83a5e)!important;border-radius:50%!important;outline:none!important;-webkit-tap-highlight-color:transparent!important}
-    div[class*="bottom-"] button.rounded-full:not([title*="自动生图"]){border:1.5px solid rgba(255,182,193,.5)!important;-webkit-tap-highlight-color:transparent!important}
-    div[class*="bottom-"] button.rounded-full.bg-white:not([title*="自动生图"]){background:rgba(255,245,248,.85)!important;color:#b05a7a!important}
-    div[class*="bottom-"] button.rounded-full.bg-primary-500:not([title*="自动生图"]),div[class*="bottom-"] button.rounded-full.bg-primary-600:not([title*="自动生图"]){background:linear-gradient(135deg,#ff9ebb,#ff6b95)!important;color:#ffffff!important;border-color:#ffffff!important}
-    div[class*="bottom-"] button.rounded-xl.bg-primary-50{background:rgba(255,235,242,.8)!important;border-color:#ff9ebb!important;color:#b03a68!important}
+    .toast-item,.toast-stack > div{min-width:300px!important;padding:12px 24px!important;background:rgba(255,255,255,.94)!important;backdrop-filter:blur(16px) saturate(1.4)!important;-webkit-backdrop-filter:blur(16px) saturate(1.4)!important;border:1px solid #ffccd5!important;border-radius:9999px!important;box-shadow:0 8px 24px rgba(0,0,0,.06),0 2px 8px rgba(255,107,149,.15)!important;color:#374151!important;white-space:nowrap!important}.toast-item svg{color:#ff6b95!important;filter:drop-shadow(0 0 4px rgba(255,107,149,.4))!important}.toast-item.bg-red-50 svg{color:#e83a5e!important}.typing-indicator{background:transparent!important;padding:4px 6px!important}.typing-indicator span{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;box-shadow:0 0 6px rgba(255,107,149,.6)!important;width:8px!important;height:8px!important}.typing-timer-badge{background:rgba(255,245,248,.75)!important;border-color:rgba(255,182,193,.5)!important;color:#9e4668!important}.cot-ui,.native-thinking-card{background:rgba(255,255,255,.9)!important;border:1.5px solid #ffccd5!important;border-radius:18px!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.9)!important}.cot-ui.is-live,.native-thinking-card.is-live{border-color:#ff6b95!important;animation:sakuraPulse 2.5s infinite ease-in-out!important}.cot-ui.is-open,.native-thinking-card.is-open{border-color:#ffb3c6!important;box-shadow:0 4px 14px rgba(255,107,149,.15)!important}.cot-ui.is-open .cot-header{background:rgba(255,240,245,.8)!important;color:#ff6b95!important}.cot-header:hover{background:rgba(255,240,245,.6)!important;color:#ff6b95!important}.thinking-summary-dots,.live-dots,.ui-build-dots{color:#ff6b95!important}.thinking-summary-dots i,.live-dots i,.ui-build-dots i{background:#ff6b95!important;box-shadow:0 0 4px rgba(255,107,149,.6)!important}.thinking-summary-bulb{color:#ff7597!important}.settings-create-button,button.settings-create-button{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;border:1px solid #ffccd5!important;color:#ffffff!important;box-shadow:0 4px 12px rgba(255,107,149,.35)!important;border-radius:0.75rem!important;transition:all .15s ease!important}.settings-create-button:active{transform:scale(0.92)!important;background:linear-gradient(135deg,#ff7597 0%,#e83a5e 100%)!important}[class~="bg-primary-500"],[class~="bg-primary-600"],[class~="bg-primary-700"],[class~="bg-blue-500"],[class~="bg-blue-600"],[class~="bg-indigo-500"],[class~="bg-indigo-600"],[class~="bg-violet-500"],[class~="bg-violet-600"],[class~="from-primary-400"],[class~="from-primary-500"],[class~="from-primary-600"],[class~="to-primary-400"],[class~="to-primary-500"],[class~="to-primary-600"],[class~="from-blue-400"],[class~="from-blue-500"],[class~="from-indigo-400"],[class~="from-indigo-500"],[class~="to-indigo-400"],[class~="to-indigo-500"],[class~="to-violet-400"],[class~="to-violet-500"],[class~="from-purple-400"],[class~="from-purple-500"],.modal-primary-button{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;border-color:#ff6b95!important;color:#ffffff!important}[class~="bg-primary-50"],[class~="bg-primary-100"],[class~="bg-blue-50"],[class~="bg-blue-100"],[class~="bg-indigo-50"],[class~="bg-indigo-100"],.sidebar-nav-button.bg-primary-50{background:rgba(255,240,245,.9)!important;border-color:rgba(255,182,193,.6)!important;box-shadow:inset 0 0 0 1px rgba(255,107,149,.2)!important}div[data-role="user"] .msg-bubble-glass{background:linear-gradient(135deg,rgba(255,242,246,.96),rgba(255,230,238,.92))!important;border:1.5px solid #ffb3c6!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 4px 14px rgba(255,107,149,.15)!important;color:#4a2030!important}div[data-role="user"] .markdown-body{color:inherit!important}[class~="text-primary-400"],[class~="text-primary-500"],[class~="text-primary-600"],[class~="text-primary-700"],[class~="text-primary-800"],[class~="text-primary-900"],[class~="text-blue-400"],[class~="text-blue-500"],[class~="text-blue-600"],[class~="text-indigo-400"],[class~="text-indigo-500"],[class~="text-indigo-600"],[class~="text-violet-400"],[class~="text-violet-500"],[class~="text-violet-600"],.segmented-switch__option.is-active,.thinking-summary-dots,.settings-help-trigger:hover,.settings-help-trigger.is-open{color:#ff6b95!important}[class~="border-primary-200"],[class~="border-primary-300"],[class~="border-primary-400"],[class~="border-primary-500"],[class~="border-blue-300"],[class~="border-blue-400"],[class~="border-blue-500"],[class~="border-indigo-300"],[class~="border-indigo-400"],[class~="border-indigo-500"],.settings-help-trigger:hover{border-color:#ffb3c6!important}[class~="ring-primary-100"],[class~="ring-primary-200"],[class~="ring-primary-300"],[class~="ring-primary-400"],[class~="ring-primary-500"],[class~="ring-blue-300"],[class~="ring-blue-400"],[class~="ring-indigo-300"],[class~="ring-indigo-400"],.settings-model-button:hover,.settings-model-button:focus-visible{--tw-ring-color:rgba(255,107,149,.35)!important;box-shadow:0 0 0 3px rgba(255,107,149,.25)!important;border-color:#ffb3c6!important}.sidebar-nav-button.bg-primary-50::before{background:#ff6b95!important}input[type="checkbox"]:checked,input[type="radio"]:checked{background-color:#ff6b95!important;border-color:#ff6b95!important}.toggle:checked,[class*="toggle-primary"]:checked,[class*="toggle-accent"]:checked{background-color:#ff6b95!important;border-color:#ff6b95!important}.settings-toggle-input:checked + .settings-toggle,.settings-toggle-input:checked + .settings-toggle--indigo,.settings-toggle-input:checked + .settings-toggle--solid,.settings-toggle-input:checked + .settings-toggle--compact{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;border-color:#ff6b95!important}div.w-7.h-7.rounded-full.bg-blue-600,div.w-9.h-9.rounded-full.bg-blue-600,div[class*="rounded-full"][class*="bg-blue-"],div.w-9.h-9.rounded-full div{background:linear-gradient(135deg,#ff9ebb,#ff6b95)!important;color:#fff!important}div.h-3.rounded-full.bg-gray-200 div.bg-primary-500{background:linear-gradient(90deg,#ffb3c6,#ff6b95)!important;box-shadow:0 0 8px rgba(255,107,149,.5)!important}span.w-1.h-5.rounded-full{background:linear-gradient(180deg,#ff9ebb,#ff6b95)!important;box-shadow:0 0 4px rgba(255,107,149,.6)!important}input[type="range"],input[type="range"].compact-range{accent-color:#ff6b95!important}input[type="range"]::-webkit-slider-runnable-track,input[type="range"].compact-range::-webkit-slider-runnable-track{background:rgba(255,200,215,.6)!important;height:6px!important;border-radius:3px!important}input[type="range"]::-webkit-slider-thumb,input[type="range"].compact-range::-webkit-slider-thumb{background:#ff6b95!important;border:2px solid #ffffff!important;box-shadow:0 2px 6px rgba(255,107,149,.45)!important;margin-top:-5px!important;border-radius:50%!important}/* ===== V20 原生派：输入区完全交还官方 .input-island 玻璃岛体系 ===== 删除旧版对 textarea.chat-input-scrollbar 的粉色圆角强制覆盖、button[title*=发送]的圆形+猫爪伪元素、伪造 placeholder、中止按钮粉圆 —— 均基于 1.9.8 圆形按钮，2.0.0 已改为方形 island，保留会造成混血与暗夜割裂。官方 theme.css 变量体系自会渲染。 */
     div[class*="w-\\[250px\\]"] textarea,div[class*="w-\\[320px\\]"] textarea{background:rgba(255,245,248,.8)!important;border-color:#ffb3c6!important;color:#5c3a4d!important}
     div[class*="w-\\[250px\\]"] textarea:focus,div[class*="w-\\[320px\\]"] textarea:focus{border-color:#ff6b95!important;box-shadow:0 0 0 2px rgba(255,107,149,.25)!important}.story-route-map-panel{border-color:#ffccd5!important}.story-route-canvas{background-image:radial-gradient(circle,rgba(255,107,149,.25) 1px,transparent 1px)!important;background-color:#fffbfc!important}.story-route-node{background:rgba(255,255,255,.95)!important;border:2px solid #ffccd5!important;border-radius:18px!important;backdrop-filter:blur(8px)!important;transition:all .25s ease!important}.story-route-node.is-current,.story-route-node.is-selected{border-color:#ff6b95!important;animation:sakuraPulse 2.5s infinite ease-in-out!important}.story-route-node-checkpoint{background:#ff6b95!important;border:2px solid #ffffff!important;box-shadow:0 0 8px rgba(255,107,149,.8)!important}.story-route-node strong{color:#5c3245!important}.story-route-node small{color:#a8627d!important}.story-route-node-current{background:linear-gradient(135deg,#ff9ebb,#ff6b95)!important;color:#fff!important;border-radius:10px!important}.story-route-node-type{background:rgba(255,215,225,.9)!important;color:#c04870!important;border-radius:8px!important}.story-route-link{stroke:#ffd0dc!important;stroke-width:3px!important}.story-route-link.is-active,.story-route-link.is-selected{stroke:#ff6b95!important;filter:drop-shadow(0 0 4px rgba(255,107,149,.6))!important}.story-route-enter-button:not(:disabled){background:linear-gradient(135deg,#ff9ebb,#ff6b95)!important;border-color:#ff6b95!important;color:#fff!important}.story-route-enter-button:disabled{background:rgba(255,230,238,.6)!important;border-color:#ffccd5!important;color:rgba(180,100,125,.4)!important}.story-route-edit-button{border-color:#ffb3c6!important;color:#b03a68!important}.story-route-delete-button{border-color:#ff99aa!important;color:#d43b60!important}
-    .animate-fade-in textarea, div:has(> button[title="编辑"]) textarea{background:rgba(255,255,255,.95)!important;border:1.5px solid #ffccd5!important;color:#374151!important}
+    /* ===== V20.0.2 修复③：消息编辑框「文字与背景融合」（浏览器暗色·网站暗色·日光全兼容） =====
+       官方编辑框是 textarea.custom-scrollbar（外层 .message-edit-group / .animate-fade-in），
+       靠 Tailwind 固定类 bg-white/50（半透明白底）+ text-gray-700（深字）渲染。
+       页面此前未声明 color-scheme，一旦浏览器/系统开暗色，就被强制暗化/叠暗半透明白底，
+       深字压暗底 → 糊成一片。双管齐下：
+       ① :root 声明 color-scheme:light，明确告知浏览器本页自带配色、勿强制反转；网站暗色/夜间则声明 dark。
+       ② 编辑框锁死不透明底 + 明确字色（含 -webkit-text-fill-color 防引擎覆盖填充），四态各一套。 */
+    :root{color-scheme:light}
+    :root[data-app-theme="dark"]{color-scheme:dark}
+    .message-edit-group textarea,.animate-fade-in textarea,textarea.custom-scrollbar,div:has(> button[title="编辑"]) textarea{background:#ffffff!important;border:1.5px solid #ffccd5!important;color:#374151!important;-webkit-text-fill-color:#374151!important;caret-color:#ff6b95!important}
+    .message-edit-group textarea::placeholder,.animate-fade-in textarea::placeholder,textarea.custom-scrollbar::placeholder{color:#9aa0a6!important;-webkit-text-fill-color:#9aa0a6!important}
+    :root[data-app-theme="dark"] .message-edit-group textarea,:root[data-app-theme="dark"] .animate-fade-in textarea,:root[data-app-theme="dark"] textarea.custom-scrollbar,.dark .message-edit-group textarea,.dark .animate-fade-in textarea,.dark textarea.custom-scrollbar{background:#39393d!important;border-color:rgba(255,255,255,.16)!important;color:#ececec!important;-webkit-text-fill-color:#ececec!important;caret-color:#ff8fae!important}
+    @media (prefers-color-scheme: dark){:root:not([data-app-theme="light"]) .message-edit-group textarea,:root:not([data-app-theme="light"]) .animate-fade-in textarea,:root:not([data-app-theme="light"]) textarea.custom-scrollbar{background:#39393d!important;border-color:rgba(255,255,255,.16)!important;color:#ececec!important;-webkit-text-fill-color:#ececec!important;caret-color:#ff8fae!important}}
+    :root[data-sakura-night="1"] .message-edit-group textarea,:root[data-sakura-night="1"] .animate-fade-in textarea,:root[data-sakura-night="1"] textarea.custom-scrollbar,:root[data-sakura-night="1"] div:has(> button[title="编辑"]) textarea{background:#39393d!important;border-color:rgba(255,255,255,.16)!important;color:#ececec!important;-webkit-text-fill-color:#ececec!important;caret-color:#ff8fae!important}
     .animate-fade-in button.bg-primary-500,.animate-fade-in button[class*="bg-primary-"],div.flex.justify-end.space-x-2.mt-3 > button.bg-primary-500{background:linear-gradient(135deg,#ff3366 0%,#e6004c 100%)!important;border:1px solid #ff0044!important;color:#ffffff!important;font-weight:800!important;letter-spacing:.05em!important;text-shadow:0 1px 2px rgba(0,0,0,.35)!important;box-shadow:0 4px 12px rgba(255,0,68,.35)!important}
     .animate-fade-in button.bg-primary-500:active{transform:scale(.95)!important;background:#cc0044!important}
-    /* v15.6：全屏入口是输入框上的轻量工具图标，不再占用发送区布局 */
-    .sakura-fs-btn{position:absolute!important;display:inline-flex!important;align-items:center!important;justify-content:center!important;width:28px!important;height:28px!important;min-width:28px!important;flex:0 0 28px!important;margin:0!important;padding:0!important;border:0!important;border-radius:50%!important;background:transparent!important;color:rgba(132,91,108,.68)!important;box-shadow:none!important;transform:translateY(-50%)!important;z-index:3!important}
-    .sakura-fs-btn svg{width:17px!important;height:17px!important;display:block!important}
-    .sakura-fs-btn:hover,.sakura-fs-btn:focus-visible{background:rgba(255,235,242,.72)!important;color:#c85d7d!important;outline:none!important}
-    .sakura-fs-btn:active{background:rgba(255,225,235,.9)!important;transform:translateY(-50%) scale(.92)!important}
+    /* V20 原生派：旧绝对定位圆形全屏按钮样式已移除（会将按钮推出屏幕外） */
+
+    /* ================= 🩹 v19.5.9 显示修复层②：官方 1.9.6 新 UI 文字可读性 + 自定义主题全量适配 =================
+       根因：插件历史规则里的 [class*="..."] 是子串匹配，会把 hover:bg-primary-50/40 这类
+       变体 class 一并命中，给官方新版「模型选择器」列表硬塞 color:#fff!important，
+       于是浅底 + 白字，模型名根本看不清。A 段已收窄宽匹配；这里再做一层高特异性精确反制。
+       配色统一走樱花粉家族 hex，交给主题引擎重映射，玩家换任何自定义主题都会跟着变，
+       绝不写死在粉色上。 */
+    /* 模型选择器：未选中项 —— 白底深字 */
+    .model-selector-list button:not([aria-pressed="true"]){background:#ffffff!important;border-color:#e8d8de!important;color:#3f3f46!important}
+    .model-selector-list button:not([aria-pressed="true"]) span{color:#3f3f46!important;opacity:1!important}
+    .model-selector-list button:not([aria-pressed="true"]):hover{background:#fff2f7!important;border-color:#ffb3c6!important}
+    .model-selector-list button:not([aria-pressed="true"]):hover span{color:#6f2040!important}
+    /* 模型选择器：选中项 —— 浅粉底 + 深粉字 */
+    .model-selector-list button[aria-pressed="true"]{background:#ffe9f1!important;border-color:#ff8fb0!important;color:#7e2549!important}
+    .model-selector-list button[aria-pressed="true"] span{color:#7e2549!important;opacity:1!important}
+    .model-selector-list button[aria-pressed="true"] svg{color:#e8487a!important}
+    /* 模型选择器：头部标题 / 空态文案 */
+    .model-selector-heading h3,.model-selector-heading .text-gray-900{color:#4a323c!important}
+    .model-selector-heading button{color:#6b5560!important}
+    .model-selector-list .text-gray-500{color:#8a7078!important}
+    /* 槽位选择按钮（聊天模型槽位 1/2/3） */
+    .model-selector-heading + div button{color:#3f3f46!important}
+    /* 官方设置页：模型按钮 / 模型行 */
+    .settings-model-button,.settings-model-button *{color:#4a323c!important}
+    .settings-model-button svg{color:#c2255c!important}
+    .model-setting-row .font-mono,.model-setting-row [class*="text-gray-"]{color:#3f3f46!important}
+
     `;
     const styleEl = document.createElement('style');
+
+
+    function syncSakuraNight() {
+        try {
+            const dark = document.documentElement.getAttribute('data-app-theme') === 'dark';
+            document.documentElement.setAttribute('data-sakura-night', dark ? '1' : '0');
+        } catch (_) {}
+    }
+    // View Transition 期间 attribute 变更可能落在快照帧里，做多重校准兜底。
+    function bumpSakuraNight() {
+        syncSakuraNight();
+        try { [0, 120, 300, 620].forEach(function (d) { setTimeout(syncSakuraNight, d); }); } catch (_) {}
+        try { if (typeof requestAnimationFrame === 'function') requestAnimationFrame(syncSakuraNight); } catch (_) {}
+    }
+    bumpSakuraNight();
+    window.addEventListener('rphub-theme-change', bumpSakuraNight);
+    try {
+        new MutationObserver(bumpSakuraNight).observe(document.documentElement, {
+            attributes: true, attributeFilter: ['data-app-theme']
+        });
+    } catch (_) {}
+    // ⚠️ 官方 theme.js 用 Object.freeze 冻结了 window.RPHubTheme，严禁覆写 set()。
+    // 旧版 hook 在 'use strict' 下抛 TypeError: Cannot assign to read only property 'set'，
+    // 直接中断整个 IIFE（插件全废）。这里彻底移除，改为纯监听：
+    //   · rphub-theme-change 事件（官方每次 apply() 都派发）
+    //   · MutationObserver 监听 documentElement[data-app-theme]
+    //   · 多重 setTimeout / rAF 校准兜底
+
     const cssPolish = `
     /* v15.7 猫娘风最终视觉层：只做样式收口，不改业务结构 */
     :root{--sakura-ink:#553746;--sakura-muted:#a8798c;--sakura-pink:#e86f95;--sakura-pink-deep:#c85278;--sakura-blush:#fff1f5;--sakura-line:#efd2dc}
@@ -3133,7 +3245,7 @@ function injectGramophoneButton() {
     /* v18.5：仅修正日间模式消息操作图标颜色；不改工具栏结构、圆角、背景或交互 */
     @media (prefers-color-scheme: light){
         .app-main .message-action-button{color:rgba(75,85,99,.78)!important}
-        .app-main .message-action-button:hover,.app-main .message-action-button:focus-visible{color:#2563eb!important}
+        .app-main .message-action-button:hover,.app-main .message-action-button:focus-visible{color:#c44f73!important}
         .app-main .message-action-button[aria-label*="删除"]:hover,.app-main .message-action-button[title*="删除"]:hover{color:#dc2626!important}
     }
     .app-main .msg-bubble-glass{border-color:rgba(242,203,215,.72)!important;box-shadow:0 5px 18px rgba(183,99,128,.08),inset 0 1px 0 rgba(255,255,255,.72)!important}
@@ -3142,17 +3254,8 @@ function injectGramophoneButton() {
     .app-main .markdown-body blockquote{border-left:3px solid #f0a8bd!important;background:rgba(255,244,247,.68)!important;border-radius:0 10px 10px 0!important;padding:7px 11px!important}
     .app-main .markdown-body code{border:1px solid rgba(240,168,189,.42)!important;border-radius:6px!important;background:#fff3f7!important;color:#a84e6d!important}
     .app-main .markdown-body pre{border:1px solid rgba(240,168,189,.42)!important;border-radius:10px!important;box-shadow:0 4px 12px rgba(183,99,128,.08)!important}
-    .app-main textarea.chat-input-scrollbar{border-color:#efbfd0!important;box-shadow:inset 0 1px 2px rgba(183,99,128,.05),0 4px 14px rgba(183,99,128,.09)!important}
-    @media (min-width: 768px){textarea.chat-input-scrollbar{backdrop-filter:blur(20px) saturate(1.5)!important;-webkit-backdrop-filter:blur(20px) saturate(1.5)!important}}
-    .app-main textarea.chat-input-scrollbar:focus{border-color:#e98eaa!important;box-shadow:0 0 0 3px rgba(233,142,170,.2),0 5px 16px rgba(183,99,128,.1)!important}
-    .app-main button[title*="发送"]:hover{filter:saturate(1.04) brightness(1.03)!important;box-shadow:0 5px 14px rgba(232,111,149,.35)!important}
-    .app-main button[title*="中止"],.app-main button[title*="停止"]{box-shadow:0 4px 12px rgba(232,58,94,.24)!important}
     .app-main ::-webkit-scrollbar-thumb{background:linear-gradient(180deg,#f7b6c9,#d87898)!important;border-color:rgba(255,255,255,.8)!important}
     .sakura-clean-view-btn{transition:color .12s ease,background-color .12s ease!important;transform:none!important;will-change:auto!important}
-    .sakura-clean-view-btn:hover{background:rgba(255,235,242,.58)!important;color:#c85278!important;box-shadow:none!important}
-    .sakura-fs-btn{transition:color .16s ease,background-color .16s ease,transform .16s ease,box-shadow .16s ease!important}
-    .sakura-fs-btn:hover{background:rgba(255,235,242,.78)!important;color:#c85278!important;box-shadow:0 3px 10px rgba(200,93,125,.12)!important}
-    @media (min-width:768px){.sakura-clean-view-btn{min-width:34px!important;min-height:34px!important}.sakura-fs-btn{min-width:34px!important;min-height:34px!important}}
     /* v16.3 全站细节：侧栏、设置、弹窗、控件统一樱花粉质感 */
     .app-sidebar{border-right:1px solid rgba(239,191,208,.72)!important;box-shadow:10px 0 28px rgba(183,99,128,.06)!important}
     .sidebar-nav-button{border-radius:12px!important;color:#805064!important;transition:background-color .16s ease,color .16s ease,box-shadow .16s ease,transform .16s ease!important}
@@ -3493,9 +3596,7 @@ function injectGramophoneButton() {
     .sakura-close-btn{font-size:15px!important;color:#b88799!important}
     .sakura-close-btn:hover{background:#ffeaf1!important;color:#c85278!important}
 
-    /* 工具按钮统一色板，便签不再特立独行 */
-    div[class*="bottom-"] button.rounded-full:not([title*="发送"]){background:rgba(255,248,251,.9)!important;border:1px solid rgba(231,182,198,.8)!important;color:#a65e78!important;box-shadow:0 2px 7px rgba(190,105,135,.08)!important}
-    div[class*="bottom-"] button.rounded-full:not([title*="发送"]):hover,div[class*="bottom-"] button.rounded-full:not([title*="发送"]):active{background:#ffeaf1!important;color:#c85278!important;border-color:#df91aa!important}
+    /* V20 原生派：名场面顶替自动生图的设定保留，但外观彻底回归官方 .island-button ghost 风格，不再强加粉底/粉边 */
 
     /* 对话卡片、思考卡片和提示统一质感 */
     .msg-bubble-glass,.native-thinking-card,.cot-ui{border-radius:18px!important;border-color:rgba(232,184,200,.62)!important}
@@ -3520,48 +3621,55 @@ function injectGramophoneButton() {
         .sakura-personal-card-desc{color:#c79cab!important}
         .sakura-personal-card::after{color:#a06a80!important}
     }
-    /* 🌸 记忆卡片：重试/编辑/删除 三按钮统一为纯图标（28×28 圆角方块）
-       官方"重试"按钮原本是"图标+文字"的胶囊，插件把它压成纯图标，与编辑/删除同规格。
-       三个按钮收进官方右侧容器 .sakura-mem-actions，gap 收紧到 6px（留一点缝，不贴死）。 */
+    /* 🌸 V20 原生派记忆按钮：官方 2.0.0 重构为 li.memory-item 后，
+       插件编辑/删除按钮直接嵌入 .memory-item__head，与官方 .memory-item__retry 同盖同尺寸。
+       同时兼容旧版 .sakura-mem-actions 容器结构（保留后向兼容）。 */
     .sakura-mem-actions{gap:6px!important;align-items:center!important}
-    /* 字数统计（"4,462字 → 302字"）与按钮组之间留出呼吸感，别贴太紧 */
     .sakura-mem-actions > div{margin-right:10px!important}
-    .sakura-mem-actions > button{
+    .sakura-mem-actions > button,
+    .memory-item__head > .sakura-mem-edit,
+    .memory-item__head > .sakura-mem-del{
         display:inline-flex!important;align-items:center!important;justify-content:center!important;
-        width:28px!important;height:28px!important;min-width:28px!important;flex:0 0 auto!important;
-        padding:0!important;margin:0!important;border-radius:9px!important;cursor:pointer!important;
-        transition:background .15s ease,border-color .15s ease,color .15s ease,transform .12s ease!important;
+        width:1.75rem!important;height:1.75rem!important;min-width:1.75rem!important;flex:0 0 auto!important;
+        padding:0!important;margin:0!important;border-radius:0.5rem!important;cursor:pointer!important;
+        background:transparent!important;border:0!important;color:var(--c-text-3,#6b7280)!important;
+        transition:background-color .15s ease,color .15s ease,transform .12s ease!important;
         -webkit-tap-highlight-color:transparent;
     }
-    .sakura-mem-actions > button svg{width:14px!important;height:14px!important;display:block!important}
-    /* 官方"重试"按钮：隐藏文字，只留转圈图标 */
+    .sakura-mem-actions > button svg,
+    .memory-item__head > .sakura-mem-edit svg,
+    .memory-item__head > .sakura-mem-del svg{width:.9375rem!important;height:.9375rem!important;display:block!important}
     .sakura-mem-actions > button[title*="重新生成"] span{display:none!important}
-    .sakura-mem-actions > button[title*="重新生成"]{
-        background:#fff!important;border:1px solid #e5e7eb!important;color:#6b7280!important;
-    }
-    .sakura-mem-actions > button[title*="重新生成"]:hover{
-        border-color:#f2b8cb!important;color:#d43b60!important;background:#fff5f8!important;
-    }
-    /* 插件编辑/删除按钮 */
-    .sakura-mem-edit,.sakura-mem-del{
-        background:#fff!important;border:1px solid #e5e7eb!important;color:#6b7280!important;
-    }
-    .sakura-mem-edit:hover{border-color:#f2b8cb!important;color:#d43b60!important;background:#fff5f8!important}
-    .sakura-mem-del:hover{border-color:#f0aab4!important;color:#d6455c!important;background:#fff5f6!important}
-    .sakura-mem-actions > button:active{transform:scale(.92)}
-    @media (prefers-color-scheme: dark){
-        .sakura-mem-actions > button{
-            background:rgba(255,255,255,.06)!important;
-            border-color:rgba(255,182,193,.22)!important;
-            color:rgba(255,255,255,.62)!important;
-        }
-        .sakura-mem-actions > button[title*="重新生成"]:hover,
-        .sakura-mem-edit:hover{border-color:rgba(255,140,170,.55)!important;color:#ffa3b8!important;background:rgba(255,140,170,.14)!important}
-        .sakura-mem-del:hover{border-color:rgba(255,140,150,.55)!important;color:#ff8b9c!important;background:rgba(255,140,150,.14)!important}
-    }
+    .sakura-mem-actions > button:hover,
+    .memory-item__head > .sakura-mem-edit:hover{background:rgb(var(--gray-500,115 115 132) / .12)!important;color:var(--c-accent-text,#d43b60)!important}
+    .memory-item__head > .sakura-mem-del:hover{background:rgba(220,53,69,.1)!important;color:#d6455c!important}
+    .sakura-mem-actions > button:active,
+    .memory-item__head > .sakura-mem-edit:active,
+    .memory-item__head > .sakura-mem-del:active{transform:scale(.9)}
+    /* 字数统计与按钮组之间留呼吸感，遥控到官方头部 gap */
+    .memory-item__head{gap:0.5rem!important}
+    .memory-item__retry{margin-left:0!important}
     /* v17.4：全站轻量收口层。只补交互反馈与边界层次，不新增全局模糊、动画或监听。 */
     :where(button,input,textarea,select,[role="button"]){-webkit-tap-highlight-color:transparent}
-    :where(button,input,textarea,select,[role="button"]):focus-visible{outline:2px solid #ffb3c6!important;outline-offset:2px}
+    :where(button,select,[role="button"]):focus-visible{outline:2px solid #ffb3c6!important;outline-offset:2px}
+    /* ===== V20.0.1 修复①：输入框聚焦框不再是生硬直角 =====
+       旧规则对 input/textarea 通配了 outline，而 outline 天生是直角矩形、不随圆角、还外扩 2px，
+       又画在 .island-input（textarea 自身无圆角）上，于是生出一条硬边紫框，与官方玻璃岛 1.375rem 圆角
+       严重方圆割裂（边角凸出、不丝滑）。现把 input/textarea 从全局 outline 摘除，聚焦反馈交给
+       .input-island:focus-within 的柔和环形阴影，天然跟随岛体圆角、贴着包裹。 */
+    .island-input:focus,.island-input:focus-visible,textarea.island-input:focus{outline:none!important;box-shadow:none!important}
+    .input-island:focus-within{border-color:rgb(var(--primary-500) / .38)!important;box-shadow:var(--glass-highlight),var(--shadow-3),0 0 0 3px rgb(var(--primary-500) / .12)!important;transition:box-shadow .2s ease,border-color .2s ease!important}
+    /* ===== V20.0.1 修复②：复活猫爪发送键 =====
+       仅锁定 2.0.0 官方方形发送岛 .island-send（发送态，排除中止红块 .island-send--stop），
+       沿用官方 2.25rem / 0.75rem 同心方块形制，不回落 1.9.8 的圆形，避免方圆混血；
+       隐藏官方箭头 svg，用 ::before 覆盖上猫爪；禁用态用浅粉示意，仍见爪。 */
+    .island-send:not(.island-send--stop){position:relative!important;background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 50%,#ff477e 100%)!important;border:2px solid #ffffff!important;box-shadow:0 4px 12px rgba(255,105,180,.45)!important;outline:none!important;-webkit-tap-highlight-color:transparent!important;transition:background-color .15s ease,box-shadow .15s ease,opacity .15s ease!important}
+    .island-send:not(.island-send--stop) svg{display:none!important;opacity:0!important;visibility:hidden!important}
+    .island-send:not(.island-send--stop)::before{content:""!important;display:block!important;position:absolute!important;top:50%!important;left:50%!important;width:1.45rem!important;height:1.45rem!important;transform:translate(-50%,-50%)!important;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='65' rx='22' ry='16' fill='%23ffffff'/%3E%3Ccircle cx='23' cy='42' r='9' fill='%23ffffff'/%3E%3Ccircle cx='41' cy='30' r='9' fill='%23ffffff'/%3E%3Ccircle cx='59' cy='30' r='9' fill='%23ffffff'/%3E%3Ccircle cx='77' cy='42' r='9' fill='%23ffffff'/%3E%3Cellipse cx='50' cy='66' rx='14' ry='10' fill='%23ff7597'/%3E%3Ccircle cx='23' cy='42' r='5.5' fill='%23ff7597'/%3E%3Ccircle cx='41' cy='30' r='5.5' fill='%23ff7597'/%3E%3Ccircle cx='59' cy='30' r='5.5' fill='%23ff7597'/%3E%3Ccircle cx='77' cy='42' r='5.5' fill='%23ff7597'/%3E%3C/svg%3E") center/contain no-repeat!important;transition:transform .15s cubic-bezier(.34,1.56,.64,1)!important;z-index:5!important;pointer-events:none!important}
+    .island-send:not(.island-send--stop):disabled{background:linear-gradient(135deg,#ffd8e2,#ffb6c8)!important;opacity:.8!important;box-shadow:none!important;cursor:not-allowed!important}
+    .island-send:not(.island-send--stop):active:not(:disabled){background:linear-gradient(135deg,#ff7597 0%,#e83a5e 100%)!important}
+    .island-send:not(.island-send--stop):active:not(:disabled)::before{transform:translate(-50%,-50%) scale(.82) rotate(-12deg)!important}
+    :root[data-sakura-night="1"] .island-send:not(.island-send--stop){box-shadow:0 4px 14px rgba(255,105,180,.32)!important}
     :where(button,input,textarea,select):disabled{cursor:not-allowed!important}
     .settings-field input:not([type="checkbox"]):not([type="radio"]),.settings-field textarea,.settings-field select{border-radius:12px;transition:border-color .12s ease,box-shadow .12s ease,background-color .12s ease}
     .settings-field input:not([type="checkbox"]):not([type="radio"]):focus,.settings-field textarea:focus,.settings-field select:focus{border-color:#ff9ebb!important;box-shadow:0 0 0 2px rgba(255,107,149,.12)!important;outline:none!important}
@@ -3710,6 +3818,233 @@ function injectGramophoneButton() {
         .sakura-janitor-key{color:#e8b3c4}
         .sakura-janitor-empty{color:#a8808f}
     }
+    /* ============ v19.6.3 官方硬编码蓝全量接管（日间）============
+       官方 styles.css 用写死的蓝色系字面量（#2563eb / #3b82f6 / #4f68cb / #7198f2 / #93c5fd 等，
+       色相约 212-222°）渲染下列组件，不落在插件「樱花粉系 290-360°」色相旋转范围内，
+       因此此前换肤时这些块永远保持官方蓝。统一改写为粉系字面量，交给主池色相旋转按当前主题轮转。 */
+    .settings-card__title > svg{background:#ffeaf2!important;color:#e0457b!important}
+    .memory-compression__after,.memory-compression__before{color:#c2477a!important}
+    .memory-compression__track{background:#ffe0ec!important}
+    .memory-compression__fill{background:linear-gradient(90deg,#ff9dbb,#e0457b)!important}
+    .memory-compression__marker-before{background:#ffbcd2!important}
+    .memory-compression__marker-after{background:#ef6ba0!important}
+    /* v19.6.5：不再依赖官方 --badge-* 变量（会被官方 styles.css 抢先），直接写死选中态，
+       用 --sakura-theme-color 跟随主题色；背景浅粉由色相旋转自动转成主题浅色。 */
+    .message-placement{--badge-color:var(--sakura-theme-color,#ff6b95)!important;--badge-bg:#ffeaf2!important;--badge-border:#ffc2d6!important}
+    .message-placement.is-selected{background:#ffeaf2!important;border-color:var(--sakura-theme-color,#ff6b95)!important;color:var(--sakura-theme-color,#ff6b95)!important}
+    .message-placement.is-selected .message-placement-check{background:var(--sakura-theme-color,#ff6b95)!important;border-color:var(--sakura-theme-color,#ff6b95)!important}
+    .message-placement-check{border-color:#ffc2d6!important}
+    /* v19.6.5：官方设置页 segmented-switch 底色硬编码 #f5f8ff 浅蓝，日间同样接管 */
+    .settings-view .segmented-switch{background:#fff5f9!important}
+    .segmented-switch__indicator{background:#fff!important;box-shadow:0 1px 2px rgba(0,0,0,.06),0 0 0 1px rgba(233,142,170,.5)!important}
+    .segmented-switch__option.is-active{color:var(--sakura-theme-color,#ff6b95)!important}
+
+    /* ================== 🎯 v19.6.6：全站「聚焦/选中」官方蓝终结层 ==================
+       官方三路蓝往控件 :focus 上糊：
+         styles.css:1345/1346  .settings-control:hover/:focus   → #acbfe0 / #5281ec + rgba(59,130,246,.1)
+         styles.css:1367       .settings-action:focus-visible    → outline #5281ec
+         styles.css:1472       .settings-toggle-input:focus-visible + … → shadow #93c5fd
+         styles.css:1677       .settings-help-trigger:focus-visible → outline rgba(59,130,246,.28)
+         styles.css:2460/2544/3223  角色卡/剧本节点 focus-visible → #93c5fd / #60a5fa
+         theme.css:113         [dark] .settings-control:focus     → #86adf4
+         theme.css:485         [dark] [aria-pressed=true].border-primary-400 → #7099e1（带 !important）
+         Tailwind CDN          focus:border-primary-500 / focus:ring-* → #3b82f6 + blue ring
+       策略：全部换成粉系字面量（rgba 与 hex 都在 290°~360° 旋转池里），
+       自定义主题时会被 themeRecolorCss 自动旋转成目标色，不依赖 color-mix。
+       特异性用 :root:root 抬高，压住后加载的官方样式与 Tailwind 运行时样式。 */
+    :root:not([data-sakura-night="1"]) .settings-view .settings-control{border-color:#f3d9e4!important}
+    :root:root .settings-view .settings-control:hover{border-color:#e9aec4!important}
+    :root:root .settings-view .settings-control:focus,
+    :root:root .settings-view .settings-control:focus-visible,
+    :root:root .settings-view button.settings-control:focus,
+    :root:root .settings-view textarea.settings-control:focus,
+    :root:root .settings-view input.settings-control:focus{
+        border-color:#ff6b95!important;
+        box-shadow:0 0 0 3px rgba(255,107,149,.2)!important;
+        outline:none!important;
+    }
+    :root:root [class~="focus:border-primary-400"]:focus,
+    :root:root [class~="focus:border-primary-500"]:focus,
+    :root:root [class~="focus:border-primary-600"]:focus,
+    :root:root [class~="focus:ring"]:focus,
+    :root:root [class~="focus:ring-2"]:focus,
+    :root:root [class~="focus:ring-4"]:focus,
+    :root:root [class~="focus:ring-8"]:focus,
+    :root:root [class~="focus:ring-primary-400"]:focus,
+    :root:root [class~="focus:ring-primary-500"]:focus,
+    :root:root [class~="focus:ring-primary-500/10"]:focus,
+    :root:root [class~="focus:ring-primary-500/20"]:focus{
+        border-color:#ff6b95!important;
+        --tw-ring-color:rgba(255,107,149,.3)!important;
+        --tw-ring-shadow:0 0 0 3px rgba(255,107,149,.24)!important;
+        box-shadow:0 0 0 3px rgba(255,107,149,.24)!important;
+        outline:none!important;
+    }
+    :root:root [class~="focus:ring-primary-500/5"]:focus{border-color:#ff6b95!important;box-shadow:0 0 0 2px rgba(255,107,149,.16)!important}
+    :root:root .settings-action:focus-visible,
+    :root:root .settings-icon-button:focus-visible,
+    :root:root .settings-model-button:focus-visible,
+    :root:root .settings-help-trigger:focus-visible,
+    :root:root .modal-close-button:focus-visible,
+    :root:root .pagination-button:focus-visible,
+    :root:root .modal-secondary-button:focus-visible,
+    :root:root .modal-primary-button:focus-visible{outline-color:#ff6b95!important}
+    :root:root .settings-action:focus-visible{outline:2px solid #ff6b95!important;outline-offset:2px!important}
+    :root:root .settings-toggle-input:focus-visible + .settings-toggle{box-shadow:0 0 0 2px rgba(255,107,149,.4)!important}
+    :root:root .character-deck:focus-visible,
+    :root:root .character-deck__peek:focus-visible,
+    :root:root .story-route-node:focus-visible{outline-color:#ff6b95!important}
+    :root:root .character-deck__arrow:hover:not(:disabled){color:#ff6b95!important;background:#fff0f5!important}
+    :root:root .story-route-node:hover{border-color:#e9aec4!important}
+    :root:root .story-route-node.is-selected{border-color:#ff6b95!important;background:#fff0f5!important}
+    :root:root [class~="hover:bg-primary-50"]:hover,
+    :root:root [class~="hover:bg-primary-100"]:hover{background:#fff0f5!important}
+    :root:root [class~="hover:text-primary-600"]:hover,
+    :root:root [class~="hover:text-primary-700"]:hover{color:#ff6b95!important}
+    :root:root [class~="bg-primary-300"],[class~="bg-blue-300"],[class~="bg-indigo-300"]{background:#ffd9e6!important}
+    :root:root .settings-help-trigger:hover{color:#ff6b95!important;border-color:#e9aec4!important;background:#fff0f5!important}
+    :root:root .settings-help-trigger.is-open{color:#e0457b!important;border-color:#ff6b95!important;background:#ffe0ec!important;box-shadow:0 1px 2px rgba(255,107,149,.16)!important}
+    /* Tailwind 的 aria-pressed 选中态（主题色按钮）官方也钉了蓝，一并接管 */
+    :root:root [aria-pressed="true"].border-primary-400{border-color:#ff6b95!important}
+    :root:root[data-app-theme="dark"] [aria-pressed="true"].border-primary-400{border-color:#ff6b95!important;background-color:#4a2634!important;color:#f1f6ff!important}
+    /* 夜间：底深、字亮，聚焦环用亮粉保证对比 */
+    :root:root[data-sakura-night="1"] .settings-view .settings-control:focus,
+    :root:root[data-sakura-night="1"] .settings-view .settings-control:focus-visible,
+    :root:root[data-sakura-night="1"] [class~="focus:ring-2"]:focus,
+    :root:root[data-sakura-night="1"] [class~="focus:ring-4"]:focus{
+        border-color:#ff9ec2!important;
+        box-shadow:0 0 0 3px rgba(255,158,194,.24)!important;
+    }
+
+    /* ============ 🩹 v19.6.7：最后一批官方蓝漏网点（+ 插件自身历史遗留蓝） ============
+       逐条对过官方 styles.css / theme.css 全量蓝规则，以下 10 处以前没被接管：
+         styles.css:855  @keyframes message-action-tap 50%      → #2563eb（触摸设备点按闪烁）
+         styles.css:869  .message-action-button:focus           → #2563eb（不带 visible，点后残焦）
+         styles.css:817  .message-style-filter-button.is-active → #2563eb
+         styles.css:1100 .meta-badge--global                    → #4868b8/#eef3ff/#cedafa
+         styles.css:1689 .settings-help-popover                 → border #dbeafe
+         styles.css:1728 .settings-help-popover-content         → border-left #60a5fa
+         styles.css:23   .embedded-loading-spinner              → #2563eb
+         styles.css:1439 .pagination-button:hover:not(:disabled)→ #bfdbfe/#2563eb
+         styles.css:742  .settings-create-button:hover          → #bfdbfe/#eff6ff/#1d4ed8
+         styles.css:1900 .markdown-body code / a                → #2563eb/#1d4ed8（插件旧规则只盖了 .app-main 内）
+         styles.css:3149 .story-route-map-scroll                → #fbfdff
+         styles.css:1371 .settings-toggle-row                   → #e6edf7
+       全部改回粉系字面量（色相 326°~343°，落在 290°~360° 旋转池内，换主题自动跟随）。 */
+    .app-main .message-action-button:hover,
+    .app-main .message-action-button:focus-visible{color:#c44f73!important}
+    .message-action-button:focus{color:#c44f73!important;background:rgba(255,243,247,.5)!important;outline:none!important}
+    .message-action-button--danger:hover,
+    .message-action-button--danger:focus{color:#dc2626!important;background:rgba(254,242,242,.82)!important}
+    /* 官方 @keyframes 自带蓝闪，整体重写（同名后定义优先） */
+    @keyframes message-action-tap{
+        0%,100%{color:rgba(75,85,99,.78);background:transparent;transform:none}
+        50%{color:#c44f73;background:rgba(255,243,247,.86);transform:translateY(-1px)}
+    }
+    .message-style-filter-button.is-active{color:#c85278!important;background:rgba(255,240,245,.9)!important}
+    .meta-badge--global{--badge-color:#b0466e!important;--badge-bg:#fff0f5!important;--badge-border:#f7c6d8!important}
+    .settings-help-popover{border-color:#f4cfdd!important}
+    .settings-help-popover-content{border-left-color:#e98eaa!important}
+    .embedded-loading-spinner{color:#e98eaa!important}
+    .pagination-button:hover:not(:disabled){border-color:#f4cfdd!important;color:#c85278!important}
+    .settings-create-button:hover{border-color:#f4cfdd!important;background:#fff0f5!important;color:#b0466e!important}
+    :root:root .markdown-body code{color:#a84e6d!important}
+    :root:root .markdown-body a{color:#c85d7d!important}
+    :root:root .markdown-body a:hover{color:#b0466e!important}
+    :root:root .story-route-map-scroll{background:#fffafc!important}
+    :root:root .settings-toggle-row{border-color:#f6e2ea!important}
+    /* 夜间反制：上面这批日间规则带 !important，夜间必须同层换深底亮字，不能压成浅块 */
+    :root[data-sakura-night="1"] .message-action-button:focus{color:#ffb3c6!important;background:rgba(255,255,255,.06)!important}
+    :root[data-sakura-night="1"] .message-style-filter-button.is-active{color:#ffb3c6!important;background:rgba(255,182,193,.14)!important}
+    :root[data-sakura-night="1"] .meta-badge--global{--badge-color:#ffb3c6!important;--badge-bg:#3d2b33!important;--badge-border:#6b4653!important}
+    :root[data-sakura-night="1"] .settings-help-popover{border-color:#4a3a44!important}
+    :root[data-sakura-night="1"] .settings-help-popover-content{border-left-color:#8a5568!important}
+    :root[data-sakura-night="1"] .embedded-loading-spinner{color:#e98eaa!important}
+    :root[data-sakura-night="1"] .pagination-button:hover:not(:disabled){border-color:#6b4653!important;color:#ffb3c6!important}
+    :root[data-sakura-night="1"] .settings-create-button:hover{background:#4a3a44!important;color:#ffb3c6!important;border-color:#6b4653!important}
+    :root[data-sakura-night="1"] .markdown-body code{color:#ffb3c6!important;background:#3d3136!important;border-color:#5a4149!important}
+    :root[data-sakura-night="1"] .markdown-body a{color:#ff9ec2!important}
+    :root[data-sakura-night="1"] .markdown-body a:hover{color:#ffb3c6!important}
+    :root[data-sakura-night="1"] .story-route-map-scroll{background:#2f2f2f!important}
+    :root[data-sakura-night="1"] .settings-toggle-row{border-color:#4a4a4a!important}
+    /* v19.6.8：末轮收口——官方残余蓝色投影 / 剧本线悬停浅蓝 / 思维链卡蓝影，全部改粉系字面量 */
+    .settings-help-popover{box-shadow:0 12px 28px -14px rgba(200,93,125,.35)!important}
+    .story-route-node:hover{box-shadow:0 12px 25px rgba(200,93,125,.12)!important}
+    .story-route-node.is-selected{background:#fff0f5!important;box-shadow:0 12px 28px rgba(200,93,125,.16)!important}
+    .story-route-edit-button:hover:not(:disabled){border-color:#ffc2d6!important;background:#fff5f9!important;color:#b0466e!important}
+    .cot-ui.is-open,.native-thinking-card.is-open,.native-thinking-card.is-live{box-shadow:0 4px 12px -2px rgba(255,107,149,.1),0 2px 6px -2px rgba(255,107,149,.05)!important}
+    :root[data-sakura-night="1"] .settings-help-popover{box-shadow:0 12px 28px -14px rgba(0,0,0,.5)!important}
+    :root[data-sakura-night="1"] .story-route-node.is-selected{background:#41323a!important;box-shadow:0 12px 28px rgba(0,0,0,.4)!important}
+    :root[data-sakura-night="1"] .story-route-edit-button:hover:not(:disabled){background:#41323a!important;border-color:#6b4653!important;color:#ffb3c6!important}
+    /* v19.6.9：定稿收口——系统点按高亮 / 文本选中色 / 官方存储面板内联色 */
+    *{-webkit-tap-highlight-color:transparent!important}
+    ::selection{background:#ffccd5!important;color:#7a2245!important}
+    [class~="selection:bg-primary-200"]::selection{background:#ffccd5!important;color:#7a2245!important}
+    :root[data-sakura-night="1"] ::selection{background:#6b4653!important;color:#ffe6ef!important}
+    /* 官方存储面板分类图例色由 Vue 内联 style 控制，CSS 只能 !important 反制 */
+    .settings-view span.w-1.h-5.rounded-full{background:#ff9ec2!important}
+    :root[data-sakura-night="1"] .settings-view span.w-1.h-5.rounded-full{background:#e98eaa!important}
+    /* ============ 🩹 v19.7.1：适配官方 1.9.7 夜间体系重写 ============ */
+    /* ① 官方夜间蓝变量 → 粉系（所有吃 var(--night-*) 的官方规则自动变粉） */
+    :root:root[data-app-theme="dark"]{
+        --night-accent:#f0a8bd!important;
+        --night-primary:#c2477a!important;
+        --night-primary-hover:#a83a66!important;
+        --night-selected:#412832!important;
+        --night-tint:#3b2730!important;
+    }
+    :root:root[data-app-theme="dark"] .msg-bubble-glass{--bubble-rgb:43,34,38!important}
+    /* ② 夜间：官方 1.9.7 新增的硬编码蓝边框 → 品牌深粉 */
+    :root:root:root[data-app-theme="dark"] :is([class~="border-blue-100"],[class~="border-blue-200"],[class~="border-blue-200/50"],[class~="border-blue-200/60"],
+        [class~="border-primary-100"],[class~="border-primary-200"],[class~="border-primary-200/80"],
+        [class~="border-primary-300"],[class~="border-primary-300/50"],[class~="border-primary-400"],
+        [class~="border-primary-500"],[class~="border-primary-600"],
+        [class~="focus:border-blue-400"],[class~="focus:border-primary-400"],[class~="focus:border-primary-500"],
+        [class~="hover:border-primary-200"],[class~="hover:border-primary-300"],[class~="hover:border-primary-400"]){border-color:#5c3a46!important}
+    /* ③ 夜间：官方 Tailwind ring 环 → 品牌粉 */
+    :root:root:root[data-app-theme="dark"] :is([class~="focus-visible:ring-primary-500/40"],[class~="focus:ring-blue-100"],
+        [class~="focus:ring-primary-100"],[class~="focus:ring-primary-300"],[class~="focus:ring-primary-400"],
+        [class~="focus:ring-primary-500"],[class~="focus:ring-primary-500/10"],[class~="focus:ring-primary-500/20"],
+        [class~="focus:ring-primary-500/30"],[class~="ring-primary-500"],[class~="ring-primary-500/10"]){--tw-ring-color:rgba(255,107,149,.45)!important}
+    /* ④ 官方 1.9.7 新加控件/导航/开关的夜间蓝 */
+    :root:root[data-app-theme="dark"] .compact-range{background-color:#3d2b33!important;accent-color:#ff6b95!important}
+    :root:root[data-app-theme="dark"] .chat-quick-panel .compact-range{background:linear-gradient(#3d2b33,#3d2b33) center / 100% 3px no-repeat!important}
+    :root:root[data-app-theme="dark"] .compact-range::-webkit-slider-thumb{background:#ff6b95!important}
+    :root:root[data-app-theme="dark"] .compact-range::-moz-range-thumb{background:#ff6b95!important}
+    :root:root[data-app-theme="dark"] :is(input,textarea,select){caret-color:#ff6b95!important}
+    :root:root[data-app-theme="dark"] :is(.app-nav-trigger:not(.app-nav-trigger--chat),.app-navigation-close,.app-navigation-section h3,.app-navigation-icon){color:#c9a2b0!important}
+    :root:root[data-app-theme="dark"] .app-navigation-item.is-current{border-color:#7a4a5c!important;color:#ffeaf0!important}
+    :root:root[data-app-theme="dark"] .app-navigation-item.is-current .app-navigation-icon{color:#ff9ec2!important}
+    :root:root[data-app-theme="dark"] .app-navigation-brand em{color:#d891a8!important}
+    :root:root[data-app-theme="dark"] .segmented-switch__indicator{box-shadow:inset 0 0 0 1px #7a4a5c!important}
+    :root:root[data-app-theme="dark"] .settings-toggle-input:checked + .settings-toggle{background:#c2477a!important}
+    :root:root[data-app-theme="dark"] .settings-toggle-input:not(:checked) + .settings-toggle::after{border-color:#5a4149!important}
+    :root:root[data-app-theme="dark"] .settings-view .settings-control:focus{border-color:#ff9ec2!important;box-shadow:0 0 0 3px rgba(255,158,194,.18)!important}
+    :root:root[data-app-theme="dark"] .app-navigation-layer::before{background:rgba(30,20,24,.24)!important}
+    :root:root[data-app-theme="dark"] .character-deck__backdrop{background:#2b2628!important}
+    :root:root[data-app-theme="dark"] .character-deck__backdrop::after{background:linear-gradient(180deg,rgba(32,26,28,.7),rgba(32,26,28,.4) 50%,rgba(32,26,28,.75))!important}
+    :root:root[data-app-theme="dark"] :is(.ui-template-pending-icon,.ui-template-pending-icon .live-dots){background:#3d2b33!important;color:#ff9ec2!important}
+    :root:root[data-app-theme="dark"] .tab-slider{background:#ff6b95!important}
+    /* ⑤ 官方 1.9.7 夜间气泡 !important 抢了插件日间底 → 提升特异性抢回 */
+    :root:root:root[data-sakura-night="1"] .msg-bubble-glass{background-color:#2b2226!important;border-color:#4a3a42!important}
+    :root:root:root[data-sakura-night="1"] .msg-bubble-glass[class~="bg-blue-50/85"]{background-color:#2b2226!important}
+    :root:root:root[data-sakura-night="1"] .msg-bubble-glass[class~="bg-red-50/70"]{background-color:#422c3a!important}
+    :root:root:root[data-sakura-night="1"] div[data-role="user"] .msg-bubble-glass{background:#3d3236!important;border-color:#ff6b95!important;color:#ececec!important}
+    /* ⑥ 官方 1.9.7 夜间消息操作按钮蓝底蓝字 → 品牌粉 */
+    :root:root[data-sakura-night="1"] :is(.message-action-button:hover,.message-action-button:focus-visible,.message-style-filter-button.is-active){background:rgba(255,107,149,.16)!important;color:#ffb3c6!important}
+    /* ⑦ 特异性压制：官方 1.9.7 用 :is() 把 meta-badge/placement 抬到 (0,3,0)，插件必须抬更高 */
+    :root:root:root[data-sakura-night="1"] :is(.meta-badge--global,.message-placement.is-selected){--badge-color:#ff9ec2!important;--badge-bg:#412832!important;--badge-border:#6b4653!important}
+    :root:root:root[data-sakura-night="1"] .message-placement{--badge-color:#ff8ab0!important;--badge-bg:#41323a!important;--badge-border:#5f3b4b!important}
+    :root:root:root[data-sakura-night="1"] .message-placement-check{background:#3b3b3b!important;border-color:#6b4653!important}
+    :root:root:root[data-sakura-night="1"] .message-placement.is-selected .message-placement-check{background:#ff6b95!important;border-color:#ff6b95!important}
+    :root:root:root[data-sakura-night="1"] .segmented-switch__indicator{background:#412832!important;box-shadow:inset 0 0 0 1px #7a4a5c!important}
+    /* 日间也用高特异性锁一遍，防官方 Tailwind 运行时反压 */
+    :root:root:root .meta-badge--global{--badge-color:#b0466e!important;--badge-bg:#fff0f5!important;--badge-border:#f7c6d8!important}
+    :root:root:root .message-placement.is-selected{background:#ffeaf2!important;border-color:#ff6b95!important;color:#ff6b95!important}
+    :root:root:root .message-placement.is-selected .message-placement-check{background:#ff6b95!important;border-color:#ff6b95!important}
+
+
+    [class~="bg-primary-300"],[class~="bg-blue-300"],[class~="bg-indigo-300"]{background:rgba(255,193,214,.92)!important}
     @media (prefers-reduced-motion:reduce){
         *,*::before,*::after{animation-duration:.001ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.001ms!important}
     }
@@ -3733,6 +4068,221 @@ function injectGramophoneButton() {
     .chat-view-root .sakura-clean-view-btn:active{background:rgba(255,255,255,.1)!important;color:#fff!important;transform:none!important}
 
     .message-action-button{-webkit-tap-highlight-color:transparent!important}
+    /* ================== 🌙 v19.5.9 夜间适配层（已并入主主题重映射池） ==================
+       关键变化：不再单独挂 <style>，而是并入 cssPolish → 随 applyThemeColor() 一起做
+       色相旋转。因此这里写死的粉系字面量会自动跟随自定义主题色；中性灰（s<8）
+       不会被误转。强调项统一用 var(--sakura-theme-color)，保证「蓝色主题」在夜间呈蓝。 */
+    :root[data-sakura-night="1"]{color-scheme:dark}
+
+    /* v19.6.2 夜间官方白底兜底：官方 theme.css 未覆盖 bg-white 弹层面板（如模型选择器 model-selector-panel）、
+       默认会呈现白底白字（插件已把标题提亮）而无法阅读。此处统一翻深灰并压低边框亮度；
+       放在本层最前，后续插件更具体规则（sakura-* / 导航 / 气泡）仍可覆盖。 */
+    :root[data-sakura-night="1"] [class~="bg-white"],
+    :root[data-sakura-night="1"] [class~="bg-white/95"],
+    :root[data-sakura-night="1"] [class~="bg-white/90"],
+    :root[data-sakura-night="1"] [class~="bg-white/80"],
+    :root[data-sakura-night="1"] [class~="bg-white/70"],
+    :root[data-sakura-night="1"] [class~="bg-gray-50/40"],
+    :root[data-sakura-night="1"] [class~="bg-gray-50/60"],
+    :root[data-sakura-night="1"] [class~="bg-gray-100"],
+    :root[data-sakura-night="1"] [class~="bg-gray-100/70"]{background-color:#343434!important;border-color:#4a4a4a!important}
+    :root[data-sakura-night="1"] [class~="bg-gray-200"],
+    :root[data-sakura-night="1"] [class~="bg-gray-200/70"]{background-color:#3d3d3d!important}
+    :root[data-sakura-night="1"] [class~="text-gray-900"]{color:#eaeaea!important}
+    :root[data-sakura-night="1"] [class~="border-gray-100"],
+    :root[data-sakura-night="1"] [class~="border-gray-200"],
+    :root[data-sakura-night="1"] [class~="border-gray-200/70"],
+    :root[data-sakura-night="1"] [class~="border-gray-200/50"]{border-color:#4a4a4a!important}
+
+    /* —— 官方顶栏 / 设置页头部：日间被插件刷成近白粉，夜间必须翻深 —— */
+    :root[data-sakura-night="1"] .settings-page-header{background:rgba(46,46,46,.82)!important;border-bottom-color:rgba(255,255,255,.08)!important}
+
+    /* —— 插件自建弹窗骨架 —— */
+    :root[data-sakura-night="1"] .sakura-box{background:#333!important;border-color:#4a4a4a!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 28px 72px -20px rgba(0,0,0,.78)!important}
+    :root[data-sakura-night="1"] .sakura-mask{background:rgba(10,8,10,.64)!important}
+    :root[data-sakura-night="1"] .sakura-head{background:#3d3d3d!important;border-bottom-color:#4a4a4a!important}
+    :root[data-sakura-night="1"] .sakura-body{background:#333!important}
+    :root[data-sakura-night="1"] .sakura-foot{background:#383838!important;border-top-color:#4a4a4a!important}
+    :root[data-sakura-night="1"] .sakura-title-with-icon{color:#ecdfe3!important}
+    :root[data-sakura-night="1"] .sakura-sub{color:#b7a0aa!important}
+    :root[data-sakura-night="1"] .sakura-close-btn{color:#b7a0aa!important}
+    :root[data-sakura-night="1"] .sakura-close-btn:hover{color:var(--sakura-theme-color,#ff6b95)!important;background:#463a40!important}
+
+    /* —— 输入域 —— */
+    :root[data-sakura-night="1"] .sakura-input,
+    :root[data-sakura-night="1"] .sakura-note-area{background:#3b3b3b!important;border-color:#555!important;color:#f0f0f0!important}
+    :root[data-sakura-night="1"] .sakura-input::placeholder,
+    :root[data-sakura-night="1"] .sakura-note-area::placeholder{color:#8f8f8f!important}
+    :root[data-sakura-night="1"] .sakura-note-area:focus{background:#414141!important;border-color:var(--sakura-theme-color,#ff8ab0)!important}
+
+    /* —— 按钮 —— */
+    :root[data-sakura-night="1"] .sakura-btn{background:#414141!important;border-color:#575757!important;color:#e0d2d7!important}
+    :root[data-sakura-night="1"] .sakura-btn--quiet{background:#3a3a3a!important;color:#b7a0aa!important;border-color:#4e4e4e!important}
+    :root[data-sakura-night="1"] .sakura-btn--main{background:var(--sakura-theme-color,#e8457a)!important;border-color:var(--sakura-theme-color,#ff5f92)!important;color:#fff!important}
+
+    /* —— 模型列表 —— */
+    :root[data-sakura-night="1"] .sakura-model-row{background:#3a3a3a!important;border-color:#4d4d4d!important}
+    :root[data-sakura-night="1"] .sakura-model-row:hover,
+    :root[data-sakura-night="1"] .sakura-model-row:active{background:#454545!important;border-color:var(--sakura-theme-color,#ff8ab0)!important}
+    :root[data-sakura-night="1"] .sakura-model-row.is-selected{background:#41323a!important;border-color:var(--sakura-theme-color,#ff6b95)!important}
+    :root[data-sakura-night="1"] .sakura-model-core-name{color:#f4e6ec!important}
+    :root[data-sakura-night="1"] .sakura-model-prefix-tag{background:#4a3a44!important;color:#ffb0c4!important;border-color:#6b4654!important}
+    :root[data-sakura-night="1"] .sakura-model-check{color:var(--sakura-theme-color,#ff8ab0)!important}
+    :root[data-sakura-night="1"] .sakura-empty,
+    :root[data-sakura-night="1"] .sakura-model-loading{color:#b7a0aa!important}
+
+    /* —— 标签栏 / 供应商下拉 —— */
+    :root[data-sakura-night="1"] .sakura-tag-btn{background:#3f3f3f!important;border-color:#565656!important;color:#dcc4cf!important}
+    :root[data-sakura-night="1"] .sakura-tag-btn:hover{background:#484848!important;border-color:var(--sakura-theme-color,#ff8ab0)!important}
+    :root[data-sakura-night="1"] .sakura-provider-menu{background:#343434!important;border-color:#575757!important}
+    :root[data-sakura-night="1"] .sakura-provider-option{color:#e6e6e6!important}
+    :root[data-sakura-night="1"] .sakura-provider-option:hover{background:#454545!important}
+
+    /* —— 设置页「樱花个性化」卡片：标题跟随主题色 —— */
+    :root[data-sakura-night="1"] .sakura-personal-card{background:linear-gradient(145deg,#3b3b3b,#333)!important;border-color:#4d4d4d!important}
+    :root[data-sakura-night="1"] .sakura-personal-card:hover{background:linear-gradient(145deg,#454545,#3b3b3b)!important;border-color:var(--sakura-theme-color,#ff8ab0)!important}
+    :root[data-sakura-night="1"] .sakura-personal-card-title{color:var(--sakura-theme-color,#ffa9c0)!important}
+    :root[data-sakura-night="1"] .sakura-personal-card-desc{color:#c0a8b2!important}
+    :root[data-sakura-night="1"] .sakura-personal-card::after{color:#8d6d7a!important}
+
+    /* —— 记忆区操作按钮 / 导入导出 —— */
+    /* V20 原生派：记忆按钮夜间跟随官方变量，去掉硬编码深灰 */
+    :root[data-sakura-night="1"] .sakura-mem-actions>button,
+    :root[data-sakura-night="1"] .sakura-mem-edit,
+    :root[data-sakura-night="1"] .sakura-mem-del,
+    :root[data-sakura-night="1"] .sakura-mem-io-export,
+    :root[data-sakura-night="1"] .sakura-mem-io-import{background:transparent!important;border-color:transparent!important;color:var(--c-text-3,#c9c9c9)!important}
+    :root[data-sakura-night="1"] .sakura-mem-actions>button:hover,
+    :root[data-sakura-night="1"] .sakura-mem-edit:hover,
+    :root[data-sakura-night="1"] .sakura-mem-del:hover{background:rgb(var(--gray-500,172 172 185) / .14)!important;border-color:transparent!important;color:#ffa9c0!important}
+
+    /* —— 留声机 / 名场面 —— */
+    :root[data-sakura-night="1"] #sakura-gramophone-panel,
+    :root[data-sakura-night="1"] #sakura-moments-mask .sakura-box,
+    :root[data-sakura-night="1"] #sakura-moment-naming .sakura-box,
+    :root[data-sakura-night="1"] #sakura-moment-confirm .sakura-box{background:#3b3b3b!important;border-color:#4d4d4d!important;color:#e6e6e6!important}
+
+    /* —— 分流设置卡片 —— */
+    :root[data-sakura-night="1"] .sakura-native-split-card{background:#3b3b3b!important;border-color:#4d4d4d!important}
+    :root[data-sakura-night="1"] .sakura-native-split-card .settings-collapse-trigger{color:#e6e6e6!important}
+    :root[data-sakura-night="1"] .sakura-native-split-card .settings-collapse-trigger:hover{background:#454545!important}
+    :root[data-sakura-night="1"] .sakura-native-split-card .text-gray-800,
+    :root[data-sakura-night="1"] .sakura-native-split-card .text-gray-700,
+    :root[data-sakura-night="1"] .sakura-native-split-card .text-gray-600{color:#e4e4e4!important}
+    :root[data-sakura-night="1"] .sakura-native-split-card .text-gray-500{color:#ababab!important}
+    :root[data-sakura-night="1"] .sakura-native-split-card .border-gray-100,
+    :root[data-sakura-night="1"] .sakura-native-split-card .border-gray-200{border-color:#4d4d4d!important}
+    :root[data-sakura-night="1"] .sakura-native-split-card .sakura-provider-current-btn{background:#3f3f3f!important;border-color:#555!important;color:#e8e8e8!important}
+    :root[data-sakura-night="1"] .sakura-native-split-card .sakura-split-input{background:#3b3b3b!important;border-color:#555!important;color:#f0f0f0!important}
+    :root[data-sakura-night="1"] .sakura-native-split-card .sakura-split-input::placeholder{color:#8f8f8f!important}
+    :root[data-sakura-night="1"] .sakura-native-split-card .sakura-split-icon-badge{background:#454545!important;color:#c9c9c9!important}
+
+    /* —— 官方新版模型选择器 —— */
+    :root[data-sakura-night="1"] .model-selector-heading h3,
+    :root[data-sakura-night="1"] .model-selector-heading .text-gray-900{color:#f2f2f2!important}
+    :root[data-sakura-night="1"] .model-selector-list .text-gray-500,
+    :root[data-sakura-night="1"] .model-selector-list .text-gray-800{color:#d6d6d6!important}
+    :root[data-sakura-night="1"] .model-selector-list button:not([aria-pressed="true"]){background:#3a3a3a!important;border-color:#4d4d4d!important}
+    :root[data-sakura-night="1"] .model-selector-list button:not([aria-pressed="true"]) span{color:#e4e4e4!important}
+    :root[data-sakura-night="1"] .model-selector-list button[aria-pressed="true"]{background:#41323a!important;border-color:var(--sakura-theme-color,#ff8ab0)!important}
+    :root[data-sakura-night="1"] .model-selector-list button[aria-pressed="true"] span,
+    :root[data-sakura-night="1"] .model-selector-list button[aria-pressed="true"] svg{color:#f0dbe2!important}
+
+    /* —— 官方对话气泡（用户侧）：日间被插件刷成浅粉，夜间必须翻深灰 —— */
+    :root[data-sakura-night="1"] div[data-role="user"] .msg-bubble-glass{background:#3d3d3d!important;border-color:var(--sakura-theme-color,#ff6b95)!important;box-shadow:0 4px 14px rgba(0,0,0,.28)!important;color:#ececec!important}
+    :root[data-sakura-night="1"] div[data-role="user"] .markdown-body{color:inherit!important}
+
+    /* —— 官方输入岛 / 输入框：夜间翻深 —— */
+    :root[data-sakura-night="1"] .input-island,
+
+    /* —— 动作按钮栏 / 思考卡片 / Toast —— */
+    :root[data-sakura-night="1"] .app-main .message-action-bar{background:transparent!important;border-top-color:rgba(255,255,255,.08)!important}
+    :root[data-sakura-night="1"] .app-main .message-action-button:hover,
+    :root[data-sakura-night="1"] .app-main .message-action-button:focus-visible{background:rgba(255,255,255,.08)!important;color:#f0f0f0!important}
+    :root[data-sakura-night="1"] .native-thinking-card,
+    :root[data-sakura-night="1"] .cot-ui{background:#373737!important;border-color:#4d4d4d!important}
+    :root[data-sakura-night="1"] .toast-item,
+    :root[data-sakura-night="1"] .toast-stack>div{background:rgba(55,55,55,.96)!important;border-color:#555!important;color:#ececec!important}
+    :root[data-sakura-night="1"] .typing-timer-badge{background:rgba(55,55,55,.8)!important;border-color:#555!important;color:#c9c9c9!important}
+
+    /* ========== v19.5.9 补充：导航面板 / 快捷面板 / 官方组件全面日夜适配 ========== */
+
+    /* —— 浮空导航面板：日间被插件刷成浅粉白，夜间必须翻深 —— */
+    :root[data-sakura-night="1"] .app-navigation-layer::before{background:rgba(0,0,0,.5)!important}
+    :root[data-sakura-night="1"] .app-navigation-panel{background:linear-gradient(145deg,#333,#2c2c2c)!important;border-color:#464646!important;color:#e6e6e6!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 22px 52px -22px rgba(0,0,0,.8)!important}
+    :root[data-sakura-night="1"] .app-navigation-header{border-bottom-color:#464646!important}
+    :root[data-sakura-night="1"] .app-navigation-brand > span{color:#e8dde1!important}
+    :root[data-sakura-night="1"] .app-navigation-brand em{color:#b09aa3!important}
+    :root[data-sakura-night="1"] .app-navigation-close{color:#b09aa3!important}
+    :root[data-sakura-night="1"] .app-navigation-close:hover{color:var(--sakura-theme-color,#ff6b95)!important;background:#3d3d3d!important}
+    :root[data-sakura-night="1"] .app-navigation-section h3{color:#a89aa0!important}
+    :root[data-sakura-night="1"] .app-navigation-item{background:#3a3a3a!important;border-color:#4a4a4a!important;color:#ded2d7!important}
+    :root[data-sakura-night="1"] .app-navigation-item .app-navigation-icon{color:#b09aa3!important;background:#434343!important}
+    :root[data-sakura-night="1"] .app-navigation-item:hover{background:#444!important;border-color:var(--sakura-theme-color,#ff8ab0)!important;color:#f0f0f0!important}
+    :root[data-sakura-night="1"] .app-navigation-item:hover .app-navigation-icon{color:var(--sakura-theme-color,#ff6b95)!important}
+    :root[data-sakura-night="1"] .app-navigation-item.is-current{color:#f0e2e7!important;background:#41323a!important;border-color:var(--sakura-theme-color,#ff8ab0)!important;box-shadow:none!important}
+    :root[data-sakura-night="1"] .app-navigation-item.is-current .app-navigation-icon{color:var(--sakura-theme-color,#ff6b95)!important;background:#4a3a44!important}
+    :root[data-sakura-night="1"] .app-navigation-user{background:#3a3a3a!important;border-color:#4a4a4a!important}
+    :root[data-sakura-night="1"] .app-navigation-user strong{color:#e8dde1!important}
+    :root[data-sakura-night="1"] .app-nav-trigger--embedded{color:#e0d2d7!important;background:#3a3a3a!important;border-color:#4a4a4a!important;box-shadow:none!important}
+    :root[data-sakura-night="1"] .app-nav-trigger--embedded:hover{color:var(--sakura-theme-color,#ff6b95)!important}
+    :root[data-sakura-night="1"] .app-navigation-content::-webkit-scrollbar-thumb{background:#555!important}
+    :root[data-sakura-night="1"] .app-navigation-content::-webkit-scrollbar-track{background:transparent!important}
+
+    /* —— 对话页快捷面板（chat-quick-panel）：官方在暗色下已处理，这里只补插件覆盖不到的字 —— */
+    :root[data-sakura-night="1"] .chat-quick-panel{background:rgba(45,45,45,.96)!important;border-color:rgba(255,255,255,.1)!important;box-shadow:0 12px 40px rgba(0,0,0,.5)!important}
+    :root[data-sakura-night="1"] .chat-quick-panel .text-gray-700,
+    :root[data-sakura-night="1"] .chat-quick-panel .text-gray-600,
+    :root[data-sakura-night="1"] .chat-quick-panel .text-gray-500{color:#c9c9c9!important}
+    :root[data-sakura-night="1"] .chat-quick-panel .bg-gray-50,
+    :root[data-sakura-night="1"] .chat-quick-panel .bg-gray-100\/70{background:#3a3a3a!important}
+    :root[data-sakura-night="1"] .chat-quick-panel .border-gray-200\/70{border-color:#4a4a4a!important}
+    :root[data-sakura-night="1"] .chat-model-slots .segmented-switch__indicator{background:#4a3a44!important}
+
+    /* —— 通用：夜间所有残留白底卡片/输入框兜底 —— */
+    :root[data-sakura-night="1"] .settings-card{background:#373737!important;border-color:#4a4a4a!important}
+    :root[data-sakura-night="1"] .settings-view .settings-control{background:#303030!important;color:#e4e4e4!important;border-color:#4a4a4a!important}
+    :root[data-sakura-night="1"] .settings-label{color:#c2c2c2!important}
+    :root[data-sakura-night="1"] .settings-action{background:#3d3d3d!important;border-color:#4a4a4a!important;color:#e4e4e4!important}
+    :root[data-sakura-night="1"] .settings-icon-button{background:#3d3d3d!important;border-color:#4a4a4a!important;color:#c9c9c9!important}
+    /* —— v19.6.3 正则脚本「高级选项」选择卡：夜间深底 + 品牌色，避免亮粉底压深字 —— */
+    :root[data-sakura-night="1"] .message-placement{--badge-color:#ff8ab0;--badge-bg:#41323a;--badge-border:#5f3b4b;background:#333!important;border-color:#4a4a4a!important;color:#c2c2c2!important}
+    :root[data-sakura-night="1"] .message-placement-check{background:#3b3b3b!important;border-color:#555!important}
+    :root[data-sakura-night="1"] .message-placement.is-selected{background:#41323a!important;border-color:var(--sakura-theme-color,#ff6b95)!important;color:#f0dbe2!important}
+    :root[data-sakura-night="1"] .message-placement.is-selected .message-placement-check{background:var(--sakura-theme-color,#ff6b95)!important;border-color:var(--sakura-theme-color,#ff6b95)!important}
+    /* v19.6.5：官方夜间给 segmented-switch__indicator 加了官方蓝内框 box-shadow: inset 0 0 0 1px #5b87cb，
+       与插件主题色底并排就是“蓝框+主题色”双色的怪状。这里用主题色描边接管。 */
+    :root[data-sakura-night="1"] .segmented-switch,
+    :root[data-sakura-night="1"] .settings-view .segmented-switch{background:#303030!important;border-color:#4a4a4a!important;box-shadow:none!important}
+    :root[data-sakura-night="1"] .segmented-switch__indicator{background:#41323a!important;box-shadow:inset 0 0 0 1px var(--sakura-theme-color,#ff6b95)!important}
+    :root[data-sakura-night="1"] .segmented-switch__option{color:#9a9a9a!important}
+    :root[data-sakura-night="1"] .segmented-switch__option.is-active{color:#f1f1f1!important}
+    /* —— v19.6.3 配套夜间反制：上述日间块带 !important，夜间必须翻深，
+       否则设置页图标方块/记忆压缩条会呈浅底方块。使用注入的 --night-* 品牌变量。 —— */
+    :root[data-sakura-night="1"] .settings-card__title > svg{background:#3b3b3b!important;color:#e0a8bd!important}
+    :root[data-sakura-night="1"] .memory-compression__track{background:#3d3d3d!important}
+    :root[data-sakura-night="1"] .memory-compression__fill{background:linear-gradient(90deg,#c2477a,#ff9dbb)!important}
+    :root[data-sakura-night="1"] .memory-compression__before{color:#9a9a9a!important}
+    :root[data-sakura-night="1"] .memory-compression__after{color:#ff9dbb!important}
+    :root[data-sakura-night="1"] .memory-compression__marker-before{background:#6b6b6b!important}
+    :root[data-sakura-night="1"] .memory-compression__marker-after{background:#ff9dbb!important}
+    :root[data-sakura-night="1"] [class~="bg-primary-300"]{background:#c2477a!important}
+    :root[data-sakura-night="1"] .settings-create-button{color:#fff!important;border-color:var(--sakura-theme-color,#ff6b95)!important}
+    :root[data-sakura-night="1"] .settings-subheading,
+    :root[data-sakura-night="1"] .settings-card__title{color:#e4e4e4!important}
+
+    /* —— 通用：夜间官方灰字统一抬亮，避免看不清 —— */
+    :root[data-sakura-night="1"] .text-gray-800,
+    :root[data-sakura-night="1"] .text-gray-700{color:#e4e4e4!important}
+    :root[data-sakura-night="1"] .text-gray-600{color:#d0d0d0!important}
+    :root[data-sakura-night="1"] .text-gray-500{color:#b4b4b4!important}
+    :root[data-sakura-night="1"] .text-gray-400{color:#9a9a9a!important}
+
+    /* —— 日间：确保浅底上的主题色文字足够深（对比度）—— */
+    :root:not([data-sakura-night="1"]) .settings-model-button .text-gray-700{color:#3f3f46!important}
+    :root:not([data-sakura-night="1"]) .model-selector-list button:not([aria-pressed="true"]) span{color:#3f3f46!important}
+
+
 
     `;
     const choiceCardStyle = document.createElement('style');
@@ -3852,6 +4402,34 @@ function injectGramophoneButton() {
     function themeStoredColor() {
         try { return themeNormalizeHex(pluginStorage.getItem(THEME_KEY) || ''); } catch (_) { return ''; }
     }
+    // 官方 theme.css 用 :root[data-app-theme="dark"] :is(.bg-primary-600,...){background:var(--night-primary)!important}
+    // 把主色钉成官方蓝。这里同源覆盖官方 --night-* 变量（内联优先级高于样式表常规声明），
+    // 让官方自己的规则跟着插件主题色走，避免“官方蓝盖主题色”。
+    function applyNightVars(targetHex) {
+        const root = document.documentElement;
+        const norm = themeNormalizeHex(targetHex);
+        const set = (name, val) => { try { if (val) root.style.setProperty(name, val); else root.style.removeProperty(name); } catch (_) {} };
+        // v19.6.1：默认（樱花粉）主题也必须注入同源 --night-* ，否则一旦 removeProperty，
+        // 官方 theme.css 的 :root[data-app-theme="dark"]{--night-primary:#426bd8} 会让
+        // 官方原生组件（模型选择器/主按钮/导航 current）在夜间回落成官方蓝，与樱花粉主色打架。
+        const pick = (norm && norm !== THEME_DEFAULT) ? norm : themeNormalizeHex(THEME_DEFAULT);
+        const base = themeHexToRgb(pick);
+        if (!base) {
+            ['--night-primary', '--night-primary-hover', '--night-accent', '--night-tint', '--night-selected'].forEach(function (n) { set(n, ''); });
+            return;
+        }
+        const hsl = themeRgbToHsl(base.r, base.g, base.b);
+        const mk = function (l, sMul) {
+            const c = themeHslToRgb(hsl.h, themeClamp(hsl.s * (sMul || 1), 0, 100), l);
+            return themeRgbToHex(c.r, c.g, c.b);
+        };
+        set('--night-primary', mk(58, 1));
+        set('--night-primary-hover', mk(64, 1));
+        set('--night-accent', mk(76, 0.55));
+        set('--night-tint', mk(24, 0.8));
+        set('--night-selected', mk(34, 0.9));
+    }
+
     function applyThemeColor(targetHex, options) {
         const opts = options || {};
         const norm = themeNormalizeHex(targetHex);
@@ -3861,6 +4439,7 @@ function injectGramophoneButton() {
                 choiceCardStyle.textContent = THEME_ORIG_CHOICE_CSS;
                 document.documentElement.style.setProperty('--sakura-theme-color', THEME_DEFAULT);
                 document.documentElement.removeAttribute('data-sakura-accent');
+                applyNightVars('');
                 if (opts.persist !== false) pluginStorage.removeItem(THEME_KEY);
                 return true;
             }
@@ -3868,6 +4447,7 @@ function injectGramophoneButton() {
             choiceCardStyle.textContent = themeRecolorCss(THEME_ORIG_CHOICE_CSS, norm);
             document.documentElement.style.setProperty('--sakura-theme-color', norm);
             document.documentElement.setAttribute('data-sakura-accent', norm);
+            applyNightVars(norm);
             if (opts.persist !== false) pluginStorage.setItem(THEME_KEY, norm);
             return true;
         } catch (e) {
@@ -3922,7 +4502,7 @@ function injectGramophoneButton() {
 
     // ================= 🌸 设置页「樱花个性化」独立分区 =================
     // 位置：官方「高级参数」和「空间管理」之间；样式完全对齐官方原生分区骨架。
-    // 个性化功能统一使用此入口。
+    // 后续新增的个性化功能入口统一挂到这里，不再挤备份按钮那一排。
     const SPLASH_CUSTOM_KEY = 'rphub_splash_custom_v1';   // 旧版单图键：仅用于一次性兼容迁移
     const SPLASH_LIST_KEY = 'rphub_splash_list_v1';       // 多图列表键
     const SPLASH_MAX = 8;
@@ -3963,7 +4543,7 @@ function injectGramophoneButton() {
             } catch (_) { return null; }
         }
     }
-    // 压缩用户图片：限制最长边、转 webp，防止 pluginStorage 撑爆。
+    // 压缩用户图片：限制最长边、转 webp，防止 localStorage 撑爆。
     function compressSplashImage(file, maxEdge) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -4115,7 +4695,7 @@ function injectGramophoneButton() {
     function injectSakuraSettingsSection() {
         if (document.getElementById('sakura-personal-section')) return;
         // 锚点：官方「空间管理」标题（settings-section-heading 内含该文案）所在的分区容器。
-        const headings = document.querySelectorAll('h4.settings-section-heading');
+        const headings = document.querySelectorAll('h4.settings-section-heading, h4.settings-subheading');
         let storageSection = null;
         for (const h of headings) {
             if ((h.textContent || '').includes('空间管理')) {
@@ -4127,7 +4707,7 @@ function injectGramophoneButton() {
         const section = document.createElement('div');
         section.id = 'sakura-personal-section';
         section.className = 'pt-6 border-t border-gray-100 mt-6';
-        section.innerHTML = '<h4 class="settings-section-heading"><svg class="w-4 h-4 mr-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3l1.9 5.8a2 2 0 001.3 1.3L21 12l-5.8 1.9a2 2 0 00-1.3 1.3L12 21l-1.9-5.8a2 2 0 00-1.3-1.3L3 12l5.8-1.9a2 2 0 001.3-1.3L12 3z"></path></svg>樱花个性化</h4><div class="grid grid-cols-1 md:grid-cols-3 gap-4"><button type="button" id="sakura-entry-theme" class="sakura-personal-card" data-entry="theme"><div class="sakura-personal-card-title">🎨 主题换色</div><div class="sakura-personal-card-desc">全站配色自定义，预设与 HEX 任选</div></button><button type="button" id="sakura-entry-splash" class="sakura-personal-card" data-entry="splash"><div class="sakura-personal-card-title">🖼️ 开屏图</div><div class="sakura-personal-card-desc">上传多张开屏图，启动时随机展示</div></button><button type="button" id="sakura-entry-janitor" class="sakura-personal-card" data-entry="janitor"><div class="sakura-personal-card-title">🧹 存储管家</div><div class="sakura-personal-card-desc">透视空间占用 · 一键瘦身与清理</div></button></div>';
+        section.innerHTML = '<h4 class="settings-subheading"><svg class="w-4 h-4 mr-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3l1.9 5.8a2 2 0 001.3 1.3L21 12l-5.8 1.9a2 2 0 00-1.3 1.3L12 21l-1.9-5.8a2 2 0 00-1.3-1.3L3 12l5.8-1.9a2 2 0 001.3-1.3L12 3z"></path></svg>樱花个性化</h4><div class="grid grid-cols-1 md:grid-cols-3 gap-4"><button type="button" id="sakura-entry-theme" class="sakura-personal-card" data-entry="theme"><div class="sakura-personal-card-title">🎨 主题换色</div><div class="sakura-personal-card-desc">全站配色自定义，预设与 HEX 任选</div></button><button type="button" id="sakura-entry-splash" class="sakura-personal-card" data-entry="splash"><div class="sakura-personal-card-title">🖼️ 开屏图</div><div class="sakura-personal-card-desc">上传多张开屏图，启动时随机展示</div></button><button type="button" id="sakura-entry-janitor" class="sakura-personal-card" data-entry="janitor"><div class="sakura-personal-card-title">🧹 存储管家</div><div class="sakura-personal-card-desc">透视空间占用 · 一键瘦身与清理</div></button></div>';
         // —— 沉浸时长徽章：今天 + 近 7 天滚动累计，实时刷新 ——
         const badgeRow = document.createElement('div');
         badgeRow.style.cssText = 'margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;';
@@ -4196,7 +4776,6 @@ function injectGramophoneButton() {
         presencePersist();
     }
     function presenceSettle(force) {
-        if (globalThis.RPH_R2_SNAPSHOT_IN_PROGRESS) return;
         const now = Date.now();
         const elapsed = Math.floor((now - presenceAnchor) / 1000);
         if (!(elapsed > 0)) return;
@@ -4250,7 +4829,7 @@ function injectGramophoneButton() {
         }
         return (h / 24).toFixed(1) + ' 天';
     }
-    // ================= 🧹 模块：存储管家（pluginStorage 占用透视 + 一键瘦身） =================
+    // ================= 🧹 模块：存储管家（localStorage 占用透视 + 一键瘦身） =================
     // 只动插件自己的可再生缓存与手记存档，绝不碰官方 IndexedDB（角色卡/聊天/设置）。
     const SAKURA_JANITOR_TARGETS = [
         { key: 'rphub_custom_splash_b64', label: '旧版开屏图缓存', desc: '早期单图开屏的 base64 遗留，新版已不用', kind: 'cache' },
@@ -4283,7 +4862,7 @@ function injectGramophoneButton() {
         box.className = 'sakura-box';
         const head = document.createElement('div');
         head.className = 'sakura-head';
-        head.innerHTML = '<div class="sakura-modal-topbar"><div class="sakura-title-with-icon"><span>🧹 存储管家</span></div><button type="button" class="sakura-close-btn" title="关闭">✕</button></div><div class="sakura-sub">透视浏览器给本站的 pluginStorage 占用 · 只清可再生缓存，不碰角色卡与聊天</div>';
+        head.innerHTML = '<div class="sakura-modal-topbar"><div class="sakura-title-with-icon"><span>🧹 存储管家</span></div><button type="button" class="sakura-close-btn" title="关闭">✕</button></div><div class="sakura-sub">透视浏览器给本站的 localStorage 占用 · 只清可再生缓存，不碰角色卡与聊天</div>';
         const body = document.createElement('div');
         body.className = 'sakura-body';
         const foot = document.createElement('div');
@@ -4323,7 +4902,7 @@ function injectGramophoneButton() {
                         ${canClean ? `<button type="button" class="sakura-btn sakura-janitor-clean" data-key="${r.key}">清理</button>` : '<span class="sakura-janitor-empty">空</span>'}
                     </div>`;
             });
-            html += '<div class="sakura-janitor-note">⚠️ 官方角色卡、聊天记录、世界书存在 IndexedDB 里，这里看不到也动不到，随便清都安全。若总占用长期高于 4500KB，建议先通过站点云同步推送备份，再清理最大的几项。</div>';
+            html += '<div class="sakura-janitor-note">⚠️ 官方角色卡、聊天记录、世界书存在 IndexedDB 里，这里看不到也动不到，随便清都安全。若总占用长期高于 4500KB，建议先「全站灾备」备份，再清理最大的几项。</div>';
             body.innerHTML = html;
             // 真实占用：navigator.storage.estimate 能拿到浏览器层面的实际用量与总配额（含 IndexedDB）。
             try {
@@ -4349,7 +4928,7 @@ function injectGramophoneButton() {
             });
         };
         foot.appendChild(mkBtn('🧨 一键清空可再生缓存', false, () => {
-            openMomentConfirmDialog('一键清理所有可再生缓存（旧版开屏遗留）？\n角色卡、聊天、手记、主题全部不受影响。', () => {
+            openMomentConfirmDialog('一键清理所有可再生缓存（图片锁定缓存/旧版开屏遗留）？\n角色卡、聊天、手记、主题全部不受影响。', () => {
                 let freed = 0;
                 SAKURA_JANITOR_TARGETS.filter(t => t.kind === 'cache').forEach(t => {
                     try {
@@ -4615,17 +5194,63 @@ function injectGramophoneButton() {
         splash.id = 'custom-splash-screen';
         const bgLayer = document.createElement('div');
         bgLayer.className = 'splash-bg-layer';
-        const skipBtn = document.createElement('div');
-        skipBtn.className = 'splash-skip-btn';
-        skipBtn.innerHTML = `🌸 3s 跳过`;
-        const closeSplash = () => {
-            if (splash.classList.contains('splash-fade-out')) return;
+        // 底部极细进度条（替代原来的右上角跳过按钮，避免误触删除聊天记录）
+        const progressWrap = document.createElement('div');
+        progressWrap.className = 'splash-progress';
+        const progressBar = document.createElement('div');
+        progressBar.className = 'splash-progress-bar';
+        progressWrap.appendChild(progressBar);
+
+        const SPLASH_DURATION = 3000;   // 3 秒，维持原时长
+        let closed = false;
+        let countdownTimer = null;
+
+        // 🛡️ 防点击穿透：开屏消失后，下面就是对话页右上角的「删除聊天记录」。
+        // 点击跳过时，快触事件的后半段会落到下层页面 —— 必须在捕获阶段吃掉这一下。
+        // 仅「用户主动跳过」时才需要：自动倒计时结束没有用户手势，不存在穿透风险。
+        const swallowGhostClick = () => {
+            const block = e => { e.stopPropagation(); e.preventDefault(); };
+            const opts = { capture: true, passive: false };
+            document.addEventListener('click', block, opts);
+            document.addEventListener('touchend', block, opts);
+            document.addEventListener('pointerup', block, opts);
+            // 覆盖淡出动画全程（600ms）+ 合成点击窗口，之后自动卸载
+            setTimeout(() => {
+                document.removeEventListener('click', block, opts);
+                document.removeEventListener('touchend', block, opts);
+                document.removeEventListener('pointerup', block, opts);
+            }, 750);
+        };
+
+        // 🖥️ 桌面端：键盘跳过（ESC / 空格 / 回车），符合电脑用户习惯
+        const onKeyDown = e => {
+            if (e.key === 'Escape' || e.key === ' ' || e.key === 'Enter') {
+                e.preventDefault();
+                closeSplash(false);
+            }
+        };
+
+        // swallow=true 仅用于「用户主动点击跳过」，防止那一下穿透到下层删除键
+        const closeSplash = (swallow = false) => {
+            if (closed) return;
+            closed = true;
+            if (countdownTimer) clearInterval(countdownTimer);
+            document.removeEventListener('keydown', onKeyDown, true);
+            if (swallow) swallowGhostClick();
             splash.classList.add('splash-fade-out');
             setTimeout(() => { splash.remove(); }, 600);
         };
-        skipBtn.onclick = closeSplash;
+
+        // 点屏幕任意处 → 跳过（主动点击，需要防穿透）
+        splash.addEventListener('click', () => closeSplash(true));
+        splash.addEventListener('touchend', e => { e.preventDefault(); closeSplash(true); }, { passive: false });
+        document.addEventListener('keydown', onKeyDown, true);
+        // 拖拽图片会触发浏览器原生拖拽（桌面端很丑），直接拦截
+        splash.addEventListener('dragstart', e => e.preventDefault());
+        splash.addEventListener('contextmenu', e => e.preventDefault());
+
         splash.appendChild(bgLayer);
-        splash.appendChild(skipBtn);
+        splash.appendChild(progressWrap);
         (document.body || document.documentElement).appendChild(splash);
         // 自定义多图列表优先：每次启动随机抽一张；图床缓存只作无自定义时的默认兜底。
         const customSplashList = getSplashList();
@@ -4638,13 +5263,14 @@ function injectGramophoneButton() {
         }
         const startCountdown = () => {
             splash.classList.add('splash-ready');
-            let countdown = 3;
-            skipBtn.innerHTML = `🌸 ${countdown}s 跳过`;
-            const interval = setInterval(() => {
-                countdown--;
-                if (countdown > 0) { skipBtn.innerHTML = `🌸 ${countdown}s 跳过`; }
-                else { clearInterval(interval); closeSplash(); }
-            }, 1000);
+            const startedAt = Date.now();
+            // 进度条：每 50ms 刷新一次宽度，3 秒线性走满，与倒计时同步。
+            countdownTimer = setInterval(() => {
+                const elapsed = Date.now() - startedAt;
+                const percent = Math.min(100, (elapsed / SPLASH_DURATION) * 100);
+                progressBar.style.width = `${percent}%`;
+                if (elapsed >= SPLASH_DURATION) closeSplash();
+            }, 50);
         };
         if (customSplashList.length > 0) {
             bgLayer.style.backgroundImage = `url('${customSplashList[Math.floor(Math.random() * customSplashList.length)]}')`;
@@ -5339,7 +5965,8 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
         const composer = findCleanComposer();
         if (composer) rememberCleanHidden(composer);
         const input = document.querySelector('textarea.chat-input-scrollbar');
-        const inputShell = input?.closest('div.relative.w-full.flex.items-end')?.parentElement;
+        // V20 原生派：2.0.0 输入区容器为 .input-island，外层为 .input-area-mobile（旧 .flex.items-end 已废）
+        const inputShell = input?.closest('.input-island')?.parentElement;
         if (inputShell && inputShell !== composer) rememberCleanHidden(inputShell);
     }
     function setCleanView(enabled) {
@@ -5374,7 +6001,8 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
         if (!wrap) return;
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'sakura-clean-view-btn p-1.5 text-white/70 hover:text-primary-300 rounded-full hover:bg-white/10 transition-colors';
+        // V20 原生派：跟随官方 2.0.0 顶栏 chat-header-button 方形风格，不再挂旧圆形类名
+        btn.className = 'sakura-clean-view-btn chat-header-button';
         btn.title = '纯净观看';
         btn.setAttribute('aria-label', '纯净观看');
         btn.setAttribute('aria-pressed', 'false');
@@ -5406,3 +6034,4 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
 
     }
 });
+

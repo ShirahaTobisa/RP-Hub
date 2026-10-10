@@ -6,7 +6,7 @@ import { startHarness, initializeFixture, chromium, chrome, root, defaultUpstrea
 
 const evidence = path.join(root, 'evidence/workshop-cloud-20260917');
 await fs.mkdir(evidence, { recursive: true });
-const plugin = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-19.5.4.js'), 'utf8');
+const plugin = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-20.0.3.js'), 'utf8');
 const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const report = { passed: [], pageErrors: [], blocked: [], snapshots: [] };
@@ -188,7 +188,8 @@ try {
 
     await openManager(a);
     await a.screenshot({ path: path.join(evidence, 'desktop-manager.png') });
-    const updatedPlugin = plugin.replace("version: '19.5.4-rph.1'", "version: '19.5.4-rph.2'");
+    const pluginVersion = plugin.match(/version: '([^']+)'/)[1];
+    const updatedPlugin = plugin.replace(`version: '${pluginVersion}'`, `version: '${pluginVersion}-test'`);
     const updateChooser = a.waitForEvent('filechooser');
     await a.locator('[data-rph-workshop-replace]').click();
     await (await updateChooser).setFiles({ name: 'liuguanyi-update.js', mimeType: 'text/javascript', buffer: Buffer.from(updatedPlugin) });
@@ -199,7 +200,7 @@ try {
     assert.equal(Object.values(updated.scripts)[0], updatedPlugin);
     assert.equal(updated.list.length, 1);
     assert.equal(updated.list[0].url, initial.list[0].url);
-    assert.equal(updated.list[0].version, '19.5.4-rph.2');
+    assert.equal(updated.list[0].version, `${pluginVersion}-test`);
     assert.deepEqual(updated.data, initial.data);
     assert.equal(updated.notes, initial.notes);
     passed('file update preserves installation identity, notes and full private data');

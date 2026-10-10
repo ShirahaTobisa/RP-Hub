@@ -77,7 +77,7 @@ try {
         RPH_R2_FLUSH_PERSISTENCE = () => RPHubCharStore.waitForPendingMutations();
         await api.pushToServer();
         return { status: api.state.statusText, audit: RPHubCharStore.getPatchAuditStatus(), snapshot: await api.scanStreamSnapshot() };
-    }, await fs.readFile(path.join(dist, 'DB/modules/liuguanyi-19.5.4.js'), 'utf8'));
+    }, await fs.readFile(path.join(dist, 'DB/modules/liuguanyi-20.0.3.js'), 'utf8'));
     assert.equal(pushed.status, '上传成功。');
     assert.equal(pushed.audit.status, 'ok');
     const firstPull = await page.evaluate(async () => {
