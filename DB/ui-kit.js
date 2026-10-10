@@ -154,6 +154,7 @@
     }
 
     const TOAST_KINDS = new Set(['info', 'success', 'error', 'warning']);
+    const shownUntil = new Map();
 
     function toast(message, { kind = 'info', duration = 3200 } = {}) {
         const text = String(message || '').trim();
@@ -162,6 +163,9 @@
             document.addEventListener('DOMContentLoaded', () => toast(text, { kind, duration }), { once: true });
             return;
         }
+        // 同一句提示还在显示时不再重复弹（例如多条消息同时报同一个错）。
+        if (shownUntil.get(text) > Date.now()) return;
+        shownUntil.set(text, Date.now() + duration);
         const type = TOAST_KINDS.has(kind) ? kind : 'info';
         const native = appProxy()?.showToast;
         if (typeof native === 'function') {

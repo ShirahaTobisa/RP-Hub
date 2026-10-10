@@ -151,11 +151,14 @@ appRoot.__vue_app__ = {
 };
 assert.equal(api.resolveRuntimeAttribution(row, catalog)?.uuid, character.uuid);
 
+// 显示文字经过 Markdown 和美化正则后可能和原文对不上，只要位置和角色一致就归当前角色。
+appRoot.__vue_app__ = { _instance: { proxy: { chatHistory: [chat[0], { ...chat[1], content: 'no marker' }], currentCharacter: character } } };
+assert.equal(api.resolveRuntimeAttribution(row, catalog)?.uuid, character.uuid);
+
 const rejects = [
     () => { appRoot.__vue_app__ = null; },
     () => { appRoot.__vue_app__ = { _instance: { proxy: { chatHistory: [], currentCharacter: character } } }; },
     () => { appRoot.__vue_app__ = { _instance: { proxy: { chatHistory: [chat[0], { ...chat[1], role: 'user' }], currentCharacter: character } } }; },
-    () => { appRoot.__vue_app__ = { _instance: { proxy: { chatHistory: [chat[0], { ...chat[1], content: 'no marker' }], currentCharacter: character } } }; },
     () => { appRoot.__vue_app__ = { _instance: { proxy: { chatHistory: chat, currentCharacter: character } } }; }
 ];
 for (const [index, setup] of rejects.entries()) {

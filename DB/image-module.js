@@ -2127,9 +2127,9 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         if (index === null) return null;
         const message = live.chatHistory[index];
         const role = String(row?.getAttribute?.('data-role') || '');
+        // 消息行就在当前聊天里：位置和角色对得上即归当前角色。不再比对生图标记文字，
+        // 正则美化后的显示文字常与原文对不上，会把整段聊天都判成“无法确认”。
         if (!message || String(message.role || '') !== role) return null;
-        const probe = readRowMembershipProbe(row);
-        if (!markersMatchContent(message.content, probe.markers)) return null;
         const catalogCharacter = catalog?.characters?.find((item) => (
             live.uuid && String(item?.uuid || '') === live.uuid
         ));
