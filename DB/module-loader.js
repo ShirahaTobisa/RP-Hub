@@ -298,7 +298,6 @@
     }
 
     function renderPluginLauncher(body) {
-        if (!state.pluginEntries.length) return;
         const section = element('section', 'rph-ui-section');
         section.dataset.rphWorkshopLauncher = '';
         const grid = element('div', 'rph-ui-grid');
@@ -313,6 +312,14 @@
             });
             grid.appendChild(button);
         });
+        // 内置的运行日志入口，排在插件入口后面；手机上没有控制台时用它查看报错。
+        const logButton = makeButton('运行日志');
+        logButton.dataset.rphLogEntry = '';
+        logButton.addEventListener('click', () => {
+            closePanel();
+            window.RPHubUI?.openLogViewer();
+        });
+        grid.appendChild(logButton);
         section.append(element('h3', '', '插件功能'), grid);
         body.appendChild(section);
     }

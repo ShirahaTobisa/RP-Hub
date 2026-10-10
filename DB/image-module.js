@@ -1785,7 +1785,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                     delete row.dataset.rphImageAttributionRetry;
                     if (row.dataset.rphImageAttributionFailure !== detail) {
                         row.dataset.rphImageAttributionFailure = detail;
-                        reportAttributionFailure(detail);
+                        reportAttributionFailure(`${detail} | ${describeRuntimeAttribution(row)}`);
                     }
                     continue;
                 }
@@ -2208,6 +2208,24 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             currentCharacter,
             uuid: String(currentCharacter.uuid || '')
         };
+    }
+
+    // 判断失败时写进日志：页面当前角色、这条消息的位置和发言方各是什么，一眼看出是哪一项没对上。
+    function describeRuntimeAttribution(row) {
+        const live = readLiveAttributionSnapshot();
+        const index = readMessageIndex(row);
+        const message = live && index !== null ? live.chatHistory[index] : null;
+        return [
+            `页面状态=${live ? '有' : '读不到'}`,
+            `角色编号=${live?.uuid || '空'}`,
+            `角色名=${live?.currentCharacter?.name || '空'}`,
+            `消息数=${live?.chatHistory.length ?? '?'}`,
+            `消息位置=${index ?? '空'}`,
+            `行发言方=${row?.getAttribute?.('data-role') || '空'}`,
+            `记录发言方=${message ? message.role : '无此消息'}`,
+            `角色列表=${state.catalogCache?.characters?.length ?? '未读'}`,
+            `在列表里=${Boolean(live?.uuid && state.catalogCache?.characters?.some((item) => String(item?.uuid || '') === live.uuid))}`
+        ].join(' ');
     }
 
     function resolveRuntimeAttribution(row, catalog) {
