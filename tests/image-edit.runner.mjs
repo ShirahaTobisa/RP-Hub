@@ -255,7 +255,7 @@ try {
     // 选了插件提供的生图接口：插件在浏览器里生成图片，外壳用 PUT 上传到同一个存放位置，不再走直链 POST。
     {
         const old = oldRuns.cases.find(item => item.host !== 'package-0901');
-        generationSettings = { generator: 'test-gen', params: { steps: 35, scale: 6, cfg: 0, sampler: 'k_euler', noise_schedule: 'karras', negative: '' } };
+        generationSettings = { generator: 'test-gen', params: { steps: 50, scale: 6, cfg: 0, sampler: 'k_euler', noise_schedule: 'karras', negative: '' } };
         const page = await device({ content: edited, records: old.after.records });
         await page.evaluate(async () => {
             globalThis.providerCalls = [];
@@ -273,8 +273,14 @@ try {
         assert.ok(sent.some(r => r.method === 'PUT' && r.contentType === 'image/png'), JSON.stringify(sent));
         assert.ok(!sent.some(r => r.method === 'POST'), 'plugin generation must not also call the direct link');
         assert.equal(await page.evaluate(() => providerCalls[0].tag), 'blue sky, white clouds, landscape');
-        generationSettings = null;
         passed('plugin image provider generates in the browser and uploads with PUT instead of the direct link');
+        // 设置页里读回插件接口的 50 步，不能被直链的 28 步上限压回去。
+        await page.evaluate(() => { const a = document.querySelector('#app').__vue_app__; (a._instance?.proxy || a._container._vnode.component.proxy).currentView = 'settings'; });
+        const stepsInput = page.locator('[data-rph-image-param] input[type="range"]').first();
+        await stepsInput.waitFor({ state: 'attached' });
+        assert.equal(await stepsInput.inputValue(), '50');
+        generationSettings = null;
+        passed('settings page shows the saved 50 steps of a plugin generator instead of clamping to 28');
     }
     assert.deepEqual(report.pageErrors,[]);
     report.ok = true;

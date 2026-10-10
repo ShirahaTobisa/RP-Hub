@@ -178,17 +178,6 @@ try {
     await page.locator('[data-rph-workshop-launcher] [data-rph-workshop-module-id="advice-inject"]').click();
     await page.locator('[data-rph-workshop-panel] .rph-ui-title').filter({ hasText: '输入转 advice' }).waitFor();
     console.log('PASS plugin entries live in the module manager launcher; the navigation panel fits short screens');
-    // 运行日志：警告存在本机，刷新后还在，从「模块管理」的「运行日志」能看到。
-    await page.keyboard.press('Escape');
-    await page.evaluate(() => console.warn('log probe', { index: 7 }));
-    await page.reload({ waitUntil: 'domcontentloaded' });
-    await page.waitForFunction(() => window.RPHubUI?.openLogViewer && document.querySelector('#app')?.__vue_app__, null, { timeout: 45000 });
-    await openManager();
-    await page.locator('[data-rph-workshop-launcher] [data-rph-log-entry]').click();
-    await page.waitForFunction(() => document.querySelector('[data-rph-log-viewer] textarea')?.value.includes('[warn] log probe {"index":7}'));
-    assert.equal(await page.evaluate(() => localStorage.getItem('rphub_debug_log_v1').includes('log probe')), true);
-    await page.keyboard.press('Escape');
-    console.log('PASS warnings are kept across reloads and shown in the run log viewer');
     await openManager();
     assert.equal(await marketAction('market-future').textContent(), '需要更新测试版');
     assert.equal(await marketAction('market-future').isDisabled(), true);

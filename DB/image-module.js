@@ -2687,7 +2687,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         const sampler = select(SAMPLERS.map((value) => [value, value]));
         const noise = select(NOISE_SCHEDULES.map((value) => [value, value]));
         const resolution = select([['', '标准'], ['2K', '2K'], ['4K', '4K']]);
-        const steps = slider('生成步数', { min: 1, max: 28, step: 1, unit: ' 步' });
+        const steps = slider('生成步数', { min: 1, max: 50, step: 1, unit: ' 步' });
         const scale = slider('提示词引导值', { min: 0, max: 10, step: 0.1 });
         const cfg = slider('缩放引导值', { min: 0, max: 1, step: 0.02 });
         const negative = element('textarea', 'settings-control');
@@ -2713,7 +2713,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         };
         const refresh = () => {
             const provider = current();
-            steps.input.max = String(provider?.maxSteps || 28);
+            steps.input.max = String(provider?.maxSteps || (generator.value === 'direct' ? 28 : 50));
             if (Number(steps.input.value) > Number(steps.input.max)) steps.input.value = steps.input.max;
             [steps, scale, cfg].forEach((item) => item.show());
             const app = appProxy()?.settings || {};
