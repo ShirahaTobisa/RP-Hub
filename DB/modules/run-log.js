@@ -4,6 +4,8 @@ RPHubSDK.register({
     id: 'run-log', name: '运行日志', version: '1.0.0', requiresApi: 1,
     init(ctx) {
         'use strict';
+        // 测试版 2026.10.11 外壳自带运行日志，两份同时记录会互相覆盖，这时插件不做任何事。
+        if (window.RPHubUI?.openLogViewer) return;
         const LOG_KEY = 'rphub_debug_log_v1';
         const LOG_LIMIT = 300;
         let logs = [];
