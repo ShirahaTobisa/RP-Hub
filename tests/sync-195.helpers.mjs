@@ -36,7 +36,7 @@ export function instrument(source, metrics = false) {
     return source.replace(/\}\)\(\);\s*$/, `${timing}globalThis.api = { ${exports.join(', ')} };\n})();`);
 }
 
-export async function startHarness({ upstream, assets = process.env.RPH_PACKAGE_ROOT || root, instrumented = true } = {}) {
+export async function startHarness({ upstream, assets = process.env.RPH_PACKAGE_ROOT || root, instrumented = true, metrics = false } = {}) {
     let snapshot, latency = 0;
     const requests = [];
     const server = http.createServer(async (request, response) => {
@@ -83,7 +83,7 @@ export async function startHarness({ upstream, assets = process.env.RPH_PACKAGE_
             response.setHeader('content-type', file.endsWith('.css') ? 'text/css' : 'text/javascript; charset=utf-8');
             let content = await fs.readFile(file);
             if (upstream && url.pathname === '/assets/js/app.js') content = patchRpHubAppJs(content.toString()).code;
-            if (instrumented && url.pathname === '/DB/bootstrap.js') content = instrument(content.toString());
+            if (instrumented && url.pathname === '/DB/bootstrap.js') content = instrument(content.toString(), metrics);
             response.end(content);
         } catch { response.statusCode = 404; response.end('not found'); }
     });
