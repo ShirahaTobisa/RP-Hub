@@ -625,12 +625,22 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         paramHandlers: new Set()
     };
 
+    // 设置以最后一次改动为准：先发出、晚回来的读取不会盖掉之后改过的值。
+    let settingsRevision = 0;
+
+    function applyGenerationSettings(settings) {
+        settingsRevision += 1;
+        if (settings && typeof settings === 'object') generation.settings = structuredClone(settings);
+        return generation.settings;
+    }
+
     async function reloadGenerationSettings() {
+        const revision = ++settingsRevision;
         try {
             const headers = { 'x-rp-sync-password': safeLocalGet('rp_hub_sync_password_v1') || '' };
             const response = await fetch('/image/api/settings', { headers, credentials: 'same-origin' });
             const body = await response.json().catch(() => null);
-            if (response.ok && body?.settings) generation.settings = body.settings;
+            if (revision === settingsRevision && response.ok && body?.settings) generation.settings = body.settings;
         } catch (error) {
             log('image settings unavailable; using defaults', error);
         }
@@ -662,7 +672,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         const [width, height] = IMAGE_PIXELS[size] || IMAGE_PIXELS.竖图;
         const pixels = width * height;
         const v5 = String(model || '').includes('diffusion-5');
-        if (steps <= 28 && pixels <= 1024 * 1024) return v5 ? 8 : 1;
+        if (steps <= 28 && pixels <= 1024 * 1024) return v5 ? 6 : 1;
         const base = Math.ceil(0.000002951823174884865 * pixels + 0.0000005753298233447344 * pixels * steps);
         return v5 ? Math.max(2, Math.ceil(base * 1.5)) : Math.max(2, base);
     }
@@ -2594,6 +2604,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         listImageProviders: () => [...generation.providers.values()].map(({ id, label, maxSteps, costHint }) => ({ id, label, maxSteps, costHint })),
         getGenerationSettings: () => structuredClone(generation.settings),
         reloadGenerationSettings,
+        applyGenerationSettings,
         defaultNegativePrompt: IMAGE_GEN_NEGATIVE_PROMPT,
         estimateImagePoints,
         getPerformanceCounters: () => readPerformanceCounters(),
@@ -2658,9 +2669,33 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         return wrap;
     }
 
+    // 下拉框用 RPH 自己的 custom-select 组件，展开的列表、动画和黑夜模式都和原生下拉框一致。
+    // 值仍放在隐藏的 <select> 里，其余代码照旧读写 .value；代码改了选项或值之后调用 sync() 刷新显示。
+    // 页面没有这个组件（旧版 RPH）时直接显示 <select>。放进格子里的是 control。
+    // 离开设置页时要收拾的东西（这些下拉组件、对 RPH 设置的监听）。
+    const cleanups = [];
+
     function select(options) {
         const node = element('select', 'settings-control');
         for (const [value, label] of options) node.appendChild(Object.assign(document.createElement('option'), { value, textContent: label }));
+        node.control = node;
+        node.sync = () => {};
+        const Component = window.RPHubCustomSelect;
+        const Vue = globalThis.Vue;
+        if (!Component || !Vue?.createApp) return node;
+        const view = Vue.reactive({ value: '', options: [] });
+        node.sync = () => Object.assign(view, { value: node.value, options: [...node.options].map((option) => ({ value: option.value, label: option.textContent })) });
+        node.control = element('div');
+        const app = Vue.createApp({
+            render: () => Vue.h(Component, {
+                modelValue: view.value, options: view.options, buttonClass: 'settings-control', menuClass: 'text-sm',
+                'onUpdate:modelValue': (value) => { node.value = value; node.sync(); node.dispatchEvent(new Event('change')); }
+            })
+        });
+        app.mount(node.control);
+        cleanups.push(() => app.unmount());
+        node.hidden = true;
+        node.control.appendChild(node);
         return node;
     }
 
@@ -2710,6 +2745,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                 generator.appendChild(Object.assign(document.createElement('option'), { value: selected, textContent: `${selected}（插件未加载）` }));
             }
             generator.value = selected;
+            generator.sync();
         };
         const refresh = () => {
             const provider = current();
@@ -2736,25 +2772,30 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         cfg.input.value = String(params.cfg ?? 0);
         negative.value = params.negative || imageModule()?.defaultNegativePrompt || '';
         fillProviders();
+        [sampler, noise, resolution].forEach((item) => item.sync());
         refresh();
 
         let timer = null;
+        const readForm = () => {
+            const defaultNegative = imageModule()?.defaultNegativePrompt || '';
+            return {
+                generator: generator.value,
+                params: {
+                    steps: Number(steps.input.value), scale: Number(scale.input.value), cfg: Number(cfg.input.value),
+                    sampler: sampler.value, noise_schedule: noise.value, resolution: resolution.value,
+                    negative: negative.value.trim() === defaultNegative.trim() ? '' : negative.value
+                }
+            };
+        };
         const save = () => {
             refresh();
+            // 改动马上在本页生效：保存还没发出就离开设置页再回来，也显示刚改的值。
+            imageModule()?.applyGenerationSettings?.({ ...imageModule().getGenerationSettings(), ...readForm() });
             clearTimeout(timer);
             timer = setTimeout(async () => {
-                const defaultNegative = imageModule()?.defaultNegativePrompt || '';
-                const body = {
-                    generator: generator.value,
-                    params: {
-                        steps: Number(steps.input.value), scale: Number(scale.input.value), cfg: Number(cfg.input.value),
-                        sampler: sampler.value, noise_schedule: noise.value, resolution: resolution.value,
-                        negative: negative.value.trim() === defaultNegative.trim() ? '' : negative.value
-                    }
-                };
                 try {
-                    await api('/image/api/settings', { method: 'PUT', body: JSON.stringify(body) });
-                    await imageModule()?.reloadGenerationSettings?.();
+                    const result = await api('/image/api/settings', { method: 'PUT', body: JSON.stringify(readForm()) });
+                    imageModule()?.applyGenerationSettings?.(result.settings);
                     status.textContent = '生图参数已保存，所有设备共用；只影响之后的新图，已生成的图不会重新生成。';
                 } catch (error) {
                     status.textContent = `保存失败：${error.message}（需要先在「同步」里输入过同步密码）`;
@@ -2762,9 +2803,13 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             }, 400);
         };
         for (const control of [generator, resolution, sampler, noise, negative, steps.input, scale.input, cfg.input]) control.addEventListener('change', save);
+        // 点数跟着变：拖动步数时、插件恢复步数时、改 RPH 原生的「生图比例」「生图模型」时都重新算。
+        steps.input.addEventListener('input', refresh);
+        const appSettings = appProxy()?.settings;
+        if (appSettings && globalThis.Vue?.watch) cleanups.push(globalThis.Vue.watch(() => [appSettings.imageSize, appSettings.imageModel], refresh));
         resetNegative.addEventListener('click', () => { negative.value = imageModule()?.defaultNegativePrompt || ''; save(); });
         window.addEventListener('rph-image-providers-change', () => { fillProviders(); refresh(); });
-        grid.append(cell('生图接口', generator), cell('分辨率', resolution), cell('采样器', sampler), cell('噪声调度', noise), steps.wrap, scale.wrap, cfg.wrap, negativeCell, status);
+        grid.append(cell('生图接口', generator.control), cell('分辨率', resolution.control), cell('采样器', sampler.control), cell('噪声调度', noise.control), steps.wrap, scale.wrap, cfg.wrap, negativeCell, status);
     }
 
     function ensureFields() {
@@ -2777,6 +2822,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
     function onView(view) {
         observer?.disconnect();
         observer = null;
+        cleanups.splice(0).forEach((cleanup) => cleanup());
         if (view !== 'settings') return;
         imageModule()?.reloadGenerationSettings?.().then(ensureFields);
         ensureFields();

@@ -8,7 +8,7 @@ const source = fs.readFileSync(new URL('../DB/modules/nai2api-web.js', import.me
 const moduleSource = fs.readFileSync(new URL('../DB/image-module.js', import.meta.url), 'utf8');
 const estimatorSource = moduleSource.slice(moduleSource.indexOf('    const IMAGE_PIXELS = {'), moduleSource.indexOf('    // 生图前改参数'));
 const estimateImagePoints = new Function(`${estimatorSource}; return estimateImagePoints;`)();
-const table = [['nai-diffusion-4-5-full', '竖图', 28, 1], ['nai-diffusion-5-full', '竖图', 28, 8], ['nai-diffusion-4-5-full', '竖图', 35, 24], ['nai-diffusion-5-full', '竖图', 35, 36],
+const table = [['nai-diffusion-4-5-full', '竖图', 28, 1], ['nai-diffusion-5-full', '竖图', 28, 6], ['nai-diffusion-4-5-full', '竖图', 35, 24], ['nai-diffusion-5-full', '竖图', 35, 36],
     ['nai-diffusion-4-5-full', '方图', 50, 34], ['nai-diffusion-4-5-full', '2K竖图', 28, 34], ['nai-diffusion-5-full', '2K方图', 28, 53], ['nai-diffusion-4-5-full', '4K竖图', 28, 51], ['nai-diffusion-5-full', '4K方图', 50, 143]];
 for (const [model, size, steps, points] of table) assert.equal(estimateImagePoints(model, size, steps), points, `${model} ${size} ${steps} 步`);
 console.log('PASS point estimate matches the Nai2API price table, including 2K and 4K');
