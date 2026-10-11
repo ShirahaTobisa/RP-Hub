@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { startHarness, initializeFixture, chromium, chrome, root, defaultUpstream } from './sync-195.helpers.mjs';
 
 const evidence = path.join(root, 'evidence/workshop-cloud-20260917');
@@ -55,9 +56,12 @@ async function device(mobile = false) {
                     return route.fulfill({ json: { ok: true, previousVersion: remote?.version || 0, missingIndices: body.chunkManifest.map(c => c.index) } });
                 }
                 if (body?.action === 'upload-complete') {
+                    // 版本 6 的分块是压缩后上传的：解压后必须和原内容一致。
+                    assert.equal(createRequest.schemaVersion, 6, 'chunks are uploaded compressed');
                     for (const c of createRequest.chunkManifest) {
-                        assert.equal(hash(uploaded.get(c.index)), c.checksum);
-                        assert.equal(uploaded.get(c.index).length, c.length);
+                        const content = zlib.gunzipSync(uploaded.get(c.index));
+                        assert.equal(hash(content), c.checksum);
+                        assert.equal(content.length, c.length);
                     }
                     remote = { ...body, version: (remote?.version || 0) + 1 };
                     report.snapshots.push({ version: remote.version, bytes: remote.totalBytes, chunks: remote.chunkCount });
@@ -66,7 +70,8 @@ async function device(mobile = false) {
                 if (body?.action === 'pull-manifest') return route.fulfill({ json: { ok: true, remote } });
                 if (body?.action === 'pull-json-part') {
                     const bytes = Buffer.concat(Array.from({ length: body.count }, (_, i) => uploaded.get(body.start + i)));
-                    return route.fulfill({ contentType: 'application/octet-stream', body: bytes, headers: { 'x-rp-sync-byte-length': String(bytes.length) } });
+                    const lengths = Array.from({ length: body.count }, (_, i) => uploaded.get(body.start + i).length).join(',');
+                    return route.fulfill({ contentType: 'application/octet-stream', body: bytes, headers: { 'x-rp-sync-byte-length': String(bytes.length), 'x-rp-sync-part-lengths': lengths } });
                 }
                 return route.fulfill({ json: { ok: true, authenticated: true, authRequired: false } });
             }
@@ -230,7 +235,7 @@ try {
     await a.locator('[data-rph-workshop-panel-close]').click();
     await push(a);
     passed('real push flow includes module source and private data');
-    const uploadedText = Buffer.concat([...uploaded].sort((x,y)=>x[0]-y[0]).map(([,b])=>b)).toString('utf8');
+    const uploadedText = Buffer.concat([...uploaded].sort((x,y)=>x[0]-y[0]).map(([,b])=>zlib.gunzipSync(b))).toString('utf8');
     assert.match(uploadedText, /workshopVersion/);
     assert(!uploadedText.includes('rphub_image_lock_cache_v2'));
     const b = await device(true);

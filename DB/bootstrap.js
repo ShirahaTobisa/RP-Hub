@@ -1,6 +1,11 @@
 (function () {
     const SNAPSHOT_FORMAT = 'rp-sync-jsonl-v1';
-    const SNAPSHOT_SCHEMA_VERSION = 4;
+    // 版本 6：分块 gzip 压缩后上传（快照内容和版本 4 相同，只是传输和存储时压缩）；
+    // 浏览器不支持压缩时仍按版本 4 不压缩上传。拉取两种都认。
+    const RAW_SCHEMA_VERSION = 4;
+    const GZIP_SCHEMA_VERSION = 6;
+    const SNAPSHOT_SCHEMA_VERSION = typeof CompressionStream === 'function' ? GZIP_SCHEMA_VERSION : RAW_SCHEMA_VERSION;
+    const isStreamSchema = (value) => Number(value) === RAW_SCHEMA_VERSION || Number(value) === GZIP_SCHEMA_VERSION;
     const LEGACY_SNAPSHOT_FORMAT = 'rp-sync-json-v3';
     const CHUNKER_PROFILE = 'rph-jsonl-cdc-fnv1a-v1';
     const DOWNLOAD_STAGING_DB = 'RPHubSyncStaging';
@@ -681,6 +686,13 @@
         return sha256Bytes(new TextEncoder().encode(text));
     }
 
+    async function transformBytes(bytes, stream) {
+        return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(stream)).arrayBuffer());
+    }
+
+    const gzipBytes = (bytes) => transformBytes(bytes, new CompressionStream('gzip'));
+    const gunzipBytes = (bytes) => transformBytes(bytes, new DecompressionStream('gzip'));
+
     async function sha256Bytes(bytes) {
         const digest = await crypto.subtle.digest('SHA-256', bytes);
         return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -938,7 +950,7 @@
     function buildStreamSnapshotChecksumSource(snapshot) {
         return JSON.stringify([
             SNAPSHOT_FORMAT,
-            SNAPSHOT_SCHEMA_VERSION,
+            Number(snapshot.schemaVersion ?? SNAPSHOT_SCHEMA_VERSION),
             Number(snapshot.recordCount || 0),
             Number(snapshot.totalBytes || 0),
             snapshot.chunkManifest.map((chunk) => [String(chunk.checksum).toLowerCase(), Number(chunk.length)])
@@ -1005,7 +1017,7 @@
             assertChunkMatchesManifest(chunk, snapshot.chunkManifest[chunk.index]);
             scannedChunks += 1;
             if (!missing.has(chunk.index)) continue;
-            pendingUploads.push(postUploadPart(chunk).then(() => {
+            pendingUploads.push(postUploadPart(chunk, snapshot.schemaVersion === GZIP_SCHEMA_VERSION).then(() => {
                 completedUploads += 1;
                 const percent = missing.size === 0 ? 100 : Math.round((completedUploads / missing.size) * 100);
                 updateProgress(36 + Math.round(percent * 0.52), `正在上传服务器数据 ${percent}%...`);
@@ -1142,8 +1154,11 @@
     }
 
     async function validateStreamSnapshotManifest(remote) {
-        if (remote?.snapshotFormat !== SNAPSHOT_FORMAT || Number(remote?.schemaVersion) !== SNAPSHOT_SCHEMA_VERSION) {
+        if (remote?.snapshotFormat !== SNAPSHOT_FORMAT || !isStreamSchema(remote?.schemaVersion)) {
             throw new Error('服务器快照格式不受支持。');
+        }
+        if (Number(remote.schemaVersion) === GZIP_SCHEMA_VERSION && typeof DecompressionStream !== 'function') {
+            throw new Error('这个浏览器版本太旧，读不了压缩的同步数据，请更新浏览器后再拉取。');
         }
         const recordCount = Number(remote.recordCount || 0);
         if (!Number.isInteger(recordCount) || recordCount < 0) {
@@ -1151,6 +1166,7 @@
         }
         const chunkManifest = normalizeRemoteChunkManifest(remote);
         const snapshot = {
+            schemaVersion: Number(remote.schemaVersion),
             recordCount,
             totalBytes: Number(remote.totalBytes || 0),
             chunkManifest
@@ -1219,14 +1235,18 @@
 
     async function downloadSnapshotRange(remote, chunkManifest, start, count, options = {}) {
         const selected = chunkManifest.slice(start, start + count);
-        const expectedLength = selected.reduce((sum, chunk) => sum + chunk.length, 0);
         const response = await postSyncBinary({
             action: 'pull-json-part',
             version: Number(remote.version),
             start,
             count
         }, options);
+        const gzip = Number(remote.schemaVersion) === GZIP_SCHEMA_VERSION;
+        const storedLengths = gzip ? String(response.partLengths || '').split(',').map(Number) : selected.map((chunk) => chunk.length);
+        const expectedLength = storedLengths.reduce((sum, length) => sum + length, 0);
         if (!(response.bytes instanceof Uint8Array)
+            || storedLengths.length !== selected.length
+            || storedLengths.some((length) => !Number.isInteger(length) || length <= 0)
             || response.bytes.byteLength !== expectedLength
             || (Number(response.byteLength || 0) > 0 && Number(response.byteLength) !== expectedLength)) {
             throw new Error(`服务器第 ${start + 1}-${start + count} 个分片大小校验失败。`);
@@ -1234,10 +1254,11 @@
 
         const chunks = [];
         let offset = 0;
-        for (const chunk of selected) {
-            const bytes = response.bytes.slice(offset, offset + chunk.length);
-            offset += chunk.length;
-            if (await sha256Bytes(bytes) !== chunk.checksum) {
+        for (const [index, chunk] of selected.entries()) {
+            const stored = response.bytes.slice(offset, offset + storedLengths[index]);
+            offset += storedLengths[index];
+            const bytes = gzip ? await gunzipBytes(stored).catch(() => null) : stored;
+            if (!bytes || bytes.byteLength !== chunk.length || await sha256Bytes(bytes) !== chunk.checksum) {
                 throw new Error(`服务器第 ${chunk.index + 1} 个分片内容校验失败。`);
             }
             chunks.push({ ...chunk, bytes });
@@ -1504,7 +1525,7 @@
         startSnapshot(line) {
             if (this.snapshotStarted
                 || line.format !== SNAPSHOT_FORMAT
-                || Number(line.schemaVersion) !== SNAPSHOT_SCHEMA_VERSION) {
+                || !isStreamSchema(line.schemaVersion)) {
                 throw new Error('服务器快照头信息不正确。');
             }
             this.snapshotStarted = true;
@@ -1792,7 +1813,7 @@
                 case 'snapshot':
                     if (this.snapshotStarted
                         || line.format !== SNAPSHOT_FORMAT
-                        || Number(line.schemaVersion) !== SNAPSHOT_SCHEMA_VERSION
+                        || !isStreamSchema(line.schemaVersion)
                         || (line.workshopVersion !== undefined && line.workshopVersion !== 1)) {
                         throw new Error('服务器快照头信息不正确。');
                     }
@@ -2163,7 +2184,8 @@
                 return {
                     ok: true,
                     bytes,
-                    byteLength: Number(response.headers.get('x-rp-sync-byte-length') || bytes.byteLength)
+                    byteLength: Number(response.headers.get('x-rp-sync-byte-length') || bytes.byteLength),
+                    partLengths: response.headers.get('x-rp-sync-part-lengths') || ''
                 };
             } catch (error) {
                 const isAbort = error?.name === 'AbortError';
@@ -2184,9 +2206,18 @@
         throw lastError || new Error('同步请求失败。');
     }
 
-    async function postUploadPart(chunk) {
+    async function postUploadPart(chunk, gzip = false) {
         const retryCount = CONFIG.retryCount;
         let lastError = null;
+        const body = gzip ? await gzipBytes(chunk.bytes) : chunk.bytes;
+        const headers = {
+            ...buildPartHeaders(chunk),
+            ...(gzip ? {
+                'x-rp-part-encoding': 'gzip',
+                'x-rp-part-stored-length': String(body.byteLength),
+                'x-rp-part-stored-checksum': await sha256Bytes(body)
+            } : {})
+        };
         const params = new URLSearchParams({
             action: 'upload-part',
             index: String(chunk.index),
@@ -2199,8 +2230,8 @@
             try {
                 const response = await fetch(`${CONFIG.apiEndpoint}?${params.toString()}`, {
                     method: 'POST',
-                    headers: buildPartHeaders(chunk),
-                    body: chunk.bytes,
+                    headers,
+                    body,
                     credentials: 'same-origin',
                     signal: controller.signal
                 });
@@ -2884,8 +2915,7 @@
                 throw new Error('服务器快照格式不受支持。');
             }
 
-            if (remote.snapshotFormat === SNAPSHOT_FORMAT
-                && Number(remote.schemaVersion) === SNAPSHOT_SCHEMA_VERSION) {
+            if (remote.snapshotFormat === SNAPSHOT_FORMAT && isStreamSchema(remote.schemaVersion)) {
                 await restoreStreamSnapshot(remote, () => {
                     globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS = true;
                     restoreStarted = true;

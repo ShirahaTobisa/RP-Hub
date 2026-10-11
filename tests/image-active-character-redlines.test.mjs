@@ -16,11 +16,11 @@ function fileSha256(relativePath) {
 
 const expectedSourceHashes = new Map([
     ['DB/image-module.js', '0EA8FE740E9667DAA273E03F39D4647BDC9B843A7727B3AE8082D44A04F41081'],
-    ['DB/bootstrap.js', 'C4056905FEC868FA89DF37F1CB4D98E9B1BDCB5F16A428632985F33E29D3A65E'],
+    ['DB/bootstrap.js', '65B654A6255B52508E593B05C9F79F8E02153567C131AB4FBC9EEA4981E84841'],
     ['DB/char-store.js', 'A02451B65EA470AAA936A772EA75900C323618CFA579953350996771D744D7FE'],
     ['DB/styles.css', '27ADB383C9C86E8D6BB85E2B910D799688B8B80AA4C837C135C5944FBD6BECD7'],
     ['DB/app-patches.mjs', '55629DF1E0888F027863F2A618A72300BB03DDBF938F2119EAF520421C57AC53'],
-    ['_worker.js', '9322CDC8B043CCAF33B33CF3037581829311E33F321ACA729631EEE82400D7E5'],
+    ['_worker.js', '102C2C45D3F4F8A499945F4BF2376594341DE0E120D138DD8ACA76A313695058'],
     ['index.html', '936A2A66740722BF43B3EAD160FFDCFEE163CC6A2486440C8C0F66B9C24B28A3'],
     ['work.js', 'DAFEC08B9A370461E68A3412D9FD1D883113DA89CBD02B43052C99C67A207451'],
     ['wrangler.toml', 'C2FFFD4267C5234E72FF05B3388312F7230D525335E6AFB51F8065259805FCE0'],
@@ -59,7 +59,7 @@ assert.equal(workerSource.split(workshopInjection).length - 1, 1, 'workshop load
 const workerWithoutWorkshopInjection = workerSource.replace(/<script src="\/DB\/nav-adapter\.js\?v=sync-195"><\/script>\r?\n/, '').replace(`${workshopInjection}${workerSource.includes(`${workshopInjection}\r\n`) ? '\r\n' : '\n'}`, '');
 assert.equal(
     createHash('sha256').update(Buffer.from(workerWithoutWorkshopInjection, 'utf8')).digest('hex').toUpperCase(),
-    '8ADCAD53FE8D20E68F697C93439256D5D0AE618B6CFD29D7784CD94238B601C4',
+    '9D3802967B45381E5558F2212D4E1996AD6353C34894F2284FCB5AF398F81563',
     '_worker.js differs from the active-character delivery tree by more than the workshop injection line'
 );
 

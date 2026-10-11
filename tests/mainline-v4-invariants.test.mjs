@@ -26,9 +26,9 @@ function normalizedWorkerSegment(source, startMarker, endMarker) {
 
 const protectedFiles = new Map([
     ['DB/image-module.js', '0EA8FE740E9667DAA273E03F39D4647BDC9B843A7727B3AE8082D44A04F41081'],
-    ['_worker.js', '9322CDC8B043CCAF33B33CF3037581829311E33F321ACA729631EEE82400D7E5'],
+    ['_worker.js', '102C2C45D3F4F8A499945F4BF2376594341DE0E120D138DD8ACA76A313695058'],
     ['DB/char-store.js', 'A02451B65EA470AAA936A772EA75900C323618CFA579953350996771D744D7FE'],
-    ['DB/bootstrap.js', 'C4056905FEC868FA89DF37F1CB4D98E9B1BDCB5F16A428632985F33E29D3A65E'],
+    ['DB/bootstrap.js', '65B654A6255B52508E593B05C9F79F8E02153567C131AB4FBC9EEA4981E84841'],
     ['DB/styles.css', '27ADB383C9C86E8D6BB85E2B910D799688B8B80AA4C837C135C5944FBD6BECD7'],
     ['DB/app-patches.mjs', '55629DF1E0888F027863F2A618A72300BB03DDBF938F2119EAF520421C57AC53'],
     ['assets/js/app.js', '2A966442F7E937A5229FE093C97336C152A8153B38E8B335CDC680D06781430C'],
@@ -45,13 +45,13 @@ assert.equal(workerSource.split(workshopInjection).length - 1, 1, 'workshop load
 const workerWithoutWorkshopInjection = workerSource.replace(/<script src="\/DB\/nav-adapter\.js\?v=sync-195"><\/script>\r?\n/, '').replace(`${workshopInjection}${workerSource.includes(`${workshopInjection}\r\n`) ? '\r\n' : '\n'}`, '');
 assert.equal(
     sha256Bytes(Buffer.from(workerWithoutWorkshopInjection, 'utf8')),
-    '8ADCAD53FE8D20E68F697C93439256D5D0AE618B6CFD29D7784CD94238B601C4',
+    '9D3802967B45381E5558F2212D4E1996AD6353C34894F2284FCB5AF398F81563',
     '_worker.js differs from the current img baseline by more than the workshop injection line'
 );
 const stableWorkerSegments = [
-    ['sync CAS/history/GC core', 'function getChunkLength', 'function buildRemoteInfo', '7FC81FBA8BF5C43271648B55BD6D255615FFE8227EB61CA1004A74286C7C5EAC'],
-    ['pull-json-part handler', 'async function handlePullJsonPart', 'async function handleUploadCreate', 'D366983D77B5FDB07BE327B5B0BC386FA1E887C77B2786B5D0174D2ADE919093'],
-    ['upload-part handler', 'async function handleUploadPart', 'async function handleUploadComplete', '43D9C71D4E55870986A03F4998DD1F3FC6B0E4A1FF8EA6E46C7D21489B9E7C8F'],
+    ['sync CAS/history/GC core', 'function getChunkLength', 'function buildRemoteInfo', '249EB45190B0DB34C3BFB46D3467AE217E1E2F4A60C5CF592FBFAC49DF8DEC53'],
+    ['pull-json-part handler', 'async function handlePullJsonPart', 'async function handleUploadCreate', '652B0707538D3C91BD9F1522A055C566086AEDEDEE0DF33B0E33B91E7D6065FB'],
+    ['upload-part handler', 'async function handleUploadPart', 'async function handleUploadComplete', '279F7F19B8B0F47180D9D4D65A343A1BC013C52AF7D00AD7F7A035FA79FA296E'],
     ['app-update implementation', 'function buildGitHubHeaders', 'async function handleJsonApi', 'B1ECB6B5F65809EA6113B1014FE5FB72B2625F09C74184E664F9CE2D2C7E1BBB']
 ];
 

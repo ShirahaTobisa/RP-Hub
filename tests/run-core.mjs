@@ -16,7 +16,7 @@ const tests = [
     'image-storage.test.mjs',
     'nai2api-plugin.test.mjs',
     'update-notice.test.mjs',
-    'static-cache.test.mjs'
+    'static-cache.test.mjs', 'sync-gzip.test.mjs'
 ];
 
 for (const test of tests) {

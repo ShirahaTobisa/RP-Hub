@@ -63,6 +63,13 @@ const CHUNK_GC_GRACE_MS = 24 * 60 * 60 * 1000;
 const CHUNK_GC_MAX_DELETE = 100;
 const STREAM_SNAPSHOT_FORMAT = 'rp-sync-jsonl-v1';
 const STREAM_SNAPSHOT_SCHEMA_VERSION = 4;
+// 分块压缩后上传（gzip，由手机压缩和解压，服务器只存取不计算）。压缩块单独存放，和不压缩的块互不顶替。
+const STREAM_GZIP_SCHEMA_VERSION = 6;
+const STREAM_SCHEMA_VERSIONS = [STREAM_SNAPSHOT_SCHEMA_VERSION, STREAM_GZIP_SCHEMA_VERSION];
+
+function chunkEncodingForSchema(schemaVersion) {
+    return Number(schemaVersion) === STREAM_GZIP_SCHEMA_VERSION ? 'gzip' : 'raw-bytes';
+}
 const LEGACY_SNAPSHOT_FORMAT = 'rp-sync-json-v3';
 
 const IMAGE_ADMIN_AUTH_COOKIE = 'rp_image_admin_auth';
@@ -1343,8 +1350,8 @@ async function handleImageAdmin(request, env, url) {
 }
 
 
-function createChunkKey(checksum) {
-    return `${CHUNK_PREFIX}/${String(checksum || '').toLowerCase()}.bin`;
+function createChunkKey(checksum, encoding = 'raw-bytes') {
+    return `${CHUNK_PREFIX}/${String(checksum || '').toLowerCase()}.${encoding === 'gzip' ? 'gz' : 'bin'}`;
 }
 
 async function readR2JsonObject(bucket, key) {
@@ -1392,12 +1399,12 @@ function normalizeSnapshotMetadata(value) {
     const schemaVersion = hasSchemaVersion ? Number(value.schemaVersion) : undefined;
     const hasChunkerProfile = Object.prototype.hasOwnProperty.call(value, 'chunkerProfile');
     if (snapshotFormat === null
-        || (hasSchemaVersion && (!Number.isInteger(schemaVersion) || ![3, 4].includes(schemaVersion)))
+        || (hasSchemaVersion && (!Number.isInteger(schemaVersion) || ![3, ...STREAM_SCHEMA_VERSIONS].includes(schemaVersion)))
         || (hasChunkerProfile && typeof value.chunkerProfile !== 'string')
         || Number(value.schemaVersion) === 5
         || value.snapshotFormat === 'rp-sync-jsonl-v2') return null;
     if (snapshotFormat === STREAM_SNAPSHOT_FORMAT
-        && (!hasSchemaVersion || schemaVersion !== STREAM_SNAPSHOT_SCHEMA_VERSION)) return null;
+        && (!hasSchemaVersion || !STREAM_SCHEMA_VERSIONS.includes(schemaVersion))) return null;
     if (snapshotFormat === LEGACY_SNAPSHOT_FORMAT
         && hasSchemaVersion
         && schemaVersion !== 3) return null;
@@ -1412,7 +1419,7 @@ function normalizeSnapshotMetadata(value) {
     return metadata;
 }
 
-function normalizeChunkManifest(manifest, totalBytes) {
+function normalizeChunkManifest(manifest, totalBytes, encoding = 'raw-bytes') {
     if (!Array.isArray(manifest) || manifest.length === 0 || manifest.length > MAX_CHUNK_COUNT) return null;
 
     let byteOffset = 0;
@@ -1420,12 +1427,12 @@ function normalizeChunkManifest(manifest, totalBytes) {
         const chunkIndex = Number(item?.index);
         const checksum = typeof item?.checksum === 'string' ? item.checksum : '';
         const length = Number(item?.length);
-        const key = typeof item?.key === 'string' ? item.key : createChunkKey(checksum);
+        const key = typeof item?.key === 'string' ? item.key : createChunkKey(checksum, encoding);
 
         if (!Number.isInteger(chunkIndex) || chunkIndex !== index) throw new Error(`分片顺序异常：第 ${index} 片。`);
         if (!/^[a-f0-9]{64}$/i.test(checksum)) throw new Error(`分片校验码异常：第 ${index} 片。`);
         if (!Number.isInteger(length) || length <= 0 || length > MAX_PART_BYTES) throw new Error(`分片大小异常：第 ${index} 片。`);
-        if (key !== createChunkKey(checksum)) throw new Error(`分片存储路径异常：第 ${index} 片。`);
+        if (key !== createChunkKey(checksum, encoding)) throw new Error(`分片存储路径异常：第 ${index} 片。`);
 
         const nextItem = {
             index,
@@ -1434,7 +1441,7 @@ function normalizeChunkManifest(manifest, totalBytes) {
             byteOffset,
             byteLength: length,
             key,
-            encoding: 'raw-bytes'
+            encoding
         };
         byteOffset += length;
         return nextItem;
@@ -1476,7 +1483,7 @@ function normalizeManifest(value) {
     if (chunkManifest.length !== chunkCount) return null;
     let normalizedChunks;
     try {
-        normalizedChunks = normalizeChunkManifest(chunkManifest, totalBytes);
+        normalizedChunks = normalizeChunkManifest(chunkManifest, totalBytes, chunkEncodingForSchema(snapshotMetadata.schemaVersion));
     } catch (err) {
         return null;
     }
@@ -1503,13 +1510,14 @@ function getChunkLength(chunk) {
 function isSameChunk(left, right) {
     return Boolean(left && right)
         && String(left.checksum || '').toLowerCase() === String(right.checksum || '').toLowerCase()
-        && getChunkLength(left) === getChunkLength(right);
+        && getChunkLength(left) === getChunkLength(right)
+        && (left.encoding || 'raw-bytes') === (right.encoding || 'raw-bytes');
 }
 
 function chunkSignature(chunk) {
     const checksum = String(chunk?.checksum || '').toLowerCase();
     const length = getChunkLength(chunk);
-    return `${checksum}:${length}`;
+    return `${checksum}:${length}:${chunk?.encoding || 'raw-bytes'}`;
 }
 
 function buildChunkLookup(manifest) {
@@ -1694,15 +1702,19 @@ async function handlePullJsonPart(bucket, body) {
         return error('R2 分段字节信息异常。', 409);
     }
 
-    const merged = new Uint8Array(byteLength);
-    let offset = 0;
-    for (const chunk of selectedChunks) {
+    const parts = await Promise.all(selectedChunks.map(async (chunk) => {
         const object = await bucket.get(chunk.key);
-        if (!object) return error('R2 快照分片不存在。', 404);
-
-        const bytes = new Uint8Array(await object.arrayBuffer());
-        const expectedLength = getChunkLength(chunk);
-        if (bytes.byteLength !== expectedLength) return error('R2 快照分片大小校验失败。', 409);
+        return object ? new Uint8Array(await object.arrayBuffer()) : null;
+    }));
+    if (parts.some((bytes) => !bytes)) return error('R2 快照分片不存在。', 404);
+    const gzip = selectedChunks.some((chunk) => chunk.encoding === 'gzip');
+    if (!gzip && parts.some((bytes, index) => bytes.byteLength !== getChunkLength(selectedChunks[index]))) {
+        return error('R2 快照分片大小校验失败。', 409);
+    }
+    const storedLength = parts.reduce((sum, bytes) => sum + bytes.byteLength, 0);
+    const merged = new Uint8Array(storedLength);
+    let offset = 0;
+    for (const bytes of parts) {
         merged.set(bytes, offset);
         offset += bytes.byteLength;
     }
@@ -1714,7 +1726,8 @@ async function handlePullJsonPart(bucket, body) {
             'cache-control': 'no-store',
             'x-rp-sync-start': String(start),
             'x-rp-sync-count': String(count),
-            'x-rp-sync-byte-length': String(byteLength)
+            'x-rp-sync-byte-length': String(storedLength),
+            ...(gzip ? { 'x-rp-sync-part-lengths': parts.map((bytes) => bytes.byteLength).join(',') } : {})
         }
     });
 }
@@ -1738,7 +1751,7 @@ async function handleUploadCreate(bucket, body) {
 
     let chunkManifest;
     try {
-        chunkManifest = normalizeChunkManifest(body.chunkManifest, totalBytes);
+        chunkManifest = normalizeChunkManifest(body.chunkManifest, totalBytes, chunkEncodingForSchema(snapshotMetadata.schemaVersion));
     } catch (err) {
         return error(err instanceof Error ? err.message : '分片清单无效。');
     }
@@ -1746,7 +1759,7 @@ async function handleUploadCreate(bucket, body) {
     if (snapshotMetadata.snapshotFormat === STREAM_SNAPSHOT_FORMAT
         && await sha256Text(JSON.stringify([
             STREAM_SNAPSHOT_FORMAT,
-            STREAM_SNAPSHOT_SCHEMA_VERSION,
+            snapshotMetadata.schemaVersion,
             Number(recordCount || 0),
             Number(totalBytes || 0),
             chunkManifest.map((chunk) => [String(chunk.checksum).toLowerCase(), getChunkLength(chunk)])
@@ -1798,11 +1811,17 @@ async function handleUploadPart(request, bucket, url) {
     if (!/^[a-f0-9]{64}$/i.test(expectedChecksum)) return error('上传数据校验码无效。');
     if (!Number.isInteger(expectedLength) || expectedLength <= 0 || expectedLength > MAX_PART_BYTES) return error('上传数据大小异常。');
 
-    const bytes = new Uint8Array(await request.arrayBuffer());
-    if (bytes.byteLength !== expectedLength) return error('上传数据大小与声明不一致。', 409);
-    if (await sha256Bytes(bytes) !== expectedChecksum) return error('上传数据校验失败。', 409);
+    const encoding = request.headers.get('x-rp-part-encoding') === 'gzip' ? 'gzip' : 'raw-bytes';
+    const storedChecksum = encoding === 'gzip' ? (request.headers.get('x-rp-part-stored-checksum') || '').toLowerCase() : expectedChecksum;
+    const storedLength = encoding === 'gzip' ? Number(request.headers.get('x-rp-part-stored-length') || 0) : expectedLength;
+    if (!/^[a-f0-9]{64}$/i.test(storedChecksum)) return error('上传数据校验码无效。');
+    if (!Number.isInteger(storedLength) || storedLength <= 0 || storedLength > MAX_PART_BYTES) return error('上传数据大小异常。');
 
-    const key = createChunkKey(expectedChecksum);
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (bytes.byteLength !== storedLength) return error('上传数据大小与声明不一致。', 409);
+    if (await sha256Bytes(bytes) !== storedChecksum) return error('上传数据校验失败。', 409);
+
+    const key = createChunkKey(expectedChecksum, encoding);
     try {
         await bucket.put(key, bytes, {
             httpMetadata: { contentType: 'application/octet-stream' },
@@ -1839,7 +1858,7 @@ async function handleUploadComplete(bucket, body, ctx) {
 
     let chunkManifest;
     try {
-        chunkManifest = normalizeChunkManifest(body.chunkManifest, totalBytes);
+        chunkManifest = normalizeChunkManifest(body.chunkManifest, totalBytes, chunkEncodingForSchema(snapshotMetadata.schemaVersion));
     } catch (err) {
         return error(err instanceof Error ? err.message : '上传数据清单无效。');
     }
@@ -1847,7 +1866,7 @@ async function handleUploadComplete(bucket, body, ctx) {
     if (snapshotMetadata.snapshotFormat === STREAM_SNAPSHOT_FORMAT
         && await sha256Text(JSON.stringify([
             STREAM_SNAPSHOT_FORMAT,
-            STREAM_SNAPSHOT_SCHEMA_VERSION,
+            snapshotMetadata.schemaVersion,
             Number(recordCount || 0),
             Number(totalBytes || 0),
             chunkManifest.map((chunk) => [String(chunk.checksum).toLowerCase(), getChunkLength(chunk)])

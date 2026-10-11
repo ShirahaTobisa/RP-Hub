@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import { startHarness, initializeFixture, chromium, chrome, root, defaultUpstream } from './sync-195.helpers.mjs';
 
 const evidence = path.join(root, 'evidence/image-edit-repair-20260920');
@@ -99,14 +100,16 @@ async function device(seed, mobile = false) {
                     return route.fulfill({json:{ok:true,previousVersion:remote?.version||0,missingIndices:body.chunkManifest.map(c=>c.index)}});
                 }
                 if (body?.action === 'upload-complete') {
-                    for (const c of createRequest.chunkManifest) assert.equal(crypto.createHash('sha256').update(uploaded.get(c.index)).digest('hex'), c.checksum);
+                    assert.equal(createRequest.schemaVersion, 6, 'chunks are uploaded compressed');
+                    for (const c of createRequest.chunkManifest) assert.equal(crypto.createHash('sha256').update(zlib.gunzipSync(uploaded.get(c.index))).digest('hex'), c.checksum);
                     remote = {...body,version:(remote?.version||0)+1}; report.snapshots.push({bytes:remote.totalBytes,chunks:remote.chunkCount});
                     return route.fulfill({json:{ok:true,version:remote.version}});
                 }
                 if (body?.action === 'pull-manifest') return route.fulfill({json:{ok:true,remote}});
                 if (body?.action === 'pull-json-part') {
                     const bytes = Buffer.concat(Array.from({length:body.count},(_,i)=>uploaded.get(body.start+i)));
-                    return route.fulfill({contentType:'application/octet-stream',body:bytes,headers:{'x-rp-sync-byte-length':String(bytes.length)}});
+                    const lengths = Array.from({length:body.count},(_,i)=>uploaded.get(body.start+i).length).join(',');
+                    return route.fulfill({contentType:'application/octet-stream',body:bytes,headers:{'x-rp-sync-byte-length':String(bytes.length),'x-rp-sync-part-lengths':lengths}});
                 }
                 return route.fulfill({json:{ok:true,authenticated:true,authRequired:false}});
             }

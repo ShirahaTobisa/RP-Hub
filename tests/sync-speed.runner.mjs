@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { startHarness, initializeFixture, chromium, chrome, root, defaultUpstream } from './sync-195.helpers.mjs';
 
 // 同步测速（基准，不是通过/失败测试）：两台“手机”（CPU 放慢 THROTTLE 倍、每个请求加 LATENCY 毫秒），
@@ -19,6 +21,9 @@ async function transfer(direction, bytes, mbps) {
     await new Promise((resolve) => setTimeout(resolve, link[direction] - Date.now()));
 }
 
+// 聊天内容：从 RPH 自带的中文内容里切句子，每条消息随机抽几句，压缩效果接近真实聊天（同一句话重复会压得不真实）。
+const corpus = fs.readFileSync(path.join(defaultUpstream, 'assets/js/built-in-content.js'), 'utf8')
+    .match(/[一-鿿，、：；“”（）《》！？…—]{8,}[。！？]/g);
 const harness = await startHarness({ assets: root, upstream: defaultUpstream, metrics: true });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64');
@@ -37,7 +42,8 @@ async function syncApi(route) {
         traffic.up += body.length;
         await transfer('up', body.length, UP_MBPS);
         const checksum = req.headers()['x-rp-part-checksum'];
-        chunks.set(checksum, body);
+        // 和真实服务器一样：同一内容压缩与否算两个块。
+        chunks.set(checksum + (req.headers()['x-rp-part-encoding'] === 'gzip' ? '.gz' : '.bin'), body);
         const index = Number(url.searchParams.get('index'));
         return route.fulfill({ json: { ok: true, index, partNumber: index + 1, byteLength: body.length, checksum, key: checksum } });
     }
@@ -47,7 +53,8 @@ async function syncApi(route) {
     if (body.action === 'upload-create') {
         if (manifest?.checksum === body.checksum) return route.fulfill({ json: { ok: true, alreadyUpToDate: true, remote: manifest } });
         pending = body;
-        const missing = body.chunkManifest.filter((chunk) => !chunks.has(chunk.checksum)).map((chunk) => chunk.index);
+        const suffix = Number(body.schemaVersion) === 6 ? '.gz' : '.bin';
+        const missing = body.chunkManifest.filter((chunk) => !chunks.has(chunk.checksum + suffix)).map((chunk) => chunk.index);
         return route.fulfill({ json: { ok: true, missingIndices: missing, previousVersion: manifest?.version || 0 } });
     }
     if (body.action === 'upload-complete') {
@@ -56,10 +63,12 @@ async function syncApi(route) {
         return route.fulfill({ json: { ok: true, version: manifest.version, remote: manifest } });
     }
     if (body.action === 'pull-json-part') {
-        const bytes = Buffer.concat(manifest.chunkManifest.slice(body.start, body.start + body.count).map((chunk) => chunks.get(chunk.checksum)));
+        const suffix = Number(manifest.schemaVersion) === 6 ? '.gz' : '.bin';
+        const parts = manifest.chunkManifest.slice(body.start, body.start + body.count).map((chunk) => chunks.get(chunk.checksum + suffix));
+        const bytes = Buffer.concat(parts);
         traffic.down += bytes.length;
         await transfer('down', bytes.length, DOWN_MBPS);
-        return route.fulfill({ contentType: 'application/octet-stream', body: bytes, headers: { 'x-rp-sync-byte-length': String(bytes.length) } });
+        return route.fulfill({ contentType: 'application/octet-stream', body: bytes, headers: { 'x-rp-sync-byte-length': String(bytes.length), 'x-rp-sync-part-lengths': parts.map((part) => part.length).join(',') } });
     }
     return route.fulfill({ json: { ok: true, authenticated: true, authRequired: false } });
 }
@@ -81,7 +90,7 @@ async function device(seed) {
     });
     await page.goto(harness.url + '/seed.html');
     await initializeFixture(page);
-    await page.evaluate(async ({ seed, chars, msgs }) => {
+    await page.evaluate(async ({ seed, chars, msgs, corpus }) => {
         localStorage.setItem('roleplay_hub_update_id', '999999999');
         localStorage.setItem('rp_hub_sync_password_v1', 'bench');
         const user = { uuid: 'u', name: '用户', person: 'second' };
@@ -91,16 +100,21 @@ async function device(seed) {
         if (seed) {
             const order = Array.from({ length: chars }, (_, i) => 'card-' + i);
             records.push(['rp_hub_character_index', { order }], ['rp_hub_last_active_char', 0]);
-            const avatar = 'data:image/png;base64,' + 'iVBORw0KGgo'.repeat(Math.floor(200 * 1024 / 11));
-            const line = '她看着窗外的雨，轻声说道：“今天也要好好吃饭哦。”你点了点头，'.repeat(20);
+            // 头像用随机字节：和真实图片一样基本压不动。
+            const image = new Uint8Array(150 * 1024);
+            for (let i = 0; i < image.length; i += 65536) crypto.getRandomValues(image.subarray(i, i + 65536));
+            const avatar = 'data:image/png;base64,' + btoa(String.fromCharCode(...image.subarray(0, 60000))) + btoa(String.fromCharCode(...image.subarray(60000, 120000))) + btoa(String.fromCharCode(...image.subarray(120000)));
+            let random = 1;
+            const pick = () => corpus[(random = (random * 48271) % 2147483647) % corpus.length];
+            const line = () => Array.from({ length: 6 }, pick).join('');
             for (let c = 0; c < chars; c++) {
                 records.push(['rp_hub_character_card-' + c, { uuid: 'card-' + c, name: '角色' + c, avatar, description: '设定'.repeat(1500), first_mes: '你好', worldInfo: [], regexScripts: [], uiTemplates: [] }]);
-                records.push(['rp_hub_chat_card-' + c, Array.from({ length: msgs }, (_, m) => ({ id: `c${c}m${m}`, role: m % 2 ? 'user' : 'assistant', content: `${m} ${line}` }))]);
+                records.push(['rp_hub_chat_card-' + c, Array.from({ length: msgs }, (_, m) => ({ id: `c${c}m${m}`, role: m % 2 ? 'user' : 'assistant', content: `${m} ${line()}` }))]);
             }
         }
         for (let i = 0; i < records.length; i += 50) await fixture.write(db, records.slice(i, i + 50));
         db.close();
-    }, { seed, chars: CHARS, msgs: MSGS });
+    }, { seed, chars: CHARS, msgs: MSGS, corpus });
     await page.goto(harness.url, { waitUntil: 'domcontentloaded', timeout: 120000 });
     await page.addLocatorHandler(page.getByRole('button', { name: /^(?:我)?知道了/ }).first(), (button) => button.click());
     await page.waitForFunction(() => document.querySelector('#app')?.__vue_app__ && globalThis.api?.pushToServer, null, { timeout: 120000 });

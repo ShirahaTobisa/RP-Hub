@@ -14,7 +14,10 @@ assert.match(source, /uploadPartConcurrency:\s*6/);
 assert.match(source, /downloadPartConcurrency:\s*3/);
 assert.match(source, /jsonDownloadPartChunks:\s*8/);
 assert.match(source, /const SNAPSHOT_FORMAT = 'rp-sync-jsonl-v1'/);
-assert.match(source, /const SNAPSHOT_SCHEMA_VERSION = 4/);
+// 版本 6 = 分块压缩上传（浏览器不支持压缩时仍用 4）；拉取 4 和 6 都认。
+assert.match(source, /const RAW_SCHEMA_VERSION = 4;/);
+assert.match(source, /const GZIP_SCHEMA_VERSION = 6;/);
+assert.match(source, /const SNAPSHOT_SCHEMA_VERSION = typeof CompressionStream === 'function' \? GZIP_SCHEMA_VERSION : RAW_SCHEMA_VERSION;/);
 assert.match(source, /const LEGACY_SNAPSHOT_FORMAT = 'rp-sync-json-v3'/);
 assert.match(source, /const CHUNKER_PROFILE = 'rph-jsonl-cdc-fnv1a-v1'/);
 assert.match(source, /record\?\.key !== 'rp_hub_characters'/);
