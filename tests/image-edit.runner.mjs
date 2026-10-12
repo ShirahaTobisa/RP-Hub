@@ -263,11 +263,13 @@ try {
         await page.evaluate(async () => {
             globalThis.providerCalls = [];
             RPHubImageModule.registerImageProvider({ id: 'test-gen', label: '测试接口', maxSteps: 50, async generate({ params, token }) {
-                providerCalls.push({ tag: params.tag, token: Boolean(token) });
+                providerCalls.push({ tag: params.tag, steps: params.steps, token: Boolean(token) });
                 return new Blob([new Uint8Array([137, 80, 78, 71])], { type: 'image/png' });
             } });
             await RPHubImageModule.reloadGenerationSettings();
         });
+        // 页面按 35 步读好设置之后，别的设备把站点改成了 33 步：点重新生成要按站点上的 33 步。
+        generationSettings = { ...generationSettings, params: { ...generationSettings.params, steps: 33 } };
         const before = report.imageRequests.length;
         await frame(page).locator('.rp-image-reroll-button').click();
         await page.waitForFunction(() => providerCalls.length === 1);
@@ -276,6 +278,7 @@ try {
         assert.ok(sent.some(r => r.method === 'PUT' && r.contentType === 'image/png'), JSON.stringify(sent));
         assert.ok(!sent.some(r => r.method === 'POST'), 'plugin generation must not also call the direct link');
         assert.equal(await page.evaluate(() => providerCalls[0].tag), 'blue sky, white clouds, landscape');
+        assert.equal(await page.evaluate(() => providerCalls[0].steps), '33', 'reroll must use the settings on the site, not the ones this page read earlier');
         generationSettings = null;
         passed('plugin image provider generates in the browser and uploads with PUT instead of the direct link');
     }

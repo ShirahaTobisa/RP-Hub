@@ -1323,6 +1323,9 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         const signal = detectConversationBusySignal();
         state.busySignalSupported = signal.supported;
         state.busySignalSource = signal.source;
+        // 生图设置存在站点上、所有设备共用；别的设备改过之后，这个页面在开始新一轮回复时重新读一次。
+        if (signal.busy && !state.settingsReadForBusy) reloadGenerationSettings();
+        state.settingsReadForBusy = signal.busy;
         if (signal.busy) {
             state.lastBusyAt = Date.now();
             const liveChat = readLiveAppValue('chatHistory');
@@ -1997,6 +2000,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         if (!entry) return;
         const { uuid, records, index } = entry;
         const previous = entry.record;
+        await reloadGenerationSettings();
         const paramsSnapshot = buildImageParamsSnapshot(previous.prompt || previous.paramsSnapshot?.prompt || '', {
             reroll: true,
             previousSeed: previous.paramsSnapshot?.seed,
@@ -2490,6 +2494,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                 flushRecordsWithoutBlockingSync();
                 return;
             }
+            reloadGenerationSettings();
             if (!state.catalogCache || Date.now() - state.catalogReadAt >= CATALOG_CACHE_TTL_MS) runCatalogFallback('visibility resume');
             if (!state.seedCache || Date.now() - state.seedReadAt >= SEED_CACHE_TTL_MS) runSeedFallback('visibility resume');
 
@@ -2735,6 +2740,8 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         status.setAttribute(FIELD_ATTR, '');
         negativeCell.appendChild(resetNegative);
 
+        // 站点存的步数。滑条只显示当前接口会用的步数（上限由接口决定，直链 28），不会因为显示而改掉存的值。
+        let storedSteps = Number(params.steps ?? 28);
         const providers = () => imageModule()?.listImageProviders?.() || [];
         const current = () => providers().find((item) => item.id === generator.value) || null;
         const fillProviders = () => {
@@ -2750,13 +2757,15 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         const refresh = () => {
             const provider = current();
             steps.input.max = String(provider?.maxSteps || 28);
-            if (Number(steps.input.value) > Number(steps.input.max)) steps.input.value = steps.input.max;
+            steps.input.value = String(Math.min(storedSteps, Number(steps.input.max)));
             [steps, scale, cfg].forEach((item) => item.show());
             const app = appProxy()?.settings || {};
             const query = { steps: Number(steps.input.value), sampler: sampler.value, model: app.imageModel, size: `${resolution.value}${app.imageSize || '竖图'}` };
             let cost = '';
             try { cost = provider?.costHint?.(query) || ''; } catch (_) { cost = ''; }
-            if (!cost && !provider) {
+            if (!provider && generator.value !== 'direct') {
+                cost = `「${generator.value}」插件没有加载，这个页面现在生不了图；请在模块管理里启用它，或改回直链。`;
+            } else if (!cost && !provider) {
                 const points = imageModule()?.estimateImagePoints?.(query.model, query.size, Math.min(28, query.steps));
                 cost = `直链最高按 28 步生成${points ? `，当前设置每张图约 ${points} 点` : ''}。`;
             }
@@ -2767,7 +2776,6 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         sampler.value = params.sampler || 'k_dpmpp_2m_sde';
         noise.value = params.noise_schedule || 'karras';
         resolution.value = params.resolution || '';
-        steps.input.value = String(params.steps ?? 28);
         scale.input.value = String(params.scale ?? 6);
         cfg.input.value = String(params.cfg ?? 0);
         negative.value = params.negative || imageModule()?.defaultNegativePrompt || '';
@@ -2775,40 +2783,76 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         [sampler, noise, resolution].forEach((item) => item.sync());
         refresh();
 
+        // 只保存改动的那几项：别的设备改过的设置，不会被这个页面上没动过的旧值盖掉。
         let timer = null;
-        const readForm = () => {
-            const defaultNegative = imageModule()?.defaultNegativePrompt || '';
-            return {
-                generator: generator.value,
-                params: {
-                    steps: Number(steps.input.value), scale: Number(scale.input.value), cfg: Number(cfg.input.value),
-                    sampler: sampler.value, noise_schedule: noise.value, resolution: resolution.value,
-                    negative: negative.value.trim() === defaultNegative.trim() ? '' : negative.value
-                }
-            };
+        const changed = new Set();
+        const valueOf = {
+            steps: () => storedSteps,
+            scale: () => Number(scale.input.value),
+            cfg: () => Number(cfg.input.value),
+            sampler: () => sampler.value,
+            noise_schedule: () => noise.value,
+            resolution: () => resolution.value,
+            negative: () => {
+                const defaultNegative = imageModule()?.defaultNegativePrompt || '';
+                return negative.value.trim() === defaultNegative.trim() ? '' : negative.value;
+            }
         };
-        const save = () => {
-            refresh();
-            // 改动马上在本页生效：保存还没发出就离开设置页再回来，也显示刚改的值。
-            imageModule()?.applyGenerationSettings?.({ ...imageModule().getGenerationSettings(), ...readForm() });
+        const readChanges = () => {
+            const body = { params: {} };
+            for (const key of changed) {
+                if (key === 'generator') body.generator = generator.value;
+                else body.params[key] = valueOf[key]();
+            }
+            return body;
+        };
+        const send = () => {
             clearTimeout(timer);
-            timer = setTimeout(async () => {
+            if (!changed.size) return saveInFlight;
+            const body = readChanges();
+            changed.clear();
+            saveInFlight = (async () => {
                 try {
-                    const result = await api('/image/api/settings', { method: 'PUT', body: JSON.stringify(readForm()) });
+                    const result = await api('/image/api/settings', { method: 'PUT', body: JSON.stringify(body) });
                     imageModule()?.applyGenerationSettings?.(result.settings);
                     status.textContent = '生图参数已保存，所有设备共用；只影响之后的新图，已生成的图不会重新生成。';
                 } catch (error) {
-                    status.textContent = `保存失败：${error.message}（需要先在「同步」里输入过同步密码）`;
+                    // 没存上：提示出来，并把设置页恢复成站点上的真实值，免得以为已经改好了。
+                    window.RPHubUI?.toast(`生图设置没有保存成功：${error.message}。已恢复为站点上的设置，请检查同步密码后重试。`, { kind: 'error', duration: 8000 });
+                    await imageModule()?.reloadGenerationSettings?.();
+                    rebuildFields();
                 }
-            }, 400);
+            })();
+            return saveInFlight;
         };
-        for (const control of [generator, resolution, sampler, noise, negative, steps.input, scale.input, cfg.input]) control.addEventListener('change', save);
+        flushPendingSave = send;
+        const save = (key) => {
+            changed.add(key);
+            refresh();
+            // 换到上限更低的接口（比如直链）时，存的步数跟着降到它实际会用的步数。
+            if (key === 'generator' && storedSteps > Number(steps.input.max)) {
+                storedSteps = Number(steps.input.max);
+                changed.add('steps');
+            }
+            // 改动马上在本页生效：保存还没发出就离开设置页再回来，也显示刚改的值。
+            const local = imageModule()?.getGenerationSettings?.();
+            const pending = readChanges();
+            if (local) imageModule().applyGenerationSettings({ ...local, ...(pending.generator ? { generator: pending.generator } : {}), params: { ...local.params, ...pending.params } });
+            clearTimeout(timer);
+            timer = setTimeout(send, 400);
+        };
+        const controls = [[generator, 'generator'], [resolution, 'resolution'], [sampler, 'sampler'], [noise, 'noise_schedule'],
+            [negative, 'negative'], [steps.input, 'steps'], [scale.input, 'scale'], [cfg.input, 'cfg']];
+        for (const [control, key] of controls) control.addEventListener('change', () => save(key));
         // 点数跟着变：拖动步数时、插件恢复步数时、改 RPH 原生的「生图比例」「生图模型」时都重新算。
-        steps.input.addEventListener('input', refresh);
+        steps.input.addEventListener('input', () => { storedSteps = Number(steps.input.value); refresh(); });
         const appSettings = appProxy()?.settings;
         if (appSettings && globalThis.Vue?.watch) cleanups.push(globalThis.Vue.watch(() => [appSettings.imageSize, appSettings.imageModel], refresh));
-        resetNegative.addEventListener('click', () => { negative.value = imageModule()?.defaultNegativePrompt || ''; save(); });
-        window.addEventListener('rph-image-providers-change', () => { fillProviders(); refresh(); });
+        resetNegative.addEventListener('click', () => { negative.value = imageModule()?.defaultNegativePrompt || ''; save('negative'); });
+        // 插件比设置页晚加载时：接口和它声明的步数上限到了以后，按存的值重新显示。
+        const onProviders = () => { fillProviders(); refresh(); };
+        window.addEventListener('rph-image-providers-change', onProviders);
+        cleanups.push(() => window.removeEventListener('rph-image-providers-change', onProviders));
         grid.append(cell('生图接口', generator.control), cell('分辨率', resolution.control), cell('采样器', sampler.control), cell('噪声调度', noise.control), steps.wrap, scale.wrap, cfg.wrap, negativeCell, status);
     }
 
@@ -2817,17 +2861,32 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         if (grid && !grid.querySelector(`[${FIELD_ATTR}]`)) buildFields(grid);
     }
 
+    function rebuildFields() {
+        cleanups.splice(0).forEach((cleanup) => cleanup());
+        findGrid()?.querySelectorAll(`[${FIELD_ATTR}]`).forEach((node) => node.remove());
+        ensureFields();
+    }
+
     // 只在设置页打开时观察页面变化，离开就停，不影响聊天时的性能。
     let observer = null;
+    let viewVersion = 0;
+    // 设置页里还没发出的改动：离开设置页时立即发出；再进设置页时先等它存完，再从站点读最新值。
+    let saveInFlight = Promise.resolve();
+    let flushPendingSave = () => saveInFlight;
     function onView(view) {
+        const saved = flushPendingSave();
         observer?.disconnect();
         observer = null;
         cleanups.splice(0).forEach((cleanup) => cleanup());
+        const version = ++viewVersion;
         if (view !== 'settings') return;
-        imageModule()?.reloadGenerationSettings?.().then(ensureFields);
-        ensureFields();
-        observer = new MutationObserver(ensureFields);
-        observer.observe(document.getElementById('app'), { childList: true, subtree: true });
+        // 先从站点读最新设置再画：页面记着的可能是别的设备改之前的旧值。
+        saved.then(() => imageModule()?.reloadGenerationSettings?.()).then(() => {
+            if (version !== viewVersion) return;
+            ensureFields();
+            observer = new MutationObserver(ensureFields);
+            observer.observe(document.getElementById('app'), { childList: true, subtree: true });
+        });
     }
 
     async function checkStorage() {

@@ -4,7 +4,8 @@ import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } fr
 // 生图设置格子 + Nai2API 插件：
 // - 外壳的步数滑条按直链 28 步上限建，插件自己把上限放到 50，进出设置页都显示存好的 50 步；
 // - 下拉框用 RPH 原生 custom-select，展开的是原生样式的列表；
-// - 切回直链后马上离开设置页再回来、或者读取比保存晚回来，都不会变回网页任务。
+// - 切回直链后马上离开设置页再回来、或者读取比保存晚回来，都不会变回网页任务；
+// - 设置存在站点上、所有设备共用：页面记着的旧值会及时刷新；只保存改动的那一项；保存失败要提示并恢复成站点上的值。
 const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const view = (page, value) => page.evaluate((value) => {
@@ -13,6 +14,8 @@ const view = (page, value) => page.evaluate((value) => {
 }, value);
 let server = { generator: 'nai2api-web', params: { steps: 50, scale: 6, cfg: 0, sampler: 'k_euler', noise_schedule: 'karras', resolution: '', negative: '' } };
 let getDelay = 0;
+let failNextPut = false;
+const puts = [];
 
 try {
     const page = await browser.newPage();
@@ -20,6 +23,8 @@ try {
     await page.route('**/image/api/settings', async (route) => {
         if (route.request().method() === 'PUT') {
             const body = route.request().postDataJSON();
+            puts.push(body);
+            if (failNextPut) { failNextPut = false; return route.fulfill({ status: 401, json: { ok: false, error: '同步密码错误' } }); }
             server = { ...server, ...body, params: { ...server.params, ...(body.params || {}) } };
             return route.fulfill({ json: { ok: true, settings: server } });
         }
@@ -121,6 +126,74 @@ try {
     assert.match(await fields.nth(0).locator('button[aria-haspopup="listbox"]').textContent(), /直链/);
     assert.equal(server.generator, 'direct');
     console.log('PASS a slow settings read cannot overwrite a newer choice');
+
+    const app = (script) => page.evaluate(script);
+    const pageSteps = () => app(() => RPHubImageModule.getGenerationSettings().params.steps);
+    const shownSteps = () => app(() => document.querySelector('[data-rph-image-param] input[type="range"]').value);
+    const remember = (settings) => page.evaluate((settings) => {
+        const current = RPHubImageModule.getGenerationSettings();
+        RPHubImageModule.applyGenerationSettings({ ...current, ...settings, params: { ...current.params, ...settings.params } });
+    }, settings);
+
+    // 别的设备改了设置（4K 50 步 → 标准 28 步），这个页面还记着旧值：进设置页先读站点上的最新值；只改采样器时只存采样器。
+    await view(page, 'chat');
+    server = { ...server, generator: 'nai2api-web', params: { ...server.params, steps: 28, resolution: '' } };
+    await remember({ generator: 'nai2api-web', params: { steps: 50, resolution: '4K' } });
+    await openSettings();
+    assert.equal(await shownSteps(), '28');
+    assert.match(await fields.nth(1).locator('button[aria-haspopup="listbox"]').textContent(), /标准/);
+    puts.length = 0;
+    await fields.nth(2).locator('button[aria-haspopup="listbox"]').click();
+    await page.getByRole('option', { name: 'k_dpmpp_2m', exact: true }).click();
+    await page.waitForTimeout(900);
+    assert.deepEqual(puts, [{ params: { sampler: 'k_dpmpp_2m' } }]);
+    assert.equal(server.params.steps, 28);
+    assert.equal(server.params.resolution, '');
+    console.log('PASS a page holding old settings shows the latest ones and saves only the field that was changed');
+
+    // 别的设备改了步数：切回这个页面时、开始新一轮回复时（新图要等回复结束才定参数）都会读到新值。
+    await view(page, 'chat');
+    server.params.steps = 33;
+    await app(() => document.dispatchEvent(new Event('visibilitychange')));
+    await page.waitForFunction(() => RPHubImageModule.getGenerationSettings().params.steps === 33, null, { timeout: 5000 });
+    server.params.steps = 34;
+    await app(async () => {
+        const a = document.querySelector('#app').__vue_app__;
+        (a._instance?.proxy || a._container._vnode.component.proxy).isGenerating = true;
+        await Vue.nextTick();
+        await RPHubImageModule.scan();
+    });
+    await page.waitForFunction(() => RPHubImageModule.getGenerationSettings().params.steps === 34, null, { timeout: 5000 });
+    await app(() => { const a = document.querySelector('#app').__vue_app__; (a._instance?.proxy || a._container._vnode.component.proxy).isGenerating = false; });
+    assert.equal(await pageSteps(), 34);
+    console.log('PASS settings changed on another device reach an open page when it comes back and when a new reply starts');
+
+    // 保存失败：弹出提示，设置页恢复成站点上的值，页面记着的也是站点上的值。
+    await openSettings();
+    failNextPut = true;
+    await app(() => {
+        const input = document.querySelector('[data-rph-image-param] input[type="range"]');
+        input.value = '20';
+        input.dispatchEvent(new Event('input'));
+        input.dispatchEvent(new Event('change'));
+    });
+    await page.locator('.toast-item', { hasText: '生图设置没有保存成功' }).waitFor({ timeout: 5000 });
+    await page.waitForFunction(() => document.querySelector('[data-rph-image-param] input[type="range"]')?.value === '34', null, { timeout: 5000 });
+    assert.equal(await pageSteps(), 34);
+    assert.equal(server.params.steps, 34);
+    await view(page, 'chat');
+    console.log('PASS a failed save is reported and the settings page goes back to what the site has');
+
+    // 生图接口的插件比设置页晚加载：先按 28 显示，接口和它声明的上限到了以后显示存的 50（存的值不被改掉）。
+    server = { ...server, generator: 'late-gen', params: { ...server.params, steps: 50 } };
+    await app(() => RPHubImageModule.reloadGenerationSettings());
+    await openSettings();
+    assert.equal(await shownSteps(), '28');
+    assert.match(await hint(), /插件没有加载/);
+    await app(() => RPHubImageModule.registerImageProvider({ id: 'late-gen', label: '晚到的接口', maxSteps: 50, async generate() { return new Blob(); } }));
+    await page.waitForFunction(() => document.querySelector('[data-rph-image-param] input[type="range"]').value === '50', null, { timeout: 5000 });
+    assert.equal(server.params.steps, 50);
+    console.log('PASS a plugin generator that loads after the settings page shows the saved steps once its range is known');
 } finally {
     await browser.close();
     await harness.close();
