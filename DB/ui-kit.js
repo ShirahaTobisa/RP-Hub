@@ -155,6 +155,36 @@
 
     const TOAST_KINDS = new Set(['info', 'success', 'error', 'warning']);
     const shownUntil = new Map();
+    let toastSeed = 0;
+
+    // RPH 2.0.1 起提示条固定一行高（收起动画按这个高度把空位折叠掉）；长提示换行后放不下时，
+    // 按实际高度设这条的 --toast-height，文字完整显示，收起动画也按实际高度走。
+    function fitToast(item) {
+        requestAnimationFrame(() => {
+            const fixed = item.offsetHeight;
+            item.style.height = 'auto';
+            const needed = item.offsetHeight;
+            item.style.height = '';
+            if (needed > fixed + 1) item.style.setProperty('--toast-height', `${needed}px`);
+        });
+    }
+
+    let toastStackWatched = false;
+    function watchToastStack(tries = 40) {
+        const stack = document.querySelector('#app .toast-stack');
+        if (!stack) {
+            if (tries > 0) setTimeout(() => watchToastStack(tries - 1), 500);
+            return;
+        }
+        toastStackWatched = true;
+        new MutationObserver((records) => {
+            for (const record of records) {
+                for (const node of record.addedNodes) if (node.classList?.contains('toast-item')) fitToast(node);
+            }
+        }).observe(stack, { childList: true });
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => watchToastStack(), { once: true });
+    else watchToastStack();
 
     function toast(message, { kind = 'info', duration = 3200 } = {}) {
         const text = String(message || '').trim();
@@ -167,9 +197,13 @@
         if (shownUntil.get(text) > Date.now()) return;
         shownUntil.set(text, Date.now() + duration);
         const type = TOAST_KINDS.has(kind) ? kind : 'info';
-        const native = appProxy()?.showToast;
-        if (typeof native === 'function') {
-            native(text, type, duration);
+        // 交给 RPH 自己的提示条列表显示：图标、动画和原生提示一致。
+        const proxy = appProxy();
+        if (Array.isArray(proxy?.toasts)) {
+            if (!toastStackWatched) watchToastStack(0);
+            const id = `rph-ui-${Date.now()}-${toastSeed++}`;
+            proxy.toasts.push({ id, message: text, type, icon: window.RPHubUtils?.getToastIcon?.(text, type) || '' });
+            setTimeout(() => { proxy.toasts = proxy.toasts.filter((item) => item.id !== id); }, duration);
             return;
         }
         if (!toastHost?.isConnected) {
