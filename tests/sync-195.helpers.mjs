@@ -18,7 +18,7 @@ const exposed = ['CONFIG', 'state', 'iterateSnapshotLines', 'iterateSnapshotChun
     'downloadSnapshotToStaging', 'downloadSnapshotRange', 'iterateStagedSnapshotChunks', 'parseStagedStreamSnapshot',
     'restoreStreamSnapshot', 'StreamSnapshotValidator', 'StreamSnapshotRestorer', 'validateStreamSnapshotManifest',
     'buildDownloadRanges', 'chunkCacheKey', 'retainedChunkKeys', 'pruneDownloadCache', 'runSyncLocked',
-    'pullFromServer', 'pushToServer', 'uploadMissingStreamChunks', 'updateButtonState'];
+    'pullFromServer', 'pushToServer', 'uploadMissingStreamChunks', 'updateButtonState', 'exportForkSnapshot'];
 
 export function instrument(source, metrics = false) {
     const exports = exposed.filter((name) => new RegExp(`\\b(?:function\\*?|class|const)\\s+${name}\\b`).test(source));

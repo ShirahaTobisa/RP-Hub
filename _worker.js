@@ -1722,6 +1722,73 @@ async function handleForkPacks(bucket, body) {
     return new Response(new Blob(parts), { headers: { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' } });
 }
 
+// ---- 换成魔改版：页面把测试版的云端数据转成魔改版 schema 13 的数据包和清单，这里核对后落盘，再把程序换过去 ----
+const FORK_PACK_MAX_BYTES = 1024 * 1024;
+const FORK_BLOOM_BYTES = 32 * 1024;
+const FORK_PAGE_PACKS = 32;
+const FORK_EXPORT_MAX_PAGES = 40;
+const TEST_ROOT_BACKUP_KEY = `${R2_PREFIX}/test-root-backup.json`;
+
+async function handleForkExportPack(request, bucket, url) {
+    const checksum = url.searchParams.get('checksum') || '';
+    if (!/^[a-f0-9]{64}$/.test(checksum)) return error('魔改版数据包校验码无效。');
+    const bytes = await readLimitedBody(request.body, FORK_PACK_MAX_BYTES, '魔改版数据包');
+    if (await sha256Bytes(bytes) !== checksum) return error('魔改版数据包校验失败。', 409);
+    // 魔改版下载时核对包里的条数（就是换行数），条数记在对象的元数据里。
+    let entryCount = 0;
+    for (let index = bytes.indexOf(10); index !== -1; index = bytes.indexOf(10, index + 1)) entryCount += 1;
+    await bucket.put(`${R2_PREFIX}/packs/${checksum}.bin`, bytes, {
+        httpMetadata: { contentType: 'application/octet-stream' },
+        customMetadata: { entryCount: String(entryCount) }
+    });
+    return json({ ok: true });
+}
+
+// 分页哈希链、布隆过滤器和根清单校验码都重算一遍，对得上才换上根清单；测试版的清单另存一份。
+async function handleForkExportCommit(bucket, body) {
+    const state = await getManifestState(bucket);
+    if (!state.manifest || state.manifest.checksum !== body.expectedChecksum) return error('云端数据刚刚变了，请重新转换。', 409);
+    const pages = Array.isArray(body.pages) ? body.pages : [];
+    if (pages.length > FORK_EXPORT_MAX_PAGES) return error('数据太多，一次转不过去。');
+    const packs = pages.flatMap((page) => (Array.isArray(page?.packs) ? page.packs : []));
+    if (packs.some((pack) => !/^[a-f0-9]{64}$/.test(pack?.checksum) || !(pack.length > 0 && pack.length <= FORK_PACK_MAX_BYTES)
+        || !Number.isInteger(pack.length) || !Number.isInteger(pack.entryCount) || !Number.isInteger(pack.part)
+        || typeof pack.bucketKey !== 'string' || typeof pack.group !== 'string')) return error('魔改版数据包清单异常。');
+    let pageRoot = '0'.repeat(64);
+    for (const [index, page] of pages.entries()) {
+        if (!page.packs?.length || page.packs.length > FORK_PAGE_PACKS || page.previousPageHash !== pageRoot) return error('魔改版清单分页不连续。');
+        pageRoot = await sha256Text(JSON.stringify(['rp-sync-manifest-page-v1', index, pageRoot,
+            page.packs.map((pack) => [pack.bucketKey, pack.group, pack.part, pack.checksum, pack.length, pack.entryCount])]));
+        if (page.pageHash !== pageRoot) return error('魔改版清单分页校验失败。');
+    }
+    let bloom;
+    try { bloom = Uint8Array.from(atob(String(body.bloom || '')), (char) => char.charCodeAt(0)); } catch (_) { bloom = new Uint8Array(); }
+    if (bloom.byteLength !== FORK_BLOOM_BYTES) return error('魔改版布隆过滤器大小异常。');
+    const bloomChecksum = await sha256Bytes(bloom);
+    const totalBytes = packs.reduce((sum, pack) => sum + pack.length, 0);
+    const entryCount = packs.reduce((sum, pack) => sum + pack.entryCount, 0);
+    const checksum = await sha256Text(JSON.stringify(['rp-sync-paged-jsonl-v4', 13, totalBytes, packs.length, entryCount, pages.length, pageRoot, bloomChecksum]));
+    if (checksum !== body.checksum) return error('魔改版根清单校验失败。');
+
+    const putJson = (key, value, options = {}) => bucket.put(key, JSON.stringify(value), { httpMetadata: { contentType: 'application/json; charset=utf-8' }, ...options });
+    await Promise.all(pages.map((page, index) => putJson(`${R2_PREFIX}/manifests/${checksum}/${String(index).padStart(4, '0')}.json`, {
+        format: 'rp-sync-manifest-page-v1', checksum, pageIndex: index, previousPageHash: page.previousPageHash, pageHash: page.pageHash, packs: page.packs
+    })));
+    await bucket.put(`${R2_PREFIX}/blooms/${bloomChecksum}.bin`, bloom, { httpMetadata: { contentType: 'application/octet-stream' } });
+    // 魔改版第一次见到这个桶时，会把当时的根清单记成“旧数据”跳过；先替它写好迁移标记，它就直接读这份根清单。
+    await putJson(`${R2_PREFIX}/migration-v13.done`, { format: 'rp-sync-migration-v13', legacyEtag: null, createdAt: Date.now() },
+        { onlyIf: { etagDoesNotMatch: '*' } });
+    await putJson(TEST_ROOT_BACKUP_KEY, state.rawManifest);
+    const previousFork = (await readR2JsonObject(bucket, FORK_ROOT_BACKUP_KEY)).value;
+    const version = (Number(previousFork?.version) || 0) + 1;
+    const written = await putJson(MANIFEST_KEY, {
+        format: FORK_ROOT_FORMAT, version, checksum, updatedAt: Date.now(), totalBytes, packCount: packs.length, entryCount,
+        pageCount: pages.length, pageRoot, bloomChecksum, snapshotFormat: 'rp-sync-paged-jsonl-v4', schemaVersion: 13
+    }, { onlyIf: { etagMatches: state.etag || state.httpEtag.replace(/^"|"$/g, '') } });
+    if (!written) return error('云端数据刚刚变了，请重新转换。', 409);
+    return json({ ok: true, version });
+}
+
 async function handlePullJsonPart(bucket, body) {
     const manifest = await getManifest(bucket);
     if (!manifest) return error('服务器当前没有可同步的数据。', 404);
@@ -2953,6 +3020,7 @@ async function handleJsonApi(request, env, ctx) {
     if (body.action === 'pull-json-part') return handlePullJsonPart(bucket, body);
     if (body.action === 'fork-page') return handleForkPage(bucket, body);
     if (body.action === 'fork-packs') return handleForkPacks(bucket, body);
+    if (body.action === 'fork-export-commit') return handleForkExportCommit(bucket, body);
     if (body.action === 'upload-create') return handleUploadCreate(bucket, body);
     if (body.action === 'upload-complete') return handleUploadComplete(bucket, body, ctx);
     if (body.action === 'app-update-versions') return handleAppUpdateVersions(bucket, env, body);
@@ -3127,10 +3195,11 @@ async function handleSelfUpdateRollback(request, env) {
 
 async function handleApi(request, env, url, ctx) {
     try {
-        if (url.searchParams.get('action') === 'upload-part') {
+        const rawAction = url.searchParams.get('action');
+        if (rawAction === 'upload-part' || rawAction === 'fork-export-pack') {
             if (request.method !== 'POST') return error('Method not allowed.', 405);
             if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401, { authRequired: true });
-            return handleUploadPart(request, getBucket(env), url);
+            return rawAction === 'upload-part' ? handleUploadPart(request, getBucket(env), url) : handleForkExportPack(request, getBucket(env), url);
         }
         return await handleJsonApi(request, env, ctx);
     } catch (err) {

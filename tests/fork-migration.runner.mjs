@@ -120,20 +120,26 @@ try {
     await deviceA.addInitScript(remember, PASSWORD);
     const pageErrors = [];
 
+    // 魔改版的页面：只放它的同步脚本（作者页面由它的服务端反代，这里用不上），把它的上传、下载露出来给测试调用。
+    const openFork = async (context) => {
+        const page = await context.newPage();
+        page.on('pageerror', (error) => pageErrors.push(`fork: ${error.message}`));
+        await page.route(`${origin}/`, (route) => route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="app"></div>'
+            + '<script>window.RPHubExternal = { version: 1, flush: async () => {} };</script><script src="/DB/dirty-tracker.js"></script><script src="/DB/bootstrap.js"></script></body></html>' }));
+        await page.route('**/DB/bootstrap.js', async (route) => {
+            const response = await route.fetch();
+            const marker = 'const pushToServer = () => runSyncOperation(() => pushToServerUnlocked());';
+            const source = await response.text();
+            assert.ok(source.includes(marker));
+            await route.fulfill({ response, body: source.replace(marker, `${marker}\n    window.__forkPush = pushToServer;\n    window.__forkPull = pullFromServer;`) });
+        });
+        await page.goto(origin);
+        return page;
+    };
+
     // 1. 魔改版：种数据（经过它的变更日志），用它自己的上传传进 R2。
     site = await startSite(forkSite);
-    const forkPage = await deviceA.newPage();
-    forkPage.on('pageerror', (error) => pageErrors.push(`fork: ${error.message}`));
-    await forkPage.route(`${origin}/`, (route) => route.fulfill({ contentType: 'text/html; charset=utf-8', body: '<!doctype html><html><head><meta charset="utf-8"></head><body><div id="app"></div>'
-        + '<script>window.RPHubExternal = { version: 1, flush: async () => {} };</script><script src="/DB/dirty-tracker.js"></script><script src="/DB/bootstrap.js"></script></body></html>' }));
-    await forkPage.route('**/DB/bootstrap.js', async (route) => {
-        const response = await route.fetch();
-        const marker = 'const pushToServer = () => runSyncOperation(() => pushToServerUnlocked());';
-        const source = await response.text();
-        assert.ok(source.includes(marker));
-        await route.fulfill({ response, body: source.replace(marker, `${marker}\n    window.__forkPush = pushToServer;`) });
-    });
-    await forkPage.goto(origin);
+    const forkPage = await openFork(deviceA);
     const forkPush = await forkPage.evaluate(async (data) => {
         const open = (name, store) => new Promise((resolve, reject) => {
             const request = indexedDB.open(name);
@@ -258,6 +264,73 @@ try {
     });
     assert.deepEqual(sortEntries((await dumpDevice(pageB)).records), sortEntries((await dumpDevice(pageA)).records));
     console.log('PASS the first upload asks first, then other devices pull the test build format');
+
+    // 7. 反过来：测试版把云端数据转成魔改版的格式。再加一张测试版自己生成（存在本站 R2）的图，转过去要带上它的准确位置。
+    const native = await pageA.evaluate(async () => {
+        const record = RPHubImageModule.normalizeImageRenderRecord({
+            messageId: 'm2', messageIndex: 2, contentHash: '0badcafe', occurrenceIndex: 0, prompt: 'cat ears', branchId: 'main',
+            paramsSnapshot: { tag: 'cat ears', model: 'nai-diffusion-4-5-full', size: '竖图', steps: '28', characterName: '角色A' }
+        }, 'role-a');
+        const stored = await fetch(RPHubImageModule.buildImageRenderUrl(record.paramsSnapshot), {
+            method: 'PUT', headers: { 'content-type': 'image/png', 'x-rp-sync-password': localStorage.getItem('rp_hub_sync_password_v1') }, body: new Uint8Array([137, 80, 78, 71])
+        });
+        const db = await new Promise((resolve) => { const request = indexedDB.open('RPHubDB'); request.onsuccess = () => resolve(request.result); });
+        await new Promise((resolve, reject) => {
+            const tx = db.transaction('store', 'readwrite');
+            const store = tx.objectStore('store');
+            store.get('rp_hub_image_renders_role-a').onsuccess = (event) => store.put([...event.target.result, record], 'rp_hub_image_renders_role-a');
+            tx.oncomplete = resolve;
+            tx.onabort = () => reject(tx.error);
+        });
+        db.close();
+        await api.pushToServer();
+        const pushed = api.state.statusText;
+        await api.exportForkSnapshot();
+        return { status: stored.status, key: decodeURIComponent(stored.headers.get('x-rp-image-key') || ''), promptHash: record.promptHash, pushed };
+    });
+    assert.equal(native.status, 200);
+    assert.equal(native.pushed, '上传成功。');
+    const exported = await pullManifest(pageA);
+    assert.equal(exported.remote, null);
+    assert.ok(exported.fork.version > 1, 'the converted root comes after the fork root it replaced');
+    const expected = await dumpDevice(pageA);
+    await pageA.close();
+    await pageB.close();
+    stopSite();
+    console.log('PASS the test build converts its cloud data into the fork format');
+
+    // 8. 站点换成魔改版（同一个存储桶）：新设备用魔改版自己的「下载」原样读回来，每张图都指向原图。
+    site = await startSite(forkSite);
+    const deviceC = await browser.newContext();
+    await deviceC.addInitScript(remember, PASSWORD);
+    const forkC = await openFork(deviceC);
+    // 和它的「从云端恢复」按钮一样：打开它的恢复页（页面带 data-rp-sync-restore），恢复完它自己跳回首页。
+    await forkC.goto(`${origin}/sync-restore`);
+    await forkC.waitForFunction(() => !document.documentElement.hasAttribute('data-rp-sync-restore'), null, { timeout: 60_000 })
+        .catch(async (error) => { throw new Error(`魔改版没能恢复：${await forkC.evaluate(() => document.body.innerText)}`, { cause: error }); });
+    await forkC.waitForLoadState('load');
+    const onFork = await dumpDevice(forkC);
+    const plain = (records) => sortEntries(records.filter(([key]) => key !== 'rp_hub_presets' && !key.startsWith('rp_hub_image_renders_')));
+    assert.deepEqual(plain(onFork.records), plain(expected.records));
+    assert.deepEqual(onFork.characters, expected.characters);
+    assert.deepEqual(onFork.local, { rp_hub_theme_mode: 'dark', rp_hub_magic_fixed_image: '1', rphub_notes_v1: null, not_app_key: null });
+    const images = new Map(onFork.records).get('rp_hub_image_renders_role-a');
+    assert.deepEqual(images.map((record) => [record.messageId, record.storyScopeId, record.imageKey]),
+        [['m1', 'main', forkImage.imageKey], ['m2', 'main', native.key]]);
+    assert.equal(images[1].promptHash, native.promptHash.replace(/^0+(?=.)/, ''));
+    assert.ok(native.key.startsWith('rp-images/characters/'));
+    await deviceC.close();
+    stopSite();
+    console.log('PASS the fork reads the converted data with its own code, and every image points at its stored file');
+
+    // 9. 再换回测试版：转过去的数据照常导回来，本机的 API 预设还在。
+    site = await startSite(dist);
+    const pageBack = await openOurs(deviceA);
+    await Promise.all([pageBack.waitForEvent('load', { timeout: 60_000 }), pageBack.evaluate(() => api.pullFromServer())]);
+    const back = await dumpDevice(pageBack);
+    assert.deepEqual(plain(back.records), plain(expected.records));
+    assert.deepEqual(new Map(back.records).get('rp_hub_presets'), presets);
+    console.log('PASS switching back imports the same data and keeps the local presets');
     assert.deepEqual(pageErrors, []);
 } finally {
     await browser?.close();

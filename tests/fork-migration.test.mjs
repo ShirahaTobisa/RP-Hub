@@ -116,3 +116,48 @@ assert.equal((await call(imageUrl(`&image_key=${encodeURIComponent('rp-sync/main
 const generate = await call(imageUrl(`&image_key=${encodeURIComponent(imageKey)}`), { method: 'POST' });
 assert.notEqual(generate.status, 200, 'generation never answers with the migrated image');
 console.log('PASS migrated images show by their stored location, read-only and outside the cache key');
+
+// 反过来换成魔改版：页面转好的数据包按校验码落盘（条数记进元数据，魔改版下载时要核对）；
+// 提交时分页哈希链、布隆过滤器、根清单校验码都重算，对得上才换上根清单，测试版的清单另存一份。
+const forkPack = Buffer.from('{"key":"rp_hub_theme","type":"localStorage","value":"dark"}\n{"key":"rp_hub_x","type":"localStorage","value":"1"}\n');
+const forkPackSum = sha256(forkPack);
+const sendPack = (bytes, checksum = sha256(bytes), password = PASSWORD) => call(`https://rph.example/api/rp-sync?action=fork-export-pack&checksum=${checksum}`, {
+    method: 'POST', headers: { 'x-rp-sync-password': password, 'content-type': 'application/octet-stream' }, body: bytes
+});
+assert.equal((await sendPack(forkPack, 'f'.repeat(64))).status, 409);
+assert.equal((await sendPack(forkPack, '../manifest')).status, 400);
+assert.equal((await sendPack(forkPack, undefined, 'wrong')).status, 401);
+assert.equal((await sendPack(forkPack)).status, 200);
+assert.equal(store.get(`rp-sync/main/packs/${forkPackSum}.bin`).customMetadata.entryCount, '2');
+
+const descriptor = { bucketKey: 'localStorage|s001', group: 'localStorage', part: 0, checksum: forkPackSum, length: forkPack.length, entryCount: 2 };
+const pageHash = sha256(JSON.stringify(['rp-sync-manifest-page-v1', 0, '0'.repeat(64), [[descriptor.bucketKey, descriptor.group, 0, forkPackSum, forkPack.length, 2]]]));
+const bloom = Buffer.alloc(32 * 1024);
+for (const offset of [0, 8, 16, 24]) {
+    const bit = parseInt(forkPackSum.slice(offset, offset + 8), 16) % (32 * 1024 * 8);
+    bloom[bit >>> 3] |= 1 << (bit & 7);
+}
+const exportRoot = sha256(JSON.stringify(['rp-sync-paged-jsonl-v4', 13, forkPack.length, 1, 2, 1, pageHash, sha256(bloom)]));
+const commit = (patch = {}) => api({
+    action: 'fork-export-commit', expectedChecksum: meta.checksum, checksum: exportRoot,
+    pages: [{ previousPageHash: '0'.repeat(64), pageHash, packs: [descriptor] }], bloom: bloom.toString('base64'), ...patch
+});
+const ours = JSON.parse(await (await bucket.get('rp-sync/main/manifest.json')).text());
+assert.equal((await commit({ expectedChecksum: 'e'.repeat(64) })).status, 409);
+assert.equal((await commit({ pages: [{ previousPageHash: '0'.repeat(64), pageHash: 'a'.repeat(64), packs: [descriptor] }] })).status, 400);
+assert.equal((await commit({ checksum: 'b'.repeat(64) })).status, 400);
+assert.equal((await commit({ bloom: 'AAAA' })).status, 400);
+assert.equal(JSON.parse(await (await bucket.get('rp-sync/main/manifest.json')).text()).checksum, meta.checksum, 'refused commits leave the cloud as it was');
+const committed = await commit();
+assert.equal(committed.status, 200, JSON.stringify(committed.body));
+const switched = JSON.parse(await (await bucket.get('rp-sync/main/manifest.json')).text());
+assert.equal(switched.format, 'rp-sync-manifest-root-v1');
+assert.equal(switched.checksum, exportRoot);
+assert.equal(switched.version, 8, 'the converted root follows the fork root it once replaced');
+assert.deepEqual(JSON.parse(await (await bucket.get('rp-sync/main/test-root-backup.json')).text()), ours);
+assert.deepEqual(JSON.parse(await (await bucket.get(`rp-sync/main/manifests/${exportRoot}/0000.json`)).text()),
+    { format: 'rp-sync-manifest-page-v1', checksum: exportRoot, pageIndex: 0, previousPageHash: '0'.repeat(64), pageHash, packs: [descriptor] });
+assert.ok(store.has(`rp-sync/main/blooms/${sha256(bloom)}.bin`));
+assert.equal(JSON.parse(await (await bucket.get('rp-sync/main/migration-v13.done')).text()).legacyEtag, null, 'the fork reads this root instead of skipping it as old data');
+assert.equal((await api({ action: 'pull-manifest' })).body.fork.checksum, exportRoot);
+console.log('PASS converted fork data is checked before the root is switched, and the test build manifest is kept');
