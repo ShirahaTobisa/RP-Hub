@@ -439,9 +439,14 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
     }
 
     function normalizeImageRenderRecord(record = {}, ownerUuid = '') {
+        // 魔改版（cy-2-u/rp）的记录：分支记在 storyScopeId，key 是它自己的拼法、哈希不补零，
+        // 参数里不带提示词，图片在 R2 的位置记在 imageKey。换成我们的写法，原图照常显示。
+        const fork = record.storyScopeId !== undefined;
+        const forkHash = (value) => (fork && value ? String(value).padStart(8, '0') : String(value || ''));
         const paramsSnapshot = record.paramsSnapshot && typeof record.paramsSnapshot === 'object'
             ? { ...record.paramsSnapshot }
             : {};
+        if (fork && record.imageKey) paramsSnapshot.imageKey = String(record.imageKey);
         delete paramsSnapshot.token;
         if (paramsSnapshot.upstreamParams) {
             paramsSnapshot.upstreamParams = normalizeGenerationParams(paramsSnapshot.upstreamParams);
@@ -453,16 +458,17 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         paramsSnapshot.characterUuid = String(paramsSnapshot.characterUuid || ownerUuid || '');
         paramsSnapshot.characterName = String(paramsSnapshot.characterName || '未命名角色');
         const prompt = String(record.prompt || paramsSnapshot.prompt || paramsSnapshot.tag || '');
+        if (fork) paramsSnapshot.tag ||= prompt;
         const createdAt = Number(record.createdAt) || Date.now();
         const normalized = {
-            key: String(record.key || ''),
+            key: fork ? '' : String(record.key || ''),
             messageId: String(record.messageId || ''),
             messageIndex: Number.isFinite(Number(record.messageIndex)) ? Number(record.messageIndex) : null,
-            contentHash: String(record.contentHash || ''),
+            contentHash: forkHash(record.contentHash),
             occurrenceIndex: Math.max(0, Number(record.occurrenceIndex) || 0),
             prompt,
-            promptHash: String(record.promptHash || hashText(prompt)),
-            ...(record.branchId ? { branchId: String(record.branchId) } : {}),
+            promptHash: forkHash(record.promptHash) || hashText(prompt),
+            ...(record.branchId || fork ? { branchId: String(record.branchId || record.storyScopeId) } : {}),
             ...(record.promptLayout ? { promptLayout: String(record.promptLayout) } : {}),
             ...(record.readOnly === true ? { readOnly: true } : {}),
             paramsSnapshot,
@@ -534,6 +540,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                 if (paramsSnapshot[key] !== undefined && paramsSnapshot[key] !== '') params.set(key, String(paramsSnapshot[key]));
             });
             if (paramsSnapshot.rerollNonce) params.set('reroll_nonce', String(paramsSnapshot.rerollNonce));
+            if (paramsSnapshot.imageKey) params.set('image_key', String(paramsSnapshot.imageKey));
         }
         params.delete('token');
         params.set('character_id', String(paramsSnapshot.characterUuid || ''));

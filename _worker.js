@@ -15,6 +15,10 @@ const R2_PREFIX = `rp-sync/${DATASET_ID}`;
 const MANIFEST_KEY = `${R2_PREFIX}/manifest.json`;
 const CHUNK_PREFIX = `${R2_PREFIX}/chunks`;
 const MANIFEST_HISTORY_PREFIX = `${R2_PREFIX}/manifest-history`;
+// 魔改版（cy-2-u/rp）的云端数据：根清单和我们的清单在同一个位置，分页清单、数据包在旁边。
+// 「下载」能把它导进来；第一次上传会覆盖根清单，先另存一份，退回魔改版时放回原处就行。
+const FORK_ROOT_FORMAT = 'rp-sync-manifest-root-v1';
+const FORK_ROOT_BACKUP_KEY = `${R2_PREFIX}/fork-root-backup.json`;
 const APP_UPDATE_PREFIX = 'rp-app-update';
 const APP_UPDATE_MANIFEST_KEY = `${APP_UPDATE_PREFIX}/manifest.json`;
 const APP_RELEASE_CACHE_KEY = `${APP_UPDATE_PREFIX}/release-cache.json`;
@@ -125,6 +129,7 @@ const IMAGE_NON_GENERATION_QUERY_KEYS = new Set([
     'requested_provider',
     'reroll_nonce',
     'token',
+    'image_key',
     '_rph_retry'
 ]);
 const IMAGE_GENERATION_PARAM_NAME_PATTERN = /^[A-Za-z0-9_.~-]{1,80}$/;
@@ -679,6 +684,9 @@ async function handleImageRender(request, env) {
     const candidates = await buildImageLookupCandidates(params, token, request.method !== 'POST');
     const primary = candidates[0];
     if (!primary) return error('缺少有效的角色名称。', 400);
+    // 从魔改版迁移来的图：记录里存着它在 R2 的准确位置，按参数找不到时就用它（只用于显示，不用于生成）。
+    const migrated = request.method === 'POST' ? null : parseImageObjectKey(url.searchParams.get('image_key'));
+    if (migrated) candidates.push({ params, key: migrated.key, deletedKey: createImageDeletedKey(migrated.characterName, migrated.checksum) });
     const bucket = getBucket(env);
 
     // Check all provider candidates for tombstones before checking any cache.
@@ -1678,9 +1686,40 @@ function buildRemoteInfo(manifest, includeChunkManifest = false) {
     return remote;
 }
 
+// 只认出格式和取分页要用的字段，完整校验由页面按根清单的校验码做。
+function readForkRoot(value) {
+    if (value?.format !== FORK_ROOT_FORMAT || !/^[a-f0-9]{64}$/.test(value.checksum) || !Number.isInteger(value.pageCount)) return null;
+    const { version, checksum, updatedAt, totalBytes, packCount, entryCount, pageCount, pageRoot, bloomChecksum, snapshotFormat, schemaVersion } = value;
+    return { version, checksum, updatedAt, totalBytes, packCount, entryCount, pageCount, pageRoot, bloomChecksum, snapshotFormat, schemaVersion };
+}
+
 async function handleStatus(bucket, includeChunkManifest = false) {
-    const manifest = await getManifest(bucket);
-    return json({ ok: true, remote: manifest ? buildRemoteInfo(manifest, includeChunkManifest) : null });
+    const { manifest, rawManifest } = await getManifestState(bucket);
+    const fork = manifest ? null : readForkRoot(rawManifest);
+    return json({ ok: true, remote: manifest ? buildRemoteInfo(manifest, includeChunkManifest) : null, ...(fork ? { fork } : {}) });
+}
+
+async function handleForkPage(bucket, body) {
+    const index = Number(body.index);
+    if (!/^[a-f0-9]{64}$/.test(body.checksum) || !Number.isInteger(index) || index < 0 || index > 9999) return error('魔改版清单参数无效。');
+    const object = await bucket.get(`${R2_PREFIX}/manifests/${body.checksum}/${String(index).padStart(4, '0')}.json`);
+    let page = null;
+    try { page = object ? JSON.parse(await object.text()) : null; } catch (_) { /* 当作不存在 */ }
+    if (!Array.isArray(page?.packs)) return error('魔改版清单分页不存在。', 404);
+    return json({ ok: true, packs: page.packs });
+}
+
+async function handleForkPacks(bucket, body) {
+    const checksums = Array.isArray(body.checksums) ? body.checksums : [];
+    if (!checksums.length || checksums.length > MAX_PULL_CHUNKS || checksums.some((checksum) => !/^[a-f0-9]{64}$/.test(checksum))) {
+        return error('魔改版数据包参数无效。');
+    }
+    const parts = await Promise.all(checksums.map(async (checksum) => {
+        const object = await bucket.get(`${R2_PREFIX}/packs/${checksum}.bin`);
+        return object ? object.arrayBuffer() : null;
+    }));
+    if (parts.some((bytes) => !bytes)) return error('魔改版数据包不存在。', 404);
+    return new Response(new Blob(parts), { headers: { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' } });
 }
 
 async function handlePullJsonPart(bucket, body) {
@@ -1917,6 +1956,12 @@ async function handleUploadComplete(bucket, body, ctx) {
         onlyIf = { etagMatches: etag };
     } else {
         onlyIf = { etagDoesNotMatch: '*' };
+    }
+
+    if (!previous && readForkRoot(manifestState.rawManifest)) {
+        await bucket.put(FORK_ROOT_BACKUP_KEY, JSON.stringify(manifestState.rawManifest), {
+            httpMetadata: { contentType: 'application/json; charset=utf-8' }
+        });
     }
 
     const committedObject = await bucket.put(MANIFEST_KEY, JSON.stringify(committedManifest), {
@@ -2906,6 +2951,8 @@ async function handleJsonApi(request, env, ctx) {
     if (body.action === 'pull-manifest') return handleStatus(bucket, true);
     if (body.action === 'status') return handleStatus(bucket, false);
     if (body.action === 'pull-json-part') return handlePullJsonPart(bucket, body);
+    if (body.action === 'fork-page') return handleForkPage(bucket, body);
+    if (body.action === 'fork-packs') return handleForkPacks(bucket, body);
     if (body.action === 'upload-create') return handleUploadCreate(bucket, body);
     if (body.action === 'upload-complete') return handleUploadComplete(bucket, body, ctx);
     if (body.action === 'app-update-versions') return handleAppUpdateVersions(bucket, env, body);

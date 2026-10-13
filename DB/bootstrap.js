@@ -7,6 +7,8 @@
     const SNAPSHOT_SCHEMA_VERSION = typeof CompressionStream === 'function' ? GZIP_SCHEMA_VERSION : RAW_SCHEMA_VERSION;
     const isStreamSchema = (value) => Number(value) === RAW_SCHEMA_VERSION || Number(value) === GZIP_SCHEMA_VERSION;
     const LEGACY_SNAPSHOT_FORMAT = 'rp-sync-json-v3';
+    // 魔改版（cy-2-u/rp）的云端格式，只读：「下载」能导入，上传一律用我们的格式。
+    const FORK_SNAPSHOT_FORMAT = 'rp-sync-paged-jsonl-v4';
     const CHUNKER_PROFILE = 'rph-jsonl-cdc-fnv1a-v1';
     const DOWNLOAD_STAGING_DB = 'RPHubSyncStaging';
     const DOWNLOAD_CACHE_DB = 'RPHubSyncChunkCache';
@@ -1189,6 +1191,15 @@
                 }
             };
             request.onsuccess = () => resolve(request.result);
+        }).catch(async (error) => {
+            // 魔改版用同一个名字建过更高版本的临时库，里面只有它的临时数据：删掉重建。
+            if (error?.name !== 'VersionError') throw error;
+            await new Promise((resolve, reject) => {
+                const request = indexedDB.deleteDatabase(name);
+                request.onsuccess = resolve;
+                request.onerror = () => reject(request.error);
+            });
+            return openDownloadStagingDb(name);
         });
     }
 
@@ -1235,12 +1246,9 @@
 
     async function downloadSnapshotRange(remote, chunkManifest, start, count, options = {}) {
         const selected = chunkManifest.slice(start, start + count);
-        const response = await postSyncBinary({
-            action: 'pull-json-part',
-            version: Number(remote.version),
-            start,
-            count
-        }, options);
+        const response = await postSyncBinary(remote.snapshotFormat === FORK_SNAPSHOT_FORMAT
+            ? { action: 'fork-packs', checksums: selected.map((chunk) => chunk.checksum) }
+            : { action: 'pull-json-part', version: Number(remote.version), start, count }, options);
         const gzip = Number(remote.schemaVersion) === GZIP_SCHEMA_VERSION;
         const storedLengths = gzip ? String(response.partLengths || '').split(',').map(Number) : selected.map((chunk) => chunk.length);
         const expectedLength = storedLengths.reduce((sum, length) => sum + length, 0);
@@ -1976,11 +1984,117 @@
         }
         await lineReader.push(decoder.decode());
         await lineReader.finish();
-        consumer.finish();
+        await consumer.finish();
+    }
+
+    // 魔改版的清单：根清单 → 分页（每页最多 32 个数据包，校验码逐页串起来）→ 按内容 SHA-256 存放的数据包。
+    async function readForkPackList(root) {
+        const packs = [];
+        let chain = '0'.repeat(64);
+        for (let index = 0; index < Number(root.pageCount); index += 1) {
+            const { packs: items } = await postSync({ action: 'fork-page', checksum: root.checksum, index });
+            chain = await sha256(JSON.stringify(['rp-sync-manifest-page-v1', index, chain,
+                items.map((pack) => [pack.bucketKey, pack.group, pack.part, pack.checksum, pack.length, pack.entryCount])]));
+            packs.push(...items);
+        }
+        const checksum = await sha256(JSON.stringify([FORK_SNAPSHOT_FORMAT, 13, root.totalBytes, packs.length,
+            root.entryCount, root.pageCount, chain, root.bloomChecksum]));
+        if (chain !== root.pageRoot || checksum !== root.checksum) throw new Error('魔改版云端清单校验失败。');
+        return packs.map((pack, index) => ({ index, checksum: pack.checksum, length: pack.length }));
+    }
+
+    function readLocalPresets() {
+        return new Promise((resolve) => {
+            const request = indexedDB.open('RPHubDB');
+            request.onupgradeneeded = () => request.transaction.abort(); // 本机还没有数据库：不顺手建一个空的
+            request.onerror = () => resolve(undefined);
+            request.onsuccess = () => {
+                const db = request.result;
+                if (!db.objectStoreNames.contains('store')) { db.close(); resolve(undefined); return; }
+                const read = db.transaction('store').objectStore('store').get('rp_hub_presets');
+                read.onsuccess = () => { db.close(); resolve(read.result); };
+                read.onerror = () => { db.close(); resolve(undefined); };
+            };
+        });
+    }
+
+    // 魔改版的数据包里是同一套记录（每行一条，顺序也一样），只是没有我们的开头、本地设置结束和结尾标记，
+    // 数组的长度写在数组结尾而不是开头，还夹着它自己的本地设置。这里补上标记、把长度挪到开头、
+    // 去掉它自己的设置，再交给原来的校验和恢复。
+    // 它从不上传 API 预设：把本机的预设当成云端有的记录写回，不然恢复会当成云端没有而删掉。
+    class ForkSnapshotLines {
+        constructor(target, presets) {
+            this.target = target;
+            this.presets = presets;
+            this.recordCount = 0;
+            this.started = false;
+            this.localStorageEnded = false;
+            this.array = null;
+        }
+
+        async consume(lineText) {
+            let line;
+            try { line = JSON.parse(lineText); } catch (_) { throw new Error('魔改版数据包记录格式不正确。'); }
+            await this.start();
+            if (line?.type === 'recordArrayStart') {
+                this.array = { start: line, items: [] };
+                return;
+            }
+            if (this.array) {
+                if (line?.type === 'recordArrayItem') {
+                    this.array.items.push(lineText);
+                    return;
+                }
+                const { start, items } = this.array;
+                if (line?.type !== 'recordArrayEnd' || Number(line.length) !== items.length) throw new Error('魔改版数组记录不完整。');
+                this.array = null;
+                await this.emit({ ...start, length: items.length });
+                for (const text of items) await this.emit({ type: 'recordArrayItem' }, text);
+            }
+            if (line?.type === 'localStorage') {
+                if (!isAppLocalStorageKey(String(line.key))) return;
+            } else {
+                await this.endLocalStorage();
+            }
+            const presetsStore = line?.database === 'RPHubDB' && line.store === 'store';
+            if (presetsStore && line.type === 'record' && line.key === 'rp_hub_presets') this.presets = undefined;
+            if (presetsStore && line.type === 'storeEnd' && this.presets !== undefined) {
+                await this.emit({ type: 'record', database: 'RPHubDB', store: 'store', key: 'rp_hub_presets', value: this.presets });
+            }
+            await this.emit(line, lineText);
+        }
+
+        async start() {
+            if (this.started) return;
+            this.started = true;
+            await this.emit({ type: 'snapshot', format: SNAPSHOT_FORMAT, schemaVersion: RAW_SCHEMA_VERSION });
+        }
+
+        async endLocalStorage() {
+            if (this.localStorageEnded) return;
+            this.localStorageEnded = true;
+            await this.emit({ type: 'localStorageEnd' });
+        }
+
+        async emit(line, text = JSON.stringify(line)) {
+            if (['localStorage', 'record', 'recordArrayEnd'].includes(line.type)) this.recordCount += 1;
+            await this.target.consume(text);
+        }
+
+        async finish() {
+            await this.start();
+            await this.endLocalStorage();
+            this.target.expectedRecordCount = this.recordCount;
+            await this.emit({ type: 'snapshotEnd', recordCount: this.recordCount });
+            this.target.finish();
+        }
     }
 
     async function restoreStreamSnapshot(remote, onRestoreStart) {
-        const chunkManifest = await validateStreamSnapshotManifest(remote);
+        const fork = remote.snapshotFormat === FORK_SNAPSHOT_FORMAT;
+        const chunkManifest = fork ? await readForkPackList(remote) : await validateStreamSnapshotManifest(remote);
+        const presets = fork ? await readLocalPresets() : undefined;
+        const lines = (consumer) => (fork ? new ForkSnapshotLines(consumer, presets) : consumer);
         let useCache = state.syncLockHeld;
         for (let attempt = 0; attempt < 2; attempt += 1) {
             let stagingDb;
@@ -2012,7 +2126,7 @@
                     await pruneDownloadCache(stagingDb, keep);
                     await downloadSnapshotToStaging(remote, chunkManifest, stagingDb, { present: keep, verified });
                 } : null;
-                await parseStagedStreamSnapshot(stagingDb, chunkManifest, new StreamSnapshotValidator(remote.recordCount), {
+                await parseStagedStreamSnapshot(stagingDb, chunkManifest, lines(new StreamSnapshotValidator(remote.recordCount)), {
                     repair, verified,
                     onProgress: (completed, total) => {
                         const percent = Math.round((completed / total) * 100);
@@ -2021,9 +2135,10 @@
                 });
                 updateProgress(100, '本地分片校验完成，正在确认服务器版本...');
                 const confirmation = await postSync({ action: 'pull-manifest' });
-                if (!confirmation.remote
-                    || Number(confirmation.remote.version) !== Number(remote.version)
-                    || confirmation.remote.checksum !== remote.checksum) {
+                const current = fork ? confirmation.fork : confirmation.remote;
+                if (!current
+                    || Number(current.version) !== Number(remote.version)
+                    || current.checksum !== remote.checksum) {
                     throw Object.assign(new Error('服务器同步版本已变化，请重新拉取。'), { status: 409 });
                 }
                 updateProgress(0, '服务器数据校验完成，正在恢复本地数据...');
@@ -2031,7 +2146,7 @@
                 if (typeof onRestoreStart === 'function') onRestoreStart();
                 const restorer = new StreamSnapshotRestorer(remote.recordCount);
                 try {
-                    await parseStagedStreamSnapshot(stagingDb, chunkManifest, restorer, {
+                    await parseStagedStreamSnapshot(stagingDb, chunkManifest, lines(restorer), {
                         verifyChecksum: false,
                         onProgress: (completed, total) => {
                             const percent = Math.round((completed / total) * 100);
@@ -2901,7 +3016,7 @@
         try {
             updateProgress(0, '正在读取服务器同步清单...');
             const manifestResponse = await postSync({ action: 'pull-manifest' });
-            const remote = manifestResponse.remote;
+            const remote = manifestResponse.remote || manifestResponse.fork;
             if (!remote) {
                 updateProgress(100, '服务器当前没有可同步的数据。');
                 setActionButtonsDisabled(false);
@@ -2915,7 +3030,8 @@
                 throw new Error('服务器快照格式不受支持。');
             }
 
-            if (remote.snapshotFormat === SNAPSHOT_FORMAT && isStreamSchema(remote.schemaVersion)) {
+            if ((remote.snapshotFormat === SNAPSHOT_FORMAT && isStreamSchema(remote.schemaVersion))
+                || remote.snapshotFormat === FORK_SNAPSHOT_FORMAT) {
                 await restoreStreamSnapshot(remote, () => {
                     globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS = true;
                     restoreStarted = true;
@@ -2995,6 +3111,16 @@
                 && Number(remoteStatus.remote.schemaVersion) === SNAPSHOT_SCHEMA_VERSION
                 && remoteStatus.remote.checksum === snapshot.checksum) {
                 updateProgress(100, '服务器已是同一份数据，无需重复上传。');
+                setActionButtonsDisabled(false);
+                return;
+            }
+            // 云端还是魔改版的数据：这台设备不一定是最新的，先问一句（魔改版的根清单会另存，不会丢）。
+            if (remoteStatus?.fork && !await openInlineConfirm({
+                title: '云端还是魔改版的数据',
+                message: `魔改版最后一次同步在 ${new Date(remoteStatus.fork.updatedAt).toLocaleString('zh-CN')}。上传会用这台设备的数据替换它。这台设备如果不是最新的，先点「下载」把云端的数据导进来。`,
+                confirmText: '仍然上传'
+            })) {
+                updateProgress(100, '已取消上传。');
                 setActionButtonsDisabled(false);
                 return;
             }
