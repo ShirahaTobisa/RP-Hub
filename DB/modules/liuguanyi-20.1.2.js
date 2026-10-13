@@ -1,7 +1,7 @@
-// Adapted from RP-Hub 终极美化 & 全功能增强 v20.0.3, author 苏萝萝.
+// Adapted from RP-Hub 终极美化 & 全功能增强 v20.1.2, author 苏萝萝.
 // Workshop edition: no image-generation integration; persistent data supports cloud sync.
 RPHubSDK.register({
-    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.0.3-rph.1', requiresApi: 2,
+    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.1.2-rph.1', requiresApi: 2,
     async init(ctx) {
     'use strict';
     if (globalThis.__rphLiuguanyiInitialized) return;
@@ -915,6 +915,12 @@ function getCharKey() {
             span.textContent = modelId;
             span.className = 'text-gray-700 font-semibold';
         }
+    }
+
+    function stamp() {
+        const d = new Date();
+        const p = n => String(n).padStart(2, '0');
+        return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '_' + p(d.getHours()) + p(d.getMinutes());
     }
 
     // ================= 📝 模块：经典记忆可编辑（真生效，AI 收到编辑后的 summary） =================
@@ -2297,15 +2303,14 @@ function injectGramophoneButton() {
     // ================= 📝 模块：全屏输入编辑器（长文畅写，回车不误发） =================
     function injectFullscreenComposer() {
         // ===== V20 原生派（官方 2.0.0） =====
-        // 官方输入区重构为 .input-island > textarea.island-input + .island-toolbar，
-        // 旧版依赖的 .flex.items-end 与 nextElementSibling 已完全失效（nextElementSibling 现在是宽度巨大的工具栏，
-        // 会把按钮推出屏幕）。策略：全屏按钮直接作为原生 .island-button
-        // 挂载进工具栏左侧工具组，完全跟随官方方块玻璃风格，不再做任何绝对定位。
+        // 官方输入区为 .input-island(relative) > textarea.island-input + .island-toolbar，
+        // 工具栏内部是 space-between：左组=工具图标，右组=快捷面板 + 发送键 .island-send。
+        // 策略：全屏按钮不再挤进左侧工具组（那样会贴着一排小工具最右），
+        // 而是直接挂到 .input-island 本体，由 CSS 绝对定位到右上角，
+        // 右缘与右下角的发送键对齐、同尺寸，形成"上方全屏 / 下方发送"的纵向对称。
         const island = document.querySelector('.input-island');
         if (!island) return;
         if (island.querySelector('.sakura-fs-btn')) return;
-        const toolbar = island.querySelector('.island-toolbar');
-        if (!toolbar) return;
         const btn = document.createElement('button');
         btn.type = 'button';
         // 复用官方 .island-button 尺寸与动效，仅额外挂 .sakura-fs-btn 作为事件委托钩子
@@ -2313,10 +2318,191 @@ function injectGramophoneButton() {
         btn.title = '全屏编辑';
         btn.setAttribute('aria-label', '全屏编辑');
         btn.innerHTML = '<svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 3H5a2 2 0 0 0-2 2v3"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 8V5a2 2 0 0 0-2-2h-3"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 16v3a2 2 0 0 0 2 2h3"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>';
-        // 工具栏左侧第一个子容器就是工具组（flex items-center gap-0.5）
-        const leftGroup = toolbar.firstElementChild;
-        if (leftGroup) leftGroup.appendChild(btn);
-        else toolbar.appendChild(btn);
+        // 挂到输入岛本体，交给 CSS 定位到右上角（与发送键上下对称）
+        island.appendChild(btn);
+    }
+
+    // ================= 🔍 模块：条目关键词搜索（世界书 / 预设 / 正则） =================
+    // 在这三个页面右上角注入放大镜按钮，弹出搜索框，跨条目全文匹配并高亮，
+    // 顶部实时显示「命中 N 条 / 共 M 条」，点击结果直接跳进该条目的原生编辑弹窗。
+    const SAKURA_ENTRY_SEARCH_CLS = 'p-2.5 bg-white text-gray-600 rounded-xl border border-gray-200 shadow-sm active:scale-95 transition-all animate-fade-in';
+
+    function sakuraUnwrapRef(v) {
+        return (v && typeof v === 'object' && 'value' in v) ? v.value : v;
+    }
+
+    function sakuraEscapeHtml(s) {
+        return String(s == null ? '' : s)
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/"/g, '&#34;').replace(/'/g, '&#39;');
+    }
+
+    // 按字段白名单精确拼接可搜索文本：只搜用户指定的字段，避免杂项字段（role/enabled/keys…）造成误命中
+    function sakuraPick(obj, ...keys) {
+        if (!obj) return '';
+        for (const k of keys) {
+            const v = obj[k];
+            if (typeof v === 'string' && v) return v;
+        }
+        return '';
+    }
+
+    const SAKURA_ENTRY_SEARCH_DEFS = [
+        {
+            key: 'worldinfo', headerTitle: '世界书', arrKey: 'worldInfo', editFn: 'editWorldInfo', label: '世界书',
+            nameOf: e => sakuraPick(e, 'comment', 'name') || '未命名条目',
+            // 世界书命中：条目名称 + 条目内容
+            searchOf: e => [sakuraPick(e, 'comment', 'name'), sakuraPick(e, 'content')].join('\n')
+        },
+        {
+            key: 'presets', headerTitle: '预设管理', arrKey: 'presets', editFn: 'editPreset', label: '预设',
+            nameOf: e => sakuraPick(e, 'name') || '未命名预设',
+            // 预设命中：条目名称 + 条目内容
+            searchOf: e => [sakuraPick(e, 'name'), sakuraPick(e, 'content')].join('\n')
+        },
+        {
+            key: 'regex', headerTitle: '正则脚本', arrKey: 'regexScripts', editFn: 'editRegex', label: '正则脚本',
+            nameOf: e => sakuraPick(e, 'name', 'scriptName') || '未命名脚本',
+            // 正则命中：名称 + 表达式(regex/findRegex) + 替换内容(replacement/replaceString)
+            searchOf: e => [
+                sakuraPick(e, 'name', 'scriptName'),
+                sakuraPick(e, 'regex', 'findRegex'),
+                sakuraPick(e, 'replacement', 'replaceString')
+            ].join('\n')
+        }
+    ];
+
+    function injectEntrySearch() {
+        const headers = document.querySelectorAll('settings-page-header, .settings-page-header');
+        for (const hdr of headers) {
+            const txt = hdr.textContent || '';
+            const def = SAKURA_ENTRY_SEARCH_DEFS.find(d => txt.includes(d.headerTitle));
+            if (!def) continue;
+            if (hdr.querySelector('.sakura-entry-search-btn')) continue;
+            const wrapper = hdr.querySelector('div.space-x-2');
+            if (!wrapper) continue;
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = SAKURA_ENTRY_SEARCH_CLS + ' sakura-entry-search-btn';
+            btn.title = `搜索${def.label}`;
+            btn.setAttribute('aria-label', `搜索${def.label}`);
+            btn.innerHTML = '<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"></path></svg>';
+            btn.addEventListener('click', e => {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                openEntrySearch(def.key);
+            });
+            wrapper.insertBefore(btn, wrapper.firstChild);
+        }
+    }
+
+    function openEntrySearch(kind) {
+        const st = getVueState();
+        if (!st) { alert('无法访问数据'); return; }
+        const def = SAKURA_ENTRY_SEARCH_DEFS.find(d => d.key === kind);
+        if (!def) return;
+        const arr = sakuraUnwrapRef(st[def.arrKey]);
+        const list = Array.isArray(arr) ? arr : [];
+        const idx = list.map((entry, i) => ({
+            index: i,
+            name: String(def.nameOf(entry) || ''),
+            text: String(def.searchOf(entry) || '')
+        }));
+
+        const exist = document.getElementById('sakura-entry-search');
+        if (exist) exist.remove();
+        const mask = document.createElement('div');
+        mask.id = 'sakura-entry-search';
+        mask.className = 'sakura-mask';
+        mask.style.zIndex = '99999';
+        const box = document.createElement('div');
+        box.className = 'sakura-box';
+        const head = document.createElement('div');
+        head.className = 'sakura-head';
+        head.innerHTML = `
+            <div class="sakura-modal-topbar">
+                <div class="sakura-title-with-icon">
+                    <svg class="sakura-title-svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35M17 11a6 6 0 11-12 0 6 6 0 0112 0z"/></svg>
+                    <span>搜索${def.label}</span>
+                </div>
+                <button type="button" class="sakura-close-btn" title="关闭">✕</button>
+            </div>
+            <div class="sakura-sub">输入关键词，命中条目实时列出 · 点击直接跳转编辑</div>
+        `;
+        const body = document.createElement('div');
+        body.className = 'sakura-body';
+        const searchWrap = document.createElement('div');
+        searchWrap.className = 'sakura-es-search';
+        const input = document.createElement('input');
+        input.type = 'search';
+        input.className = 'sakura-es-input';
+        input.placeholder = '输入关键词，例如：神化';
+        input.setAttribute('autocomplete', 'off');
+        searchWrap.appendChild(input);
+        const countEl = document.createElement('div');
+        countEl.className = 'sakura-es-count';
+        const resultEl = document.createElement('div');
+        resultEl.className = 'sakura-es-results custom-scrollbar';
+        body.appendChild(searchWrap);
+        body.appendChild(countEl);
+        body.appendChild(resultEl);
+        box.appendChild(head);
+        box.appendChild(body);
+        mask.appendChild(box);
+
+        const render = () => {
+            const q = input.value.trim().toLowerCase();
+            resultEl.innerHTML = '';
+            if (!q) {
+                countEl.textContent = `共 ${list.length} 条 · 输入关键词开始搜索`;
+                return;
+            }
+            const hits = idx.filter(it => it.text.toLowerCase().includes(q));
+            countEl.textContent = `命中 ${hits.length} 条 / 共 ${list.length} 条`;
+            if (!hits.length) {
+                const empty = document.createElement('div');
+                empty.className = 'sakura-es-empty';
+                empty.textContent = '没有匹配的条目';
+                resultEl.appendChild(empty);
+                return;
+            }
+            const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const re = new RegExp(esc, 'ig');
+            const hl = str => str.replace(re, m => `<mark>${m}</mark>`);
+            hits.forEach(hit => {
+                const row = document.createElement('div');
+                row.className = 'sakura-es-item';
+                const low = hit.text.toLowerCase();
+                const pos = low.indexOf(q);
+                let snippet;
+                if (pos >= 0) {
+                    const start = Math.max(0, pos - 24);
+                    const end = Math.min(hit.text.length, pos + q.length + 24);
+                    snippet = (start > 0 ? '…' : '') + hit.text.slice(start, end) + (end < hit.text.length ? '…' : '');
+                } else {
+                    snippet = hit.text.slice(0, 60);
+                }
+                row.innerHTML = `<div class="sakura-es-name">${hl(sakuraEscapeHtml(hit.name))}</div><div class="sakura-es-snippet">${hl(sakuraEscapeHtml(snippet))}</div>`;
+                row.addEventListener('click', () => {
+                    mask.remove();
+                    try {
+                        if (typeof st[def.editFn] === 'function') st[def.editFn](hit.index);
+                    } catch (err) { console.warn('[苏萝萝] 搜索跳转失败:', err); }
+                });
+                resultEl.appendChild(row);
+            });
+        };
+        let timer = null;
+        input.addEventListener('input', () => {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(render, 120);
+        });
+        input.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); render(); } });
+        head.querySelector('.sakura-close-btn').onclick = () => mask.remove();
+        mask.addEventListener('click', e => { if (e.target === mask) mask.remove(); });
+        document.body.appendChild(mask);
+        render();
+        try { input.focus(); } catch (e) {}
     }
 
     function openFullscreenComposer() {
@@ -2894,6 +3080,14 @@ function injectGramophoneButton() {
             openFullscreenComposer();
             return;
         }
+        const vol = t.closest('.sakura-bk-vol');
+        if (vol) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            e.stopPropagation();
+            doExportVolumes(vol);
+            return;
+        }
 
         const modelBtn = t.closest('.settings-model-button');
         if (modelBtn) {
@@ -2979,6 +3173,30 @@ function injectGramophoneButton() {
     .sakura-note-area:focus{border-color:#d6859b!important;box-shadow:0 0 0 3px rgba(214,133,155,.13)!important}
     .sakura-note-area::placeholder{color:#b7a0aa!important}
     .sakura-note-hint{color:#a9687e!important;font-weight:600!important}
+    /* ===== 🔍 条目搜索弹窗 ===== */
+    #sakura-entry-search .sakura-box{display:flex!important;flex-direction:column!important;width:min(600px,calc(100vw - 24px))!important;max-width:600px!important;max-height:calc(100dvh - 40px)!important;padding:0!important;overflow:hidden!important}
+    #sakura-entry-search .sakura-body{display:flex!important;flex-direction:column!important;gap:10px!important;min-height:0!important;flex:1!important}
+    .sakura-es-search{position:relative!important}
+    .sakura-es-input{width:100%!important;box-sizing:border-box!important;padding:11px 14px!important;border:1px solid #ead6dd!important;border-radius:12px!important;background:#fff!important;color:#4a3540!important;font-size:14px!important;outline:none!important;transition:border-color .15s ease,box-shadow .15s ease!important}
+    .sakura-es-input:focus{border-color:#d6859b!important;box-shadow:0 0 0 3px rgba(214,133,155,.13)!important}
+    .sakura-es-input::placeholder{color:#b7a0aa!important}
+    .sakura-es-count{font-size:11.5px!important;color:#a27b89!important;font-weight:600!important;padding:0 2px!important}
+    .sakura-es-results{flex:1!important;min-height:120px!important;max-height:min(52vh,460px)!important;overflow-y:auto!important;display:flex!important;flex-direction:column!important;gap:6px!important}
+    .sakura-es-item{padding:10px 12px!important;border:1px solid rgba(235,210,218,.85)!important;border-radius:11px!important;background:#fffafd!important;cursor:pointer!important;transition:border-color .15s ease,background-color .15s ease,transform .12s ease!important;-webkit-tap-highlight-color:transparent!important}
+    .sakura-es-item:active{transform:scale(.985)!important;background:#fff2f6!important}
+    @media(hover:hover){.sakura-es-item:hover{border-color:#d6859b!important;background:#fff2f6!important}}
+    .sakura-es-name{font-size:13px!important;font-weight:700!important;color:#5d3044!important;margin-bottom:4px!important;overflow:hidden!important;text-overflow:ellipsis!important;white-space:nowrap!important}
+    .sakura-es-snippet{font-size:11.5px!important;line-height:1.6!important;color:#8a6b76!important;word-break:break-word!important}
+    .sakura-es-item mark{background:rgba(255,107,149,.28)!important;color:#c65373!important;border-radius:3px!important;padding:0 2px!important;font-weight:700!important}
+    .sakura-es-empty{padding:40px 16px!important;text-align:center!important;color:#b7a0aa!important;font-size:12.5px!important}
+    :root[data-sakura-night="1"] #sakura-entry-search .sakura-head{background:#2c2228!important;border-bottom-color:rgba(255,255,255,.08)!important}
+    :root[data-sakura-night="1"] #sakura-entry-search .sakura-body{background:#241c21!important}
+    :root[data-sakura-night="1"] .sakura-es-input{background:#332a30!important;border-color:rgba(255,255,255,.12)!important;color:#ececec!important}
+    :root[data-sakura-night="1"] .sakura-es-item{background:#2c2228!important;border-color:rgba(255,255,255,.1)!important}
+    :root[data-sakura-night="1"] .sakura-es-item:active{background:#3a2e36!important}
+    :root[data-sakura-night="1"] .sakura-es-name{color:#f0d8e2!important}
+    :root[data-sakura-night="1"] .sakura-es-snippet{color:#b79aa6!important}
+    :root[data-sakura-night="1"] .sakura-es-count{color:#b79aa6!important}
     .sakura-btn{border:1px solid #e6cbd4!important;border-radius:10px!important;background:#fff!important;color:#805064!important;box-shadow:none!important;transition:background .15s ease,border-color .15s ease,color .15s ease,transform .12s ease!important}
     .sakura-btn:hover{background:#fff4f7!important;border-color:#d99aae!important;color:#a24d6c!important}
     .sakura-btn--main{background:#c95f7d!important;border-color:#c95f7d!important;color:#fff!important;box-shadow:0 3px 10px rgba(201,95,125,.18)!important}
@@ -3025,6 +3243,8 @@ function injectGramophoneButton() {
     .sidebar-nav-button.bg-primary-50::before,.advanced-nav.is-open .advanced-nav-trigger::before{content:''!important;display:block!important;position:absolute!important;left:.35rem!important;top:50%!important;width:3.5px!important;height:1.25rem!important;border-radius:999px!important;background:linear-gradient(180deg,#ff8da8,#ff4d79)!important;transform:translateY(-50%)!important;box-shadow:0 0 8px rgba(255,77,121,.6)!important}
     .advanced-nav-chevron{color:#ff6b95!important;transition:transform .28s cubic-bezier(.22,1,.36,1)!important}
     .advanced-nav-item.bg-primary-50{background:rgba(255,235,242,.75)!important;color:#b03a68!important;border-radius:12px!important}
+    .sakura-bk-vol{background:linear-gradient(135deg,#c9a7ff 0%,#a06bff 100%)!important;color:#ffffff!important;border:1px solid #a06bff!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 4px 14px rgba(160,107,255,.35)!important;text-shadow:0 1px 2px rgba(0,0,0,.18)!important;transition:all .15s cubic-bezier(.34,1.56,.64,1)!important}
+    .sakura-bk-vol:active{transform:scale(.94)!important}
     .item-action-button{color:#c79cab!important;border-radius:0.6rem!important;transition:all .18s cubic-bezier(.34,1.56,.64,1)!important}
     .item-action-button--edit:hover,.item-action-button--edit:active{background:rgba(255,240,245,.95)!important;color:#ff4d80!important;transform:scale(1.1)!important;box-shadow:0 2px 8px rgba(255,107,149,.2)!important}
     .item-action-button--delete:hover,.item-action-button--delete:active{background:#fff0f2!important;color:#e83a5e!important;transform:scale(1.1)!important}
@@ -3152,7 +3372,7 @@ function injectGramophoneButton() {
     [class*="text-teal-"],[class*="text-emerald-"]{color:#ff4d79!important}
     [class*="bg-teal-50"],[class*="bg-emerald-50"]{background:linear-gradient(135deg,rgba(255,240,245,.95),rgba(255,225,235,.88))!important;color:#d43b60!important}
     [class*="hover:border-teal-"],[class*="border-teal-"]{border-color:#ffb3c6!important}
-    .toast-item,.toast-stack > div{min-width:300px!important;padding:12px 24px!important;background:rgba(255,255,255,.94)!important;backdrop-filter:blur(16px) saturate(1.4)!important;-webkit-backdrop-filter:blur(16px) saturate(1.4)!important;border:1px solid #ffccd5!important;border-radius:9999px!important;box-shadow:0 8px 24px rgba(0,0,0,.06),0 2px 8px rgba(255,107,149,.15)!important;color:#374151!important;white-space:nowrap!important}.toast-item svg{color:#ff6b95!important;filter:drop-shadow(0 0 4px rgba(255,107,149,.4))!important}.toast-item.bg-red-50 svg{color:#e83a5e!important}.typing-indicator{background:transparent!important;padding:4px 6px!important}.typing-indicator span{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;box-shadow:0 0 6px rgba(255,107,149,.6)!important;width:8px!important;height:8px!important}.typing-timer-badge{background:rgba(255,245,248,.75)!important;border-color:rgba(255,182,193,.5)!important;color:#9e4668!important}.cot-ui,.native-thinking-card{background:rgba(255,255,255,.9)!important;border:1.5px solid #ffccd5!important;border-radius:18px!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.9)!important}.cot-ui.is-live,.native-thinking-card.is-live{border-color:#ff6b95!important;animation:sakuraPulse 2.5s infinite ease-in-out!important}.cot-ui.is-open,.native-thinking-card.is-open{border-color:#ffb3c6!important;box-shadow:0 4px 14px rgba(255,107,149,.15)!important}.cot-ui.is-open .cot-header{background:rgba(255,240,245,.8)!important;color:#ff6b95!important}.cot-header:hover{background:rgba(255,240,245,.6)!important;color:#ff6b95!important}.thinking-summary-dots,.live-dots,.ui-build-dots{color:#ff6b95!important}.thinking-summary-dots i,.live-dots i,.ui-build-dots i{background:#ff6b95!important;box-shadow:0 0 4px rgba(255,107,149,.6)!important}.thinking-summary-bulb{color:#ff7597!important}.settings-create-button,button.settings-create-button{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;border:1px solid #ffccd5!important;color:#ffffff!important;box-shadow:0 4px 12px rgba(255,107,149,.35)!important;border-radius:0.75rem!important;transition:all .15s ease!important}.settings-create-button:active{transform:scale(0.92)!important;background:linear-gradient(135deg,#ff7597 0%,#e83a5e 100%)!important}[class~="bg-primary-500"],[class~="bg-primary-600"],[class~="bg-primary-700"],[class~="bg-blue-500"],[class~="bg-blue-600"],[class~="bg-indigo-500"],[class~="bg-indigo-600"],[class~="bg-violet-500"],[class~="bg-violet-600"],[class~="from-primary-400"],[class~="from-primary-500"],[class~="from-primary-600"],[class~="to-primary-400"],[class~="to-primary-500"],[class~="to-primary-600"],[class~="from-blue-400"],[class~="from-blue-500"],[class~="from-indigo-400"],[class~="from-indigo-500"],[class~="to-indigo-400"],[class~="to-indigo-500"],[class~="to-violet-400"],[class~="to-violet-500"],[class~="from-purple-400"],[class~="from-purple-500"],.modal-primary-button{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;border-color:#ff6b95!important;color:#ffffff!important}[class~="bg-primary-50"],[class~="bg-primary-100"],[class~="bg-blue-50"],[class~="bg-blue-100"],[class~="bg-indigo-50"],[class~="bg-indigo-100"],.sidebar-nav-button.bg-primary-50{background:rgba(255,240,245,.9)!important;border-color:rgba(255,182,193,.6)!important;box-shadow:inset 0 0 0 1px rgba(255,107,149,.2)!important}div[data-role="user"] .msg-bubble-glass{background:linear-gradient(135deg,rgba(255,242,246,.96),rgba(255,230,238,.92))!important;border:1.5px solid #ffb3c6!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 4px 14px rgba(255,107,149,.15)!important;color:#4a2030!important}div[data-role="user"] .markdown-body{color:inherit!important}[class~="text-primary-400"],[class~="text-primary-500"],[class~="text-primary-600"],[class~="text-primary-700"],[class~="text-primary-800"],[class~="text-primary-900"],[class~="text-blue-400"],[class~="text-blue-500"],[class~="text-blue-600"],[class~="text-indigo-400"],[class~="text-indigo-500"],[class~="text-indigo-600"],[class~="text-violet-400"],[class~="text-violet-500"],[class~="text-violet-600"],.segmented-switch__option.is-active,.thinking-summary-dots,.settings-help-trigger:hover,.settings-help-trigger.is-open{color:#ff6b95!important}[class~="border-primary-200"],[class~="border-primary-300"],[class~="border-primary-400"],[class~="border-primary-500"],[class~="border-blue-300"],[class~="border-blue-400"],[class~="border-blue-500"],[class~="border-indigo-300"],[class~="border-indigo-400"],[class~="border-indigo-500"],.settings-help-trigger:hover{border-color:#ffb3c6!important}[class~="ring-primary-100"],[class~="ring-primary-200"],[class~="ring-primary-300"],[class~="ring-primary-400"],[class~="ring-primary-500"],[class~="ring-blue-300"],[class~="ring-blue-400"],[class~="ring-indigo-300"],[class~="ring-indigo-400"],.settings-model-button:hover,.settings-model-button:focus-visible{--tw-ring-color:rgba(255,107,149,.35)!important;box-shadow:0 0 0 3px rgba(255,107,149,.25)!important;border-color:#ffb3c6!important}.sidebar-nav-button.bg-primary-50::before{background:#ff6b95!important}input[type="checkbox"]:checked,input[type="radio"]:checked{background-color:#ff6b95!important;border-color:#ff6b95!important}.toggle:checked,[class*="toggle-primary"]:checked,[class*="toggle-accent"]:checked{background-color:#ff6b95!important;border-color:#ff6b95!important}.settings-toggle-input:checked + .settings-toggle,.settings-toggle-input:checked + .settings-toggle--indigo,.settings-toggle-input:checked + .settings-toggle--solid,.settings-toggle-input:checked + .settings-toggle--compact{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;border-color:#ff6b95!important}div.w-7.h-7.rounded-full.bg-blue-600,div.w-9.h-9.rounded-full.bg-blue-600,div[class*="rounded-full"][class*="bg-blue-"],div.w-9.h-9.rounded-full div{background:linear-gradient(135deg,#ff9ebb,#ff6b95)!important;color:#fff!important}div.h-3.rounded-full.bg-gray-200 div.bg-primary-500{background:linear-gradient(90deg,#ffb3c6,#ff6b95)!important;box-shadow:0 0 8px rgba(255,107,149,.5)!important}span.w-1.h-5.rounded-full{background:linear-gradient(180deg,#ff9ebb,#ff6b95)!important;box-shadow:0 0 4px rgba(255,107,149,.6)!important}input[type="range"],input[type="range"].compact-range{accent-color:#ff6b95!important}input[type="range"]::-webkit-slider-runnable-track,input[type="range"].compact-range::-webkit-slider-runnable-track{background:rgba(255,200,215,.6)!important;height:6px!important;border-radius:3px!important}input[type="range"]::-webkit-slider-thumb,input[type="range"].compact-range::-webkit-slider-thumb{background:#ff6b95!important;border:2px solid #ffffff!important;box-shadow:0 2px 6px rgba(255,107,149,.45)!important;margin-top:-5px!important;border-radius:50%!important}/* ===== V20 原生派：输入区完全交还官方 .input-island 玻璃岛体系 ===== 删除旧版对 textarea.chat-input-scrollbar 的粉色圆角强制覆盖、button[title*=发送]的圆形+猫爪伪元素、伪造 placeholder、中止按钮粉圆 —— 均基于 1.9.8 圆形按钮，2.0.0 已改为方形 island，保留会造成混血与暗夜割裂。官方 theme.css 变量体系自会渲染。 */
+    .toast-item,.toast-stack > div{min-width:280px!important;padding:6px 22px!important;background:rgba(255,255,255,.94)!important;backdrop-filter:blur(16px) saturate(1.4)!important;-webkit-backdrop-filter:blur(16px) saturate(1.4)!important;border:1px solid #ffccd5!important;border-radius:9999px!important;box-shadow:0 8px 24px rgba(0,0,0,.06),0 2px 8px rgba(255,107,149,.15)!important;color:#374151!important;white-space:nowrap!important}.toast-item svg{color:#ff6b95!important;filter:drop-shadow(0 0 4px rgba(255,107,149,.4))!important}.toast-item.bg-red-50 svg{color:#e83a5e!important}.typing-indicator{background:transparent!important;padding:4px 6px!important}.typing-indicator span{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;box-shadow:0 0 6px rgba(255,107,149,.6)!important;width:8px!important;height:8px!important}.typing-timer-badge{background:rgba(255,245,248,.75)!important;border-color:rgba(255,182,193,.5)!important;color:#9e4668!important}.cot-ui,.native-thinking-card{background:rgba(255,255,255,.9)!important;border:1.5px solid #ffccd5!important;border-radius:18px!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.9)!important}.cot-ui.is-live,.native-thinking-card.is-live{border-color:#ff6b95!important;animation:sakuraPulse 2.5s infinite ease-in-out!important}.cot-ui.is-open,.native-thinking-card.is-open{border-color:#ffb3c6!important;box-shadow:0 4px 14px rgba(255,107,149,.15)!important}.cot-ui.is-open .cot-header{background:rgba(255,240,245,.8)!important;color:#ff6b95!important}.cot-header:hover{background:rgba(255,240,245,.6)!important;color:#ff6b95!important}.thinking-summary-dots,.live-dots,.ui-build-dots{color:#ff6b95!important}.thinking-summary-dots i,.live-dots i,.ui-build-dots i{background:#ff6b95!important;box-shadow:0 0 4px rgba(255,107,149,.6)!important}.thinking-summary-bulb{color:#ff7597!important}.settings-create-button,button.settings-create-button{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;border:1px solid #ffccd5!important;color:#ffffff!important;box-shadow:0 4px 12px rgba(255,107,149,.35)!important;border-radius:0.75rem!important;transition:all .15s ease!important}.settings-create-button:active{transform:scale(0.92)!important;background:linear-gradient(135deg,#ff7597 0%,#e83a5e 100%)!important}[class~="bg-primary-500"],[class~="bg-primary-600"],[class~="bg-primary-700"],[class~="bg-blue-500"],[class~="bg-blue-600"],[class~="bg-indigo-500"],[class~="bg-indigo-600"],[class~="bg-violet-500"],[class~="bg-violet-600"],[class~="from-primary-400"],[class~="from-primary-500"],[class~="from-primary-600"],[class~="to-primary-400"],[class~="to-primary-500"],[class~="to-primary-600"],[class~="from-blue-400"],[class~="from-blue-500"],[class~="from-indigo-400"],[class~="from-indigo-500"],[class~="to-indigo-400"],[class~="to-indigo-500"],[class~="to-violet-400"],[class~="to-violet-500"],[class~="from-purple-400"],[class~="from-purple-500"],.modal-primary-button{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;border-color:#ff6b95!important;color:#ffffff!important}[class~="bg-primary-50"],[class~="bg-primary-100"],[class~="bg-blue-50"],[class~="bg-blue-100"],[class~="bg-indigo-50"],[class~="bg-indigo-100"],.sidebar-nav-button.bg-primary-50{background:rgba(255,240,245,.9)!important;border-color:rgba(255,182,193,.6)!important;box-shadow:inset 0 0 0 1px rgba(255,107,149,.2)!important}div[data-role="user"] .msg-bubble-glass{background:linear-gradient(135deg,rgba(255,242,246,.96),rgba(255,230,238,.92))!important;border:1.5px solid #ffb3c6!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.9),0 4px 14px rgba(255,107,149,.15)!important;color:#4a2030!important}div[data-role="user"] .markdown-body{color:inherit!important}[class~="text-primary-400"],[class~="text-primary-500"],[class~="text-primary-600"],[class~="text-primary-700"],[class~="text-primary-800"],[class~="text-primary-900"],[class~="text-blue-400"],[class~="text-blue-500"],[class~="text-blue-600"],[class~="text-indigo-400"],[class~="text-indigo-500"],[class~="text-indigo-600"],[class~="text-violet-400"],[class~="text-violet-500"],[class~="text-violet-600"],.segmented-switch__option.is-active,.thinking-summary-dots,.settings-help-trigger:hover,.settings-help-trigger.is-open{color:#ff6b95!important}[class~="border-primary-200"],[class~="border-primary-300"],[class~="border-primary-400"],[class~="border-primary-500"],[class~="border-blue-300"],[class~="border-blue-400"],[class~="border-blue-500"],[class~="border-indigo-300"],[class~="border-indigo-400"],[class~="border-indigo-500"],.settings-help-trigger:hover{border-color:#ffb3c6!important}[class~="ring-primary-100"],[class~="ring-primary-200"],[class~="ring-primary-300"],[class~="ring-primary-400"],[class~="ring-primary-500"],[class~="ring-blue-300"],[class~="ring-blue-400"],[class~="ring-indigo-300"],[class~="ring-indigo-400"],.settings-model-button:hover,.settings-model-button:focus-visible{--tw-ring-color:rgba(255,107,149,.35)!important;box-shadow:0 0 0 3px rgba(255,107,149,.25)!important;border-color:#ffb3c6!important}.sidebar-nav-button.bg-primary-50::before{background:#ff6b95!important}input[type="checkbox"]:checked,input[type="radio"]:checked{background-color:#ff6b95!important;border-color:#ff6b95!important}.toggle:checked,[class*="toggle-primary"]:checked,[class*="toggle-accent"]:checked{background-color:#ff6b95!important;border-color:#ff6b95!important}.settings-toggle-input:checked + .settings-toggle,.settings-toggle-input:checked + .settings-toggle--indigo,.settings-toggle-input:checked + .settings-toggle--solid,.settings-toggle-input:checked + .settings-toggle--compact{background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 100%)!important;border-color:#ff6b95!important}div.w-7.h-7.rounded-full.bg-blue-600,div.w-9.h-9.rounded-full.bg-blue-600,div[class*="rounded-full"][class*="bg-blue-"],div.w-9.h-9.rounded-full div{background:linear-gradient(135deg,#ff9ebb,#ff6b95)!important;color:#fff!important}div.h-3.rounded-full.bg-gray-200 div.bg-primary-500{background:linear-gradient(90deg,#ffb3c6,#ff6b95)!important;box-shadow:0 0 8px rgba(255,107,149,.5)!important}span.w-1.h-5.rounded-full{background:linear-gradient(180deg,#ff9ebb,#ff6b95)!important;box-shadow:0 0 4px rgba(255,107,149,.6)!important}input[type="range"],input[type="range"].compact-range{accent-color:#ff6b95!important}input[type="range"]::-webkit-slider-runnable-track,input[type="range"].compact-range::-webkit-slider-runnable-track{background:rgba(255,200,215,.6)!important;height:6px!important;border-radius:3px!important}input[type="range"]::-webkit-slider-thumb,input[type="range"].compact-range::-webkit-slider-thumb{background:#ff6b95!important;border:2px solid #ffffff!important;box-shadow:0 2px 6px rgba(255,107,149,.45)!important;margin-top:-5px!important;border-radius:50%!important}/* ===== V20 原生派：输入区完全交还官方 .input-island 玻璃岛体系 ===== 删除旧版对 textarea.chat-input-scrollbar 的粉色圆角强制覆盖、button[title*=发送]的圆形+猫爪伪元素、伪造 placeholder、中止按钮粉圆 —— 均基于 1.9.8 圆形按钮，2.0.0 已改为方形 island，保留会造成混血与暗夜割裂。官方 theme.css 变量体系自会渲染。 */
     div[class*="w-\\[250px\\]"] textarea,div[class*="w-\\[320px\\]"] textarea{background:rgba(255,245,248,.8)!important;border-color:#ffb3c6!important;color:#5c3a4d!important}
     div[class*="w-\\[250px\\]"] textarea:focus,div[class*="w-\\[320px\\]"] textarea:focus{border-color:#ff6b95!important;box-shadow:0 0 0 2px rgba(255,107,149,.25)!important}.story-route-map-panel{border-color:#ffccd5!important}.story-route-canvas{background-image:radial-gradient(circle,rgba(255,107,149,.25) 1px,transparent 1px)!important;background-color:#fffbfc!important}.story-route-node{background:rgba(255,255,255,.95)!important;border:2px solid #ffccd5!important;border-radius:18px!important;backdrop-filter:blur(8px)!important;transition:all .25s ease!important}.story-route-node.is-current,.story-route-node.is-selected{border-color:#ff6b95!important;animation:sakuraPulse 2.5s infinite ease-in-out!important}.story-route-node-checkpoint{background:#ff6b95!important;border:2px solid #ffffff!important;box-shadow:0 0 8px rgba(255,107,149,.8)!important}.story-route-node strong{color:#5c3245!important}.story-route-node small{color:#a8627d!important}.story-route-node-current{background:linear-gradient(135deg,#ff9ebb,#ff6b95)!important;color:#fff!important;border-radius:10px!important}.story-route-node-type{background:rgba(255,215,225,.9)!important;color:#c04870!important;border-radius:8px!important}.story-route-link{stroke:#ffd0dc!important;stroke-width:3px!important}.story-route-link.is-active,.story-route-link.is-selected{stroke:#ff6b95!important;filter:drop-shadow(0 0 4px rgba(255,107,149,.6))!important}.story-route-enter-button:not(:disabled){background:linear-gradient(135deg,#ff9ebb,#ff6b95)!important;border-color:#ff6b95!important;color:#fff!important}.story-route-enter-button:disabled{background:rgba(255,230,238,.6)!important;border-color:#ffccd5!important;color:rgba(180,100,125,.4)!important}.story-route-edit-button{border-color:#ffb3c6!important;color:#b03a68!important}.story-route-delete-button{border-color:#ff99aa!important;color:#d43b60!important}
     /* ===== V20.0.2 修复③：消息编辑框「文字与背景融合」（浏览器暗色·网站暗色·日光全兼容） =====
@@ -3171,7 +3391,22 @@ function injectGramophoneButton() {
     :root[data-sakura-night="1"] .message-edit-group textarea,:root[data-sakura-night="1"] .animate-fade-in textarea,:root[data-sakura-night="1"] textarea.custom-scrollbar,:root[data-sakura-night="1"] div:has(> button[title="编辑"]) textarea{background:#39393d!important;border-color:rgba(255,255,255,.16)!important;color:#ececec!important;-webkit-text-fill-color:#ececec!important;caret-color:#ff8fae!important}
     .animate-fade-in button.bg-primary-500,.animate-fade-in button[class*="bg-primary-"],div.flex.justify-end.space-x-2.mt-3 > button.bg-primary-500{background:linear-gradient(135deg,#ff3366 0%,#e6004c 100%)!important;border:1px solid #ff0044!important;color:#ffffff!important;font-weight:800!important;letter-spacing:.05em!important;text-shadow:0 1px 2px rgba(0,0,0,.35)!important;box-shadow:0 4px 12px rgba(255,0,68,.35)!important}
     .animate-fade-in button.bg-primary-500:active{transform:scale(.95)!important;background:#cc0044!important}
-    /* V20 原生派：旧绝对定位圆形全屏按钮样式已移除（会将按钮推出屏幕外） */
+    /* ===== V20.0.2：全屏输入键改挂输入岛右上角，与右下角发送键上下对称 =====
+       官方 2.0.0 输入岛 .input-island 是 relative 玻璃岛：上 textarea.island-input、下 .island-toolbar。
+       发送键 .island-send 在工具栏右端，距岛右内缘 0.375rem(岛 padding) + 0.25rem(工具栏 padding-right) = 10px，
+       距岛底同为 10px，尺寸 2.25rem。
+       全屏键现挂到岛本体，用绝对定位固定到「发送键正上方」同一竖列：右缘对齐、同尺寸 2.25rem、
+       纵向间距 0.375rem，形成上全屏 / 下发送的对称排布；不再混进左侧工具图标组。
+       旧版绝对定位圆形样式已移除（会将按钮推出屏幕外）。 */
+    .sakura-fs-btn.island-button{
+        position:absolute!important;
+        right:calc(0.375rem + 0.25rem)!important;
+        bottom:calc(0.375rem + 0.25rem + 2.25rem + 0.375rem)!important;
+        width:2.25rem!important;height:2.25rem!important;
+        z-index:2!important;
+    }
+    /* 文本避让：全屏键占据右上角，textarea 右侧留出等宽内边距，长文本换行不会钻到按钮下面被遮挡 */
+    .input-island:has(> .sakura-fs-btn) .island-input{padding-right:calc(2.25rem + 0.75rem)!important}
 
     /* ================= 🩹 v19.5.9 显示修复层②：官方 1.9.6 新 UI 文字可读性 + 自定义主题全量适配 =================
        根因：插件历史规则里的 [class*="..."] 是子串匹配，会把 hover:bg-primary-50/40 这类
@@ -3663,7 +3898,7 @@ function injectGramophoneButton() {
        仅锁定 2.0.0 官方方形发送岛 .island-send（发送态，排除中止红块 .island-send--stop），
        沿用官方 2.25rem / 0.75rem 同心方块形制，不回落 1.9.8 的圆形，避免方圆混血；
        隐藏官方箭头 svg，用 ::before 覆盖上猫爪；禁用态用浅粉示意，仍见爪。 */
-    .island-send:not(.island-send--stop){position:relative!important;background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 50%,#ff477e 100%)!important;border:2px solid #ffffff!important;box-shadow:0 4px 12px rgba(255,105,180,.45)!important;outline:none!important;-webkit-tap-highlight-color:transparent!important;transition:background-color .15s ease,box-shadow .15s ease,opacity .15s ease!important}
+    .island-send:not(.island-send--stop){position:relative!important;background:linear-gradient(135deg,#ff9ebb 0%,#ff6b95 50%,#ff477e 100%)!important;border:2px solid #ffffff!important;box-shadow:0 4px 12px rgba(255,105,180,.45)!important;outline:none!important;-webkit-tap-highlight-color:transparent!important;transition:background-color .15s ease,box-shadow .15s ease,opacity .15s ease,transform .22s cubic-bezier(.34,1.56,.64,1)!important}
     .island-send:not(.island-send--stop) svg{display:none!important;opacity:0!important;visibility:hidden!important}
     .island-send:not(.island-send--stop)::before{content:""!important;display:block!important;position:absolute!important;top:50%!important;left:50%!important;width:1.45rem!important;height:1.45rem!important;transform:translate(-50%,-50%)!important;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cellipse cx='50' cy='65' rx='22' ry='16' fill='%23ffffff'/%3E%3Ccircle cx='23' cy='42' r='9' fill='%23ffffff'/%3E%3Ccircle cx='41' cy='30' r='9' fill='%23ffffff'/%3E%3Ccircle cx='59' cy='30' r='9' fill='%23ffffff'/%3E%3Ccircle cx='77' cy='42' r='9' fill='%23ffffff'/%3E%3Cellipse cx='50' cy='66' rx='14' ry='10' fill='%23ff7597'/%3E%3Ccircle cx='23' cy='42' r='5.5' fill='%23ff7597'/%3E%3Ccircle cx='41' cy='30' r='5.5' fill='%23ff7597'/%3E%3Ccircle cx='59' cy='30' r='5.5' fill='%23ff7597'/%3E%3Ccircle cx='77' cy='42' r='5.5' fill='%23ff7597'/%3E%3C/svg%3E") center/contain no-repeat!important;transition:transform .15s cubic-bezier(.34,1.56,.64,1)!important;z-index:5!important;pointer-events:none!important}
     .island-send:not(.island-send--stop):disabled{background:linear-gradient(135deg,#ffd8e2,#ffb6c8)!important;opacity:.8!important;box-shadow:none!important;cursor:not-allowed!important}
@@ -5380,7 +5615,10 @@ function injectGramophoneButton() {
 
         // 安装时补一次纠偏：若官方重置发生在 watch 安装之前，watch 永远看不到那次变化
         const savedTemp0 = readTemp();
-        if (savedTemp0 !== null && Math.abs(Number(st.settings.temperature) - savedTemp0) > 0.001) {
+        // ⚠️ V20.1.2：官方 2.0.1 已彻底移除 settings.temperature（请求体硬编码 1）。
+        // 若本地还残留旧温度存档，这里会把 temperature 字段重新写回 settings，污染官方 state。
+        // 故加 'temperature' in st.settings 守卫：官方有才守护，官方删了就跟官方走，一个字节不碰。
+        if ('temperature' in st.settings && savedTemp0 !== null && Math.abs(Number(st.settings.temperature) - savedTemp0) > 0.001) {
             st.settings.temperature = savedTemp0;
             console.log(`[苏萝萝] 温度守护：安装时纠偏为 ${savedTemp0}`);
         }
@@ -5509,6 +5747,22 @@ function injectGramophoneButton() {
         } catch (_) {}
         return 'classic';
     }
+    function sakuraMemEmbeddingModel() {
+        try {
+            const st = getVueState();
+            const ms = st && getRuntimeValue(st.memorySettings);
+            return String((ms && ms.embeddingModel) || '').trim();
+        } catch (_) {}
+        return '';
+    }
+    function sakuraMemApiUrl() {
+        try {
+            const st = getVueState();
+            const s = st && getRuntimeValue(st.settings);
+            return String((s && s.apiUrl) || '').trim();
+        } catch (_) {}
+        return '';
+    }
     function sakuraMemUUID() {
         try {
             if (window.RPHubUtils && typeof window.RPHubUtils.generateUUID === 'function') {
@@ -5593,85 +5847,230 @@ function injectGramophoneButton() {
         setTimeout(() => URL.revokeObjectURL(url), 1000);
         return blob;
     }
+    // —— [V20.1.0] 流式分段下载：超大记忆导出不再一次性 JSON.stringify 构造巨型字符串 ——
+    // 单卡记忆巨大时，整体 stringify 会瞬时产生「对象树 + 巨型 JSON 字符串 + Blob」三份内存，
+    // 并触碰 V8 单字符串 ~512MB 上限（Invalid string length）。改为：边生成边把片段喂入，
+    // 每累积 FLUSH 字节就转成一个 Blob 分片并释放字符串堆占用；峰值只与 FLUSH 阈值挂钩，与总量无关。
+    async function sakuraMemDownloadStreamed(fileName, buildFn) {
+        const blobChunks = [];
+        let pending = [];
+        let pendingBytes = 0;
+        const FLUSH = 8 * 1024 * 1024;
+        const flush = () => {
+            if (!pending.length) return;
+            blobChunks.push(new Blob(pending, { type: 'application/json;charset=utf-8' }));
+            pending = [];
+            pendingBytes = 0;
+        };
+        const push = (s) => {
+            if (s == null || s === '') return;
+            pending.push(s);
+            pendingBytes += s.length * 2;   // UTF-16 粗估，保守即可
+            if (pendingBytes >= FLUSH) flush();
+        };
+        await buildFn(push);
+        flush();
+        const blob = new Blob(blobChunks, { type: 'application/json;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = fileName;
+        a.rel = 'noopener';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) {} }, 60000);
+        return blob;
+    }
+    // —— [V20.1.0] 流式解析记忆 JSON：超大文件不再整体 readAsText + JSON.parse ——
+    // 逐块喂入 TextDecoder，跨块状态机识别「字符串/转义/结构」，只把 memories 数组的顶层元素
+    // 逐个 JSON.parse 后回调出去；峰值只与「单条元素」挂钩，与文件总量无关。
+    // 返回 { found, meta:{type,version,total}, count }
+    async function sakuraMemStreamParse(file, onMemory) {
+        const reader = file.stream().getReader();
+        const dec = new TextDecoder('utf-8');
+        let inStr = false, esc = false;
+        let locating = true;
+        let head = '';                 // 定位阶段累积文本（用于识别 "memories" 键）
+        let arrFound = false, arrDone = false;
+        let depth = 0;                 // memories 数组内：当前元素对象的嵌套深度
+        let elem = [];                 // 当前元素的字符串片段
+        let elemActive = false;
+        let count = 0;
+        const emitElem = () => {
+            if (!elem.length) { elemActive = false; return; }
+            const s = elem.length === 1 ? elem[0] : elem.join('');
+            elem = [];
+            elemActive = false;
+            if (!s) return;
+            try { onMemory(JSON.parse(s)); count++; } catch (_) { /* 跳过坏元素 */ }
+        };
+        for (;;) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const text = dec.decode(value, { stream: true });
+            const n = text.length;
+            let i = 0;
+            while (i < n) {
+                // ---------- 定位阶段：字符串外找到 "memories" 后的 '[' ----------
+                if (locating) {
+                    const c = text[i];
+                    if (inStr) {
+                        head += c;
+                        if (esc) esc = false;
+                        else if (c === '\\') esc = true;
+                        else if (c === '"') inStr = false;
+                    } else if (c === '"') {
+                        inStr = true; head += c;
+                    } else if (c === '[' && /"memories"\s*:\s*$/.test(head)) {
+                        // head 此刻以 "memories": 结尾，这个 '[' 即 memories 数组起点
+                        locating = false; arrFound = true;
+                    } else {
+                        head += c;
+                        if (head.length > 4096) head = head.slice(-512);
+                    }
+                    i++;
+                    continue;
+                }
+                // ---------- 数组内：逐个提取顶层元素 ----------
+                if (arrDone) { i = n; break; }
+                if (inStr) {
+                    if (esc) { elem.push(text[i]); esc = false; i++; continue; }
+                    let j = i;
+                    while (j < n && text[j] !== '"' && text[j] !== '\\') j++;
+                    if (j > i) { elem.push(text.slice(i, j)); i = j; }
+                    if (i >= n) break;
+                    if (text[i] === '\\') {
+                        if (i + 1 >= n) { elem.push('\\'); esc = true; i = n; break; }
+                        elem.push(text.slice(i, i + 2)); i += 2;
+                    } else {
+                        elem.push('"'); inStr = false; i++;
+                    }
+                    continue;
+                }
+                const c = text[i];
+                if (c === '"') { inStr = true; elem.push('"'); elemActive = true; i++; continue; }
+                if (c === '{' || c === '[') { depth++; elem.push(c); elemActive = true; i++; continue; }
+                if (c === '}' || c === ']') {
+                    if (c === ']' && depth === 0) { arrDone = true; i++; break; }
+                    depth--; elem.push(c); i++;
+                    if (depth === 0 && elemActive) emitElem();
+                    continue;
+                }
+                if (c === ',') { if (depth > 0) elem.push(c); i++; continue; }
+                if (depth > 0 || elemActive) elem.push(c);
+                i++;
+            }
+            await bkSleep(0);
+        }
+        try { reader.releaseLock(); } catch (_) {}
+        let meta = {};
+        if (arrFound) {
+            const mt = /"type"\s*:\s*"([^"]*)"/.exec(head);
+            const mv = /"version"\s*:\s*(\d+)/.exec(head);
+            const mn = /"total"\s*:\s*(\d+)/.exec(head);
+            meta = { type: mt ? mt[1] : '', version: mv ? Number(mv[1]) : 0, total: mn ? Number(mn[1]) : 0 };
+        }
+        return { found: arrFound, meta, count };
+    }
     async function sakuraMemExport() {
         const scopeId = sakuraMemScopeId();
         if (!scopeId) { sakuraToast('请先选择角色卡，再导出记忆', 'error'); return; }
-        const isClassicMode = sakuraMemMode() === 'classic';
         const charName = sakuraMemCharName();
-        if (isClassicMode) {
-            const list = await sakuraMemRead('classic_memories', scopeId);
-            if (!Array.isArray(list) || list.length === 0) { sakuraToast('当前模式没有记忆可导出', 'info'); return; }
-            const exportedMemories = [...list]
-                .sort((a, b) => (a.turn || 0) - (b.turn || 0))
-                .map(memory => {
-                    const isSecondary = memory?.secondaryCompressed === true;
-                    // 1.8.9 getSecondaryClassicSourceMemories：取规范化后的非压缩子项做正文聚合
-                    const sourceMemories = isSecondary
-                        ? (Array.isArray(memory.sourceMemories) ? memory.sourceMemories : [])
-                              .map(item => sakuraMemNormalizeClassic(item, false))
-                              .filter(Boolean)
-                              .filter(item => item?.secondaryCompressed !== true)
-                        : [];
-                    return {
-                        turn: memory.turn,
-                        turnStart: memory.turnStart,
-                        turnEnd: memory.turnEnd,
-                        secondaryCompressed: memory.secondaryCompressed === true,
-                        summaryModel: memory.summaryModel || '',
-                        user: {
-                            content: memory.sourceUserText
-                                || sourceMemories.map(item => item.sourceUserText || '').filter(Boolean).join('\n\n'),
-                            messageIds: memory.sourceUserIds || []
-                        },
-                        assistant: {
-                            content: memory.sourceAssistantText
-                                || sourceMemories.map(item => item.sourceAssistantText || '').filter(Boolean).join('\n\n'),
-                            messageIds: memory.sourceAssistantIds || []
-                        },
-                        summary: memory.summary,
-                        sourceMemories: isSecondary ? (memory.sourceMemories || []) : undefined
+        // —— [V20.1.0] 不再按模式拦人：增强模式与基础模式共用同一个 classic_memories 库 ——
+        // 增强模式 = 基础总结 + 每条挂载向量字段（embeddingQ 等）。导出时把向量一并打包，
+        // 这样文件带到任何地方、只要模型与 API 地址不变，官方补录判断 hasCurrentSummaryEmbedding
+        // 直接命中 → 不再触发重新补录/重新计费。
+        const list = await sakuraMemRead('classic_memories', scopeId);
+        if (!Array.isArray(list) || list.length === 0) { sakuraToast('当前没有记忆可导出', 'info'); return; }
+        const exportedMemories = [...list]
+            .sort((a, b) => (a.turn || 0) - (b.turn || 0))
+            .map(memory => {
+                const isSecondary = memory?.secondaryCompressed === true;
+                // 1.8.9 getSecondaryClassicSourceMemories：取规范化后的非压缩子项做正文聚合
+                const sourceMemories = isSecondary
+                    ? (Array.isArray(memory.sourceMemories) ? memory.sourceMemories : [])
+                          .map(item => sakuraMemNormalizeClassic(item, false))
+                          .filter(Boolean)
+                          .filter(item => item?.secondaryCompressed !== true)
+                    : [];
+                const entry = {
+                    turn: memory.turn,
+                    turnStart: memory.turnStart,
+                    turnEnd: memory.turnEnd,
+                    secondaryCompressed: memory.secondaryCompressed === true,
+                    summaryModel: memory.summaryModel || '',
+                    user: {
+                        content: memory.sourceUserText
+                            || sourceMemories.map(item => item.sourceUserText || '').filter(Boolean).join('\n\n'),
+                        messageIds: memory.sourceUserIds || []
+                    },
+                    assistant: {
+                        content: memory.sourceAssistantText
+                            || sourceMemories.map(item => item.sourceAssistantText || '').filter(Boolean).join('\n\n'),
+                        messageIds: memory.sourceAssistantIds || []
+                    },
+                    summary: memory.summary,
+                    sourceMemories: isSecondary ? (memory.sourceMemories || []) : undefined
+                };
+                // —— 向量随行导出（int8:maxabs:v1 量化原样搬运） ——
+                if (memory.embeddingQ) {
+                    entry.vector = {
+                        q: memory.embeddingQ,
+                        scale: memory.embeddingScale,
+                        dims: memory.embeddingDims,
+                        encoding: memory.embeddingEncoding || 'int8:maxabs:v1',
+                        model: memory.embeddingModel || '',
+                        apiUrl: memory.embeddingApiUrl || ''
                     };
-                });
-            const exportData = {
-                type: 'rp-hub-summary-memories',
-                version: 2,
-                character: charName,
-                exportedAt: new Date().toISOString(),
-                total: exportedMemories.length,
-                memories: exportedMemories
-            };
-            const blob = sakuraMemDownload(exportData, `summary_memories_${charName}.json`, 2);
-            sakuraToast(`总结模式记忆已导出，约 ${Math.max(1, Math.round(blob.size / 1024))} KB`, 'success');
-        } else {
-            // RP-Hub 1.9.5 起“增强模式”取代向量模式，官方已移除 memories 分片库，插件不再提供分片导出。
-            sakuraToast('1.9.5 增强模式已无向量分片库，无需导出', 'info');
-        }
+                }
+                return entry;
+            });
+        const vectorCount = exportedMemories.filter(m => m.vector).length;
+        const metaHead = {
+            type: 'rp-hub-summary-memories',
+            version: 3,
+            character: charName,
+            exportedAt: new Date().toISOString(),
+            total: exportedMemories.length,
+            vectorCount,
+            // 记录导出时的向量配置，供导入端/用户核对是否一致
+            embeddingModel: sakuraMemEmbeddingModel(),
+            apiUrl: sakuraMemApiUrl()
+        };
+        // —— [V20.1.0] 流式拼接：头部 + 逐条 memories + 收尾，绝不整体 stringify ——
+        // 每条记忆单独 JSON.stringify（峰值=单条），片段累积到阈值即转 Blob 释放字符串堆。
+        const headJson = JSON.stringify(metaHead);   // 仅元数据，体积极小
+        const blob = await sakuraMemDownloadStreamed(`summary_memories_${charName}.json`, (push) => {
+            push(headJson.slice(0, -1));             // 去掉结尾 '}' → {...,"total":N
+            push(',"memories":[');
+            for (let i = 0; i < exportedMemories.length; i++) {
+                if (i) push(',');
+                push(JSON.stringify(exportedMemories[i], null, 2));
+            }
+            push(']}');
+        });
+        sakuraToast(`记忆已导出：总结 ${exportedMemories.length} 条`
+            + (vectorCount ? `（含向量 ${vectorCount} 条）` : '（无向量）')
+            + `，约 ${Math.max(1, Math.round(blob.size / 1024))} KB`, 'success');
     }
     let _memImportBusy = false;
     async function sakuraMemImport(file) {
         if (_memImportBusy) { sakuraToast('正在处理上一次导入，请稍候…', 'info'); return; }
         const scopeId = sakuraMemScopeId();
         if (!scopeId) { sakuraToast('请先选择角色卡，再导入记忆', 'error'); return; }
-        const isClassicMode = sakuraMemMode() === 'classic';
-        let data;
-        try {
-            data = JSON.parse(await new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = ({ target }) => resolve(target.result);
-                reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
-                reader.readAsText(file);
-            }));
-        } catch (error) {
-            sakuraToast(`导入失败: ${error.message || 'JSON 格式错误'}`, 'error');
-            return;
-        }
         _memImportBusy = true;
         try {
-            if (isClassicMode) {
-                if (data?.type !== 'rp-hub-summary-memories' || !Array.isArray(data.memories)) {
-                    throw new Error('这不是总结模式记忆文件');
-                }
-                const normalized = data.memories.map(memory => sakuraMemNormalizeClassic({
+            // —— [V20.1.0] 不再按模式拦人：增强模式与基础模式共用同一个 classic_memories 库 ——
+            // 现有记忆 = 去重基线
+            const existing = await sakuraMemRead('classic_memories', scopeId);
+            const current = Array.isArray(existing) ? existing : [];
+            const existingKeys = new Set(current.map(memory => sakuraMemClassicKey(memory.sourceAssistantIds, memory.turn)));
+            // —— [V20.1.0] 流式解析：逐条 JSON.parse → 立即规范化 → 去重，绝不整体 readAsText + JSON.parse ——
+            // 峰值只与「单条记忆」挂钩，与文件总量无关；几百 MB 的记忆文件也不会撑爆内存/撞 V8 单字符串上限。
+            const normalized = [];
+            const stat = await sakuraMemStreamParse(file, (memory) => {
+                const n = sakuraMemNormalizeClassic({
                     id: sakuraMemUUID(),
                     timestamp: Date.now(),
                     turn: memory?.turn,
@@ -5686,24 +6085,33 @@ function injectGramophoneButton() {
                     sourceAssistantIds: Array.isArray(memory?.assistant?.messageIds) ? memory.assistant.messageIds : [],
                     sourceUserText: String(memory?.user?.content || ''),
                     sourceAssistantText: String(memory?.assistant?.content || ''),
-                    sourceMemories: Array.isArray(memory?.sourceMemories) ? memory.sourceMemories : []
-                })).filter(Boolean);
-                if (normalized.length === 0) throw new Error('文件中没有有效的总结模式记忆');
-                const existing = await sakuraMemRead('classic_memories', scopeId);
-                const current = Array.isArray(existing) ? existing : [];
-                const existingKeys = new Set(current.map(memory => sakuraMemClassicKey(memory.sourceAssistantIds, memory.turn)));
-                const added = normalized.filter(memory => {
-                    const key = sakuraMemClassicKey(memory.sourceAssistantIds, memory.turn);
-                    if (existingKeys.has(key)) return false;
-                    existingKeys.add(key);
-                    return true;
+                    sourceMemories: Array.isArray(memory?.sourceMemories) ? memory.sourceMemories : [],
+                    // —— 向量还原：把导出时随行的向量字段写回官方字段名（int8:maxabs:v1） ——
+                    // 只要向量回来了，官方 hasCurrentSummaryEmbedding 就能命中 → 不再重新补录/计费。
+                    ...(memory?.vector && memory.vector.q ? {
+                        embeddingQ: memory.vector.q,
+                        embeddingScale: memory.vector.scale,
+                        embeddingDims: memory.vector.dims,
+                        embeddingEncoding: memory.vector.encoding || 'int8:maxabs:v1',
+                        embeddingModel: memory.vector.model || '',
+                        embeddingApiUrl: memory.vector.apiUrl || ''
+                    } : {})
                 });
-                await sakuraMemWrite('classic_memories', scopeId, [...current, ...added]);
-                sakuraToast(`写入 ${added.length} 条总结记忆完成，正在刷新面板…`, 'info');
-            } else {
-                // RP-Hub 1.9.5 起“增强模式”取代向量模式，官方已移除 memories 分片库，插件不再接受分片导入。
-                throw new Error('1.9.5 增强模式已无向量分片库，无法导入旧分片文件');
+                if (!n) return;
+                const key = sakuraMemClassicKey(n.sourceAssistantIds, n.turn);
+                if (existingKeys.has(key)) return;
+                existingKeys.add(key);
+                normalized.push(n);
+            });
+            if (!stat.found) throw new Error('不是有效的记忆文件：未找到 memories 数组');
+            if (stat.meta && stat.meta.type && stat.meta.type !== 'rp-hub-summary-memories') {
+                throw new Error('这不是总结模式记忆文件');
             }
+            const withVec = normalized.filter(m => m.embeddingQ).length;
+            await sakuraMemWrite('classic_memories', scopeId, [...current, ...normalized]);
+            sakuraToast(`写入 ${normalized.length} 条记忆完成`
+                + (withVec ? `（含向量 ${withVec} 条，补录将自动跳过）` : '')
+                + '，正在刷新面板…', 'info');
             const rl = await sakuraMemHotReload();
             if (rl && rl.ok) {
                 sakuraToast(`导入完成：总结 ${rl.classic} 条，已生效`, 'success');
@@ -5896,6 +6304,7 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
         safe(injectClassicMemoryEditButtons);
         safe(restoreMemoryImportExport);
         safe(injectFullscreenComposer);
+        safe(injectEntrySearch);
         // ⚠️ 注意：温度 / 流式 / 角色卡视图守护已全部改为 Vue 同步 watch（installPreferenceGuards），
         // 不受 Observer 闸门影响，也不在本函数里跑。
     }
@@ -6034,4 +6443,5 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
 
     }
 });
+
 

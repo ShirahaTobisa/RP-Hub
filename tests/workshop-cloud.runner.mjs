@@ -7,7 +7,7 @@ import { startHarness, initializeFixture, chromium, chrome, root, defaultUpstrea
 
 const evidence = path.join(root, 'evidence/workshop-cloud-20260917');
 await fs.mkdir(evidence, { recursive: true });
-const plugin = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-20.0.3.js'), 'utf8');
+const plugin = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-20.1.2.js'), 'utf8');
 const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const report = { passed: [], pageErrors: [], blocked: [], snapshots: [] };
