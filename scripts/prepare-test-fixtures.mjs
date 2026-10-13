@@ -10,6 +10,8 @@ import { fileURLToPath } from 'node:url';
 // - 1.9.5/：固定的旧版对照，从上游下载 ZIP 核对 SHA-256。
 const root = fileURLToPath(new URL('../', import.meta.url));
 const directory = path.join(root, 'evidence/sync-195/upstream');
+// 发版打包（scripts/package.mjs --upstream latest）也用这里下载并核对过的最新上游。
+export const latestDirectory = path.join(directory, 'latest');
 const mirror = (process.env.RPH_MIRROR_BASE || 'https://update.rph.mornye.uk').replace(/\/+$/, '');
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const quote = (value) => "'" + value.replaceAll("'", "''") + "'";
@@ -20,8 +22,8 @@ async function download(url, timeout = 90000) {
     return Buffer.from(await response.arrayBuffer());
 }
 
-async function prepareLatest() {
-    const target = path.join(directory, 'latest');
+export async function prepareLatest() {
+    const target = latestDirectory;
     const markerPath = path.join(target, '.fixture.json');
     const cached = await fs.readFile(markerPath, 'utf8').then(JSON.parse, () => null);
     let version;
@@ -65,8 +67,10 @@ async function preparePinned(version, commit, expected) {
     ], { stdio: 'inherit', windowsHide: true });
 }
 
-await fs.mkdir(directory, { recursive: true });
-const latest = await prepareLatest();
-console.log(`Upstream latest test fixture ready: ${latest.tag} ${latest.commit}`);
-await preparePinned('1.9.5', 'cd7fb2b946f5985991b60597960852671013f36f', 'f27ee8a1b2806af97b53ea89f7ba4fc2b5e83047eb53110bb9c0f6a459113e80');
-console.log('Upstream 1.9.5 test fixture ready: cd7fb2b946f5985991b60597960852671013f36f');
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+    await fs.mkdir(directory, { recursive: true });
+    const latest = await prepareLatest();
+    console.log(`Upstream latest test fixture ready: ${latest.tag} ${latest.commit}`);
+    await preparePinned('1.9.5', 'cd7fb2b946f5985991b60597960852671013f36f', 'f27ee8a1b2806af97b53ea89f7ba4fc2b5e83047eb53110bb9c0f6a459113e80');
+    console.log('Upstream 1.9.5 test fixture ready: cd7fb2b946f5985991b60597960852671013f36f');
+}

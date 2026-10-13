@@ -37,6 +37,7 @@ npm run test:browser
 
 - 主站运行代码主要在 `DB/`、`_worker.js`。共享 app.js 补丁统一写在 `DB/app-patches.mjs`；分发端在 [独立仓库](https://github.com/ShirahaTobisa/RP-Hub-Update-Mirror) 维护同版本的副本。
 - `dist/` 为生成目录，修改源码后重新打包。
+- 发版打包（GitHub 推日期标签时）带 `--upstream latest`：RPH 本体换成分发端最新收录的上游版本（文件原样，只给 `assets/js/app.js` 打补丁），外壳记的内置版本跟着换。仓库根目录的 RPH 文件只是本地测试用的底稿。上游新增了不认识的目录时打包会停下，确认是否部署后改 `scripts/package.mjs` 的 `UPSTREAM_ENTRIES`。
 - 不提交生产数据、密钥、浏览器 profile、发布 ZIP 或测试证据。
 - `.gitattributes` 保留文件原始字节，避免 Git 换行转换改变既有发布校验值。
 - CI 使用 Windows，只运行核心测试及主站打包检查。浏览器与历史复核单独运行；CI 不持有部署密钥。

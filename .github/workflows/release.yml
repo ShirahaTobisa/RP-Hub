@@ -24,7 +24,8 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run test:package
-      - run: node scripts/package.mjs --release-dir release --version ${{ github.ref_name }}
+      # RPH 本体用分发端最新收录（补丁预检通过）的上游版本，新部署的站点直接是最新版；分发端连不上时打包失败。
+      - run: node scripts/package.mjs --release-dir release --version ${{ github.ref_name }} --upstream latest
       - name: Create GitHub release
         shell: pwsh
         env:

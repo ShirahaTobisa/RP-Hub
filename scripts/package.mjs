@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { patchRpHubAppJs } from '../DB/app-patches.mjs';
 
 const DEPLOY_ENTRIES = [
     '_worker.js',
@@ -45,6 +46,14 @@ const VERSIONED_WORKER_ASSETS = [
     ['DB/module-loader.js', '/DB/module-loader.js']
 ];
 
+// RPH 本体（上游提供的部分）。发版时用 --upstream latest 换成分发端最新收录（补丁预检通过）的上游版本，
+// 处理方式和站点「程序更新」相同：文件原样，只给 assets/js/app.js 打补丁。不带 --upstream 时用仓库里的底稿。
+const UPSTREAM_ENTRIES = ['index.html', 'LICENSE', 'assets', 'character', 'novel'];
+// 上游里不部署的：说明文档、在线人数服务端。出现别的新东西时停下来，确认要不要部署再改这里。
+const UPSTREAM_SKIPPED = /^(?:README(?:\.[\w-]+)?\.md|presence-server|\.fixture\.json)$/;
+const UPSTREAM_VERSION_LINE = /^const CURRENT_UPSTREAM_VERSION = '[^']*';$/m;
+const UPSTREAM_SHA_LINE = /^const CURRENT_UPSTREAM_SHA = '[^']*';$/m;
+
 // 测试版版本号：日期，同一天第二版起加序号，如 2026.10.09、2026.10.09.2。
 export const RELEASE_VERSION_PATTERN = /^\d{4}\.\d{2}\.\d{2}(?:\.\d+)?$/;
 const RELEASE_VERSION_PLACEHOLDER = "const RPH_RELEASE_VERSION = 'dev';";
@@ -63,6 +72,7 @@ function parseArguments(argv) {
         if (argument === '--dist') options.distRoot = path.resolve(argv[++index]);
         else if (argument === '--release-dir') options.releaseRoot = path.resolve(argv[++index]);
         else if (argument === '--version') options.version = argv[++index];
+        else if (argument === '--upstream') options.upstream = argv[++index];
         else throw new Error(`Unknown argument: ${argument}`);
     }
     if (options.version !== undefined && !RELEASE_VERSION_PATTERN.test(options.version)) {
@@ -81,6 +91,44 @@ function copyEntry(relativePath, stageRoot) {
     assertExists(source, `Deployment input ${relativePath}`);
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.cpSync(source, target, { recursive: true, force: true, errorOnExist: false });
+}
+
+// latest：从分发端下载最新收录的上游（逐个核对 SHA-256）；也可以给一个已下载好的目录（带 .fixture.json）。
+async function resolveUpstream(value) {
+    if (!value) return null;
+    if (value === 'latest') {
+        const { prepareLatest, latestDirectory } = await import('./prepare-test-fixtures.mjs');
+        const marker = await prepareLatest();
+        return { root: latestDirectory, tag: marker.tag, commit: marker.commit };
+    }
+    const root = path.resolve(value);
+    const marker = JSON.parse(fs.readFileSync(path.join(root, '.fixture.json'), 'utf8'));
+    return { root, tag: marker.tag, commit: marker.commit };
+}
+
+function copyUpstream(upstream, stageRoot) {
+    const unknown = fs.readdirSync(upstream.root).filter((name) => !UPSTREAM_ENTRIES.includes(name) && !UPSTREAM_SKIPPED.test(name));
+    if (unknown.length) {
+        throw new Error(`上游 ${upstream.tag} 新增了 ${unknown.join('、')}，先确认要不要部署，再改 scripts/package.mjs 的 UPSTREAM_ENTRIES。`);
+    }
+    for (const entry of UPSTREAM_ENTRIES) {
+        const source = path.join(upstream.root, entry);
+        assertExists(source, `上游 ${upstream.tag} 的 ${entry}`);
+        fs.cpSync(source, path.join(stageRoot, entry), { recursive: true, force: true, errorOnExist: false });
+    }
+    const appPath = path.join(stageRoot, 'assets', 'js', 'app.js');
+    fs.writeFileSync(appPath, patchRpHubAppJs(fs.readFileSync(appPath, 'utf8'), { version: upstream.tag }).code, 'utf8');
+}
+
+// 外壳里记的内置上游版本和提交号换成实际打进去的，「程序更新」面板据此判断是否已是最新。
+function writeUpstreamVersion(workerSource, upstream) {
+    if (!upstream) return workerSource;
+    if (!UPSTREAM_VERSION_LINE.test(workerSource) || !UPSTREAM_SHA_LINE.test(workerSource)) {
+        throw new Error('Expected CURRENT_UPSTREAM_VERSION and CURRENT_UPSTREAM_SHA constants in _worker.js.');
+    }
+    return workerSource
+        .replace(UPSTREAM_VERSION_LINE, `const CURRENT_UPSTREAM_VERSION = '${upstream.tag}';`)
+        .replace(UPSTREAM_SHA_LINE, `const CURRENT_UPSTREAM_SHA = '${upstream.commit}';`);
 }
 
 function inlineAppPatcher(workerSource, patcherSource) {
@@ -272,7 +320,7 @@ function createReleaseBundle(distRoot, releaseRoot, version) {
     return bundlePath;
 }
 
-function buildDist(distRoot, version) {
+function buildDist(distRoot, version, upstream = null) {
     const stageRoot = path.join(
         path.dirname(distRoot),
         `.rph-dist-stage-${process.pid}-${Date.now()}`
@@ -281,10 +329,12 @@ function buildDist(distRoot, version) {
     try {
         fs.mkdirSync(stageRoot, { recursive: true });
         for (const relativePath of DEPLOY_ENTRIES) {
-            if (relativePath !== '_worker.js') copyEntry(relativePath, stageRoot);
+            if (relativePath === '_worker.js' || (upstream && UPSTREAM_ENTRIES.includes(relativePath))) continue;
+            copyEntry(relativePath, stageRoot);
         }
+        if (upstream) copyUpstream(upstream, stageRoot);
 
-        const workerSource = fs.readFileSync(path.join(sourceRoot, '_worker.js'), 'utf8');
+        const workerSource = writeUpstreamVersion(fs.readFileSync(path.join(sourceRoot, '_worker.js'), 'utf8'), upstream);
         const patcherSource = fs.readFileSync(path.join(sourceRoot, 'DB', 'app-patches.mjs'), 'utf8');
         const bundledWorker = rewriteWorkerAssetVersions(
             writeReleaseVersion(inlineAppPatcher(workerSource, patcherSource), version),
@@ -298,16 +348,17 @@ function buildDist(distRoot, version) {
         fs.renameSync(stageRoot, distRoot);
         return {
             fileCount: listFiles(distRoot).length,
-            assetVersions: readWorkerAssetVersions(distRoot)
+            assetVersions: readWorkerAssetVersions(distRoot),
+            upstream: upstream ? `${upstream.tag} ${upstream.commit}` : 'repository base'
         };
     } finally {
         fs.rmSync(stageRoot, { recursive: true, force: true });
     }
 }
 
-function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2)) {
     const options = parseArguments(argv);
-    const { fileCount, assetVersions } = buildDist(options.distRoot, options.version);
+    const { fileCount, assetVersions, upstream } = buildDist(options.distRoot, options.version, await resolveUpstream(options.upstream));
     const zipPath = createZip(options.distRoot, options.releaseRoot, options.version);
     const bundlePath = options.version ? createReleaseBundle(options.distRoot, options.releaseRoot, options.version) : null;
 
@@ -317,10 +368,11 @@ function main(argv = process.argv.slice(2)) {
         zip: zipPath,
         bundle: bundlePath,
         version: options.version || 'dev',
+        upstream,
         fileCount,
         assetVersions,
         zipBytes: fs.statSync(zipPath).size
     }, null, 2)}\n`);
 }
 
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) await main();
