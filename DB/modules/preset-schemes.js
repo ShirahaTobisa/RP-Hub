@@ -2,9 +2,9 @@
 // 方案只记开关、不存条目内容：内容只在 RPH 的预设里改一次，切换方案不会把改过的内容换回去。
 // 条目按名字对应，同名的按先后顺序对应；存方案之后才加的条目，切换时保持原样。
 // 「预设管理」页顶上有方案下拉框，选中就切换；聊天输入框上方的「方案」按钮和模块管理里也能打开方案面板。
-// 方案存在插件数据里，随云同步；可以导出成文件分享，导入时同名方案会被替换。
+// 方案存在插件数据里，随云同步。导出的文件带上方案用到的条目内容，别人导入时缺的条目会补上（先关着），同名方案会被替换。
 RPHubSDK.register({
-    id: 'preset-schemes', name: '预设方案', version: '1.1.0', requiresApi: 4,
+    id: 'preset-schemes', name: '预设方案', version: '1.2.0', requiresApi: 4,
     init(ctx) {
         'use strict';
         const FORMAT = 'rph-preset-schemes-v1';
@@ -83,21 +83,65 @@ RPHubSDK.register({
             return `切换后：${[turnOn.length && `开 ${names(turnOn)}`, turnOff.length && `关 ${names(turnOff)}`].filter(Boolean).join('；')}`;
         }
 
-        function download(text, name) {
+        // 方案文件带上方案用到的预设条目（名字、内容、角色）：对方没有这些条目时一起导入，方案才切得动。
+        function exportSchemes(list, fileName) {
+            if (!list.length) return ctx.ui.toast('还没有方案可以导出', { kind: 'warning' });
+            const used = new Set(list.flatMap((scheme) => scheme.states.map(([name]) => name)));
+            const entries = presets().filter((preset) => used.has(String(preset.name)))
+                .map((preset) => ({ name: String(preset.name), content: String(preset.content ?? ''), role: preset.role || 'system' }));
             const link = document.createElement('a');
-            link.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
-            link.download = name;
+            link.href = URL.createObjectURL(new Blob([JSON.stringify({ format: FORMAT, schemes: list.map(({ name, states }) => ({ name, states })), presets: entries }, null, 2)],
+                { type: 'application/json' }));
+            link.download = fileName;
             link.click();
             setTimeout(() => URL.revokeObjectURL(link.href), 1000);
         }
 
-        function readImport(text) {
+        // 导入：同名方案替换。文件里带的条目，本地没有的（同名的按个数补齐）加到预设列表末尾，先关着，切到方案时才打开；
+        // 本地已有的同名条目用本地的内容。
+        async function importSchemes(text) {
             const value = JSON.parse(text);
-            const list = value?.format === FORMAT && Array.isArray(value.schemes) ? value.schemes : null;
-            const valid = (scheme) => typeof scheme?.name === 'string' && scheme.name.trim() && Array.isArray(scheme.states)
+            const validScheme = (scheme) => typeof scheme?.name === 'string' && scheme.name.trim() && Array.isArray(scheme.states)
                 && scheme.states.every((state) => Array.isArray(state) && typeof state[0] === 'string' && typeof state[1] === 'boolean');
-            if (!list || !list.every(valid)) throw new Error('不是预设方案文件。');
-            return list.map((scheme) => ({ name: scheme.name.trim(), states: scheme.states.map(([name, on]) => [name, on]) }));
+            if (value?.format !== FORMAT || !Array.isArray(value.schemes) || !value.schemes.every(validScheme)
+                || (value.presets !== undefined && !(Array.isArray(value.presets)
+                    && value.presets.every((entry) => typeof entry?.name === 'string' && typeof entry.content === 'string')))) {
+                throw new Error('不是预设方案文件。');
+            }
+            const list = presets();
+            const have = new Map();
+            for (const preset of list) have.set(String(preset.name), (have.get(String(preset.name)) || 0) + 1);
+            const seen = new Map();
+            let added = 0;
+            for (const entry of value.presets || []) {
+                const count = (seen.get(entry.name) || 0) + 1;
+                seen.set(entry.name, count);
+                if (count <= (have.get(entry.name) || 0)) continue;
+                list.push({ name: entry.name, content: entry.content, role: ROLES[entry.role] ? entry.role : 'system', enabled: false });
+                added += 1;
+            }
+            const imported = value.schemes.map((scheme, index) => ({
+                id: `s-${Date.now().toString(36)}${index}`, name: scheme.name.trim(), states: scheme.states.map(([name, on]) => [name, on])
+            }));
+            const names = new Set(imported.map((scheme) => scheme.name));
+            schemes = [...schemes.filter((scheme) => !names.has(scheme.name)), ...imported];
+            await save();
+            return `导入了 ${imported.length} 个方案（同名的已替换）${added ? `，新加了 ${added} 个预设条目，先关着，切到方案时打开` : ''}`;
+        }
+
+        // 选文件导入，面板和预设页的导入按钮共用。
+        function pickImport(done) {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json,application/json';
+            input.onchange = async () => {
+                try {
+                    ctx.ui.toast(await importSchemes(await input.files[0].text()), { kind: 'success' });
+                    done?.();
+                } catch (error) { ctx.ui.toast(`导入失败：${error.message}`); }
+                syncBar();
+            };
+            input.click();
         }
 
         async function openPanel() {
@@ -159,25 +203,9 @@ RPHubSDK.register({
                             ctx.ui.toast(`已存成方案「${name}」`, { kind: 'success' });
                             list();
                         };
-                        body.querySelector('[data-act="import"]').onclick = () => {
-                            const input = document.createElement('input');
-                            input.type = 'file';
-                            input.accept = '.json,application/json';
-                            input.onchange = async () => {
-                                try {
-                                    const imported = readImport(await input.files[0].text());
-                                    const names = new Set(imported.map((scheme) => scheme.name));
-                                    schemes = [...schemes.filter((scheme) => !names.has(scheme.name)),
-                                        ...imported.map((scheme, index) => ({ ...scheme, id: `s-${Date.now().toString(36)}${index}` }))];
-                                    await save();
-                                    ctx.ui.toast(`导入了 ${imported.length} 个方案（同名的已替换）`, { kind: 'success' });
-                                    list();
-                                } catch (error) { ctx.ui.toast(`导入失败：${error.message}`); }
-                            };
-                            input.click();
-                        };
+                        body.querySelector('[data-act="import"]').onclick = () => pickImport(list);
                         const exporter = body.querySelector('[data-act="export"]');
-                        if (exporter) exporter.onclick = () => download(JSON.stringify({ format: FORMAT, schemes: schemes.map(({ name, states }) => ({ name, states })) }, null, 2), 'RPH 预设方案.json');
+                        if (exporter) exporter.onclick = () => exportSchemes(schemes, 'RPH 预设方案.json');
                         syncBar();
                     };
 
@@ -195,18 +223,28 @@ RPHubSDK.register({
                             </div>`).join('')}</div>
                             <div class="rph-ui-actions">
                                 <button type="button" class="modal-secondary-button rph-ui-button" data-act="back">返回</button>
+                                <button type="button" class="modal-secondary-button rph-ui-button" data-act="export">导出这个方案</button>
                                 <button type="button" class="modal-primary-button rph-ui-button" data-act="save">保存方案</button>
                             </div>`;
                         body.querySelector('[data-filter]').oninput = (event) => {
                             const text = event.target.value.trim().toLowerCase();
                             for (const row of body.querySelectorAll('[data-entry]')) row.hidden = Boolean(text) && !entries[row.dataset.entry].name.toLowerCase().includes(text);
                         };
+                        // 编辑框里现在的样子（没保存也算），保存和导出都用它。
+                        const draft = () => ({
+                            name: body.querySelector('[data-name]').value.trim(),
+                            states: [...body.querySelectorAll('[data-entry]')].map((row) => [entries[row.dataset.entry].name, row.querySelector('input').checked])
+                        });
                         body.querySelector('[data-act="back"]').onclick = list;
+                        body.querySelector('[data-act="export"]').onclick = () => {
+                            const { name, states } = draft();
+                            exportSchemes([{ name: name || scheme.name, states }], `RPH 预设方案-${name || scheme.name}.json`);
+                        };
                         body.querySelector('[data-act="save"]').onclick = async () => {
-                            const name = body.querySelector('[data-name]').value.trim();
+                            const { name, states } = draft();
                             if (!name) return ctx.ui.toast('方案名不能空着', { kind: 'warning' });
                             scheme.name = name;
-                            scheme.states = [...body.querySelectorAll('[data-entry]')].map((row) => [entries[row.dataset.entry].name, row.querySelector('input').checked]);
+                            scheme.states = states;
                             await save();
                             ctx.ui.toast(`已保存「${name}」；要用它就点「切换」`, { kind: 'success' });
                             list();
@@ -239,10 +277,15 @@ RPHubSDK.register({
             const root = document.createElement('div');
             root.className = 'mb-4';
             root.dataset.presetSchemesBar = '';
+            const icon = (name, label) => `<button type="button" class="settings-icon-button" data-${name} title="${label}" aria-label="${label}">
+                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><use href="#icon-${name}"></use></svg></button>`;
             root.innerHTML = `<label class="settings-label">预设方案</label>
                 <div class="flex items-center gap-2"><div class="flex-1 min-w-0" data-select></div>
+                ${icon('export', '导出全部方案')}${icon('import', '导入方案')}
                 <button type="button" class="modal-secondary-button rph-ui-button" data-manage>管理方案</button></div>`;
             root.querySelector('[data-manage]').onclick = openPanel;
+            root.querySelector('[data-import]').onclick = () => pickImport();
+            root.querySelector('[data-export]').onclick = () => exportSchemes(schemes, 'RPH 预设方案.json');
             const view = Vue.reactive({ value: '', options: [], placeholder: '' });
             const app = Vue.createApp({
                 render: () => Vue.h(Select, {

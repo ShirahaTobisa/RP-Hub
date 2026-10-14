@@ -43,6 +43,19 @@ try {
         const proxy = a._instance?.proxy || a._container._vnode.component.proxy;
         proxy.presets.find((preset) => preset.content === content).enabled = enabled;
     }, { content, enabled });
+    // RPH 存进数据库的预设。页面里的 waitForFunction 不等异步判断，所以在这边轮询。
+    const storedPresets = () => page.evaluate(async () => {
+        const db = await new Promise((resolve) => { indexedDB.open('RPHubDB').onsuccess = (event) => resolve(event.target.result); });
+        const value = await new Promise((resolve) => { db.transaction('store').objectStore('store').get('rp_hub_presets').onsuccess = (event) => resolve(event.target.result); });
+        db.close();
+        return value || [];
+    });
+    const waitStored = async (check, label) => {
+        for (const deadline = Date.now() + 10000; Date.now() < deadline; await new Promise((resolve) => setTimeout(resolve, 200))) {
+            if (check(await storedPresets())) return;
+        }
+        throw new Error(`RPH 没在 10 秒内存好：${label}`);
+    };
     const row = (name) => page.locator('[data-scheme]').filter({ has: page.locator('b', { hasText: new RegExp(`^${name}$`) }) });
     const saveAs = async (name) => {
         await page.locator('[data-new]').fill(name);
@@ -64,12 +77,8 @@ try {
     await row('日常').getByText('正在用').waitFor();
     console.log('PASS the current switches are saved as schemes and one click switches back, same-name entries in order');
 
-    await page.waitForFunction(async () => {
-        const db = await new Promise((resolve) => { indexedDB.open('RPHubDB').onsuccess = (event) => resolve(event.target.result); });
-        const presets = await new Promise((resolve) => { db.transaction('store').objectStore('store').get('rp_hub_presets').onsuccess = (event) => resolve(event.target.result); });
-        db.close();
-        return presets?.find((preset) => preset.content === 'B')?.enabled === false && presets?.find((preset) => preset.content === 'A')?.enabled === true;
-    }, null, { timeout: 10000 });
+    await waitStored((presets) => presets.find((preset) => preset.content === 'B')?.enabled === false
+        && presets.find((preset) => preset.content === 'A')?.enabled === true && presets.find((preset) => preset.content === '第二个')?.enabled === false, '切换后的开关');
     console.log('PASS RPH saves the switched presets itself');
 
     await page.evaluate(() => {
@@ -97,20 +106,32 @@ try {
     const exported = JSON.parse(await (await download.createReadStream()).toArray().then((chunks) => Buffer.concat(chunks).toString('utf8')));
     assert.equal(exported.format, 'rph-preset-schemes-v1');
     assert.deepEqual(exported.schemes.map((scheme) => scheme.name), ['日常', '战斗']);
+    assert.deepEqual(exported.presets.filter((entry) => ['文风A', '文风B', '重名', '新条目'].includes(entry.name)).map((entry) => `${entry.name}:${entry.content}`),
+        ['文风A:A', '文风B:B', '重名:第一个', '重名:第二个', '新条目:new'], 'the file carries the entries the schemes use');
     await row('日常').getByRole('button', { name: '删除' }).click();
     await page.getByRole('button', { name: '删除', exact: true }).last().click();
     await row('日常').waitFor({ state: 'detached' });
+    // 导入到缺条目的地方：缺的条目补到列表末尾（先关着、内容照文件），已有的同名条目不重复加。
+    await page.evaluate(() => {
+        const a = document.querySelector('#app').__vue_app__;
+        const proxy = a._instance?.proxy || a._container._vnode.component.proxy;
+        for (const name of ['文风B', '新条目']) proxy.presets.splice(proxy.presets.findIndex((preset) => preset.name === name), 1);
+    });
     const imported = { ...exported, schemes: [...exported.schemes, { name: '分享来的', states: [['文风A', true], ['文风B', true]] }] };
     const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: '导入' }).click()]);
     await chooser.setFiles({ name: 'schemes.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(imported)) });
     await row('分享来的').waitFor();
     assert.equal(await page.locator('[data-scheme]').count(), 3, 'importing replaces same-name schemes instead of duplicating them');
-    console.log('PASS schemes export to a file, delete, and import back (same names replaced)');
+    await page.getByText('新加了 2 个预设条目').first().waitFor();
+    assert.deepEqual(await switches(), ['A:false', '第一个:true', '第二个:true', 'B:false', 'new:false']);
+    // RPH 改完预设约 1 秒后才存，等它存好再刷新。
+    await waitStored((presets) => presets.at(-1)?.name === '新条目' && presets.at(-2)?.name === '文风B' && presets.at(-2).content === 'B', '导入补上的条目');
+    console.log('PASS schemes export with their entries, delete, and import back (same names replaced, missing entries added switched off)');
 
     await load();
     await button.click();
     await row('分享来的').getByRole('button', { name: '切换' }).click();
-    assert.deepEqual(await switches(), ['A:true', 'B:true', '第一个:true', '第二个:true', 'new:false']);
+    assert.deepEqual(await switches(), ['A:true', '第一个:true', '第二个:true', 'B:true', 'new:false']);
     await saveAs('同上');
     assert.equal(await row('同上').locator('.rph-ui-muted').first().textContent(), '和现在的开关一样');
     console.log('PASS schemes survive a reload and switch after it');
@@ -129,7 +150,7 @@ try {
     assert.equal(await bar.evaluate((node) => node.nextElementSibling?.id), 'presets-list', 'the bar sits right above the native preset list');
     await trigger.click();
     await page.getByRole('option', { name: '日常' }).click();
-    assert.deepEqual(await switches(), ['A:true', 'B:false', '第一个:true', '第二个:false', 'new:false']);
+    assert.deepEqual(await switches(), ['A:true', '第一个:true', '第二个:false', 'B:false', 'new:false']);
     await page.waitForFunction(() => document.querySelector('[data-preset-schemes-bar] button[aria-haspopup="listbox"]').textContent.trim() === '日常');
     await setSwitch('第二个', true);
     await page.waitForFunction(() => document.querySelector('[data-preset-schemes-bar] button[aria-haspopup="listbox"]').textContent.trim() === '现在的开关没存成方案');
@@ -138,9 +159,18 @@ try {
     await setView('presets');
     await trigger.waitFor();
     assert.equal(await bar.count(), 1);
+    const [barDownload] = await Promise.all([page.waitForEvent('download'), bar.getByRole('button', { name: '导出全部方案' }).click()]);
+    const barFile = JSON.parse(await (await barDownload.createReadStream()).toArray().then((chunks) => Buffer.concat(chunks).toString('utf8')));
+    assert.deepEqual(barFile.schemes.map((scheme) => scheme.name), ['日常', '战斗', '分享来的', '同上']);
+    const [barChooser] = await Promise.all([page.waitForEvent('filechooser'), bar.getByRole('button', { name: '导入方案' }).click()]);
+    await barChooser.setFiles({ name: 'more.json', mimeType: 'application/json',
+        buffer: Buffer.from(JSON.stringify({ format: 'rph-preset-schemes-v1', schemes: [{ name: '预设页导入的', states: [['文风A', false]] }] })) });
+    await trigger.click();
+    await page.getByRole('option', { name: '预设页导入的' }).waitFor();
+    await page.keyboard.press('Escape');
     await bar.getByRole('button', { name: '管理方案' }).click();
     await row('日常').waitFor();
-    console.log('PASS the native preset page gets a scheme dropdown that switches in one pick and follows manual toggles');
+    console.log('PASS the native preset page gets a scheme dropdown that switches in one pick, follows manual toggles, and imports and exports');
 } finally {
     await browser.close();
     await harness.close();
