@@ -1,9 +1,10 @@
 // 预设方案：把 RPH 预设列表里“哪些条目开着”存成方案，一键切换（像酒馆切预设那样）。
 // 方案只记开关、不存条目内容：内容只在 RPH 的预设里改一次，切换方案不会把改过的内容换回去。
 // 条目按名字对应，同名的按先后顺序对应；存方案之后才加的条目，切换时保持原样。
+// 「预设管理」页顶上有方案下拉框，选中就切换；聊天输入框上方的「方案」按钮和模块管理里也能打开方案面板。
 // 方案存在插件数据里，随云同步；可以导出成文件分享，导入时同名方案会被替换。
 RPHubSDK.register({
-    id: 'preset-schemes', name: '预设方案', version: '1.0.0', requiresApi: 4,
+    id: 'preset-schemes', name: '预设方案', version: '1.1.0', requiresApi: 4,
     init(ctx) {
         'use strict';
         const FORMAT = 'rph-preset-schemes-v1';
@@ -63,6 +64,11 @@ RPHubSDK.register({
         function isCurrent(scheme) {
             const { changes, compared } = differences(scheme);
             return compared > 0 && !changes.length;
+        }
+
+        function switchTo(scheme) {
+            const changed = apply(scheme);
+            ctx.ui.toast(changed ? `已切换到「${scheme.name}」，改了 ${changed} 个条目的开关` : `已经是「${scheme.name}」的开关了`, { kind: 'success' });
         }
 
         // 列表里的说明：正在用的写开着几条；别的写切换后会开、关哪些（内置条目大家都开着，列出来分不出方案）。
@@ -128,8 +134,7 @@ RPHubSDK.register({
                             const scheme = schemes.find((item) => item.id === row.dataset.scheme);
                             const act = (name, handler) => { const button = row.querySelector(`[data-act="${name}"]`); if (button) button.onclick = handler; };
                             act('apply', () => {
-                                const changed = apply(scheme);
-                                ctx.ui.toast(changed ? `已切换到「${scheme.name}」，改了 ${changed} 个条目的开关` : `已经是「${scheme.name}」的开关了`, { kind: 'success' });
+                                switchTo(scheme);
                                 list();
                             });
                             act('edit', () => edit(scheme));
@@ -173,6 +178,7 @@ RPHubSDK.register({
                         };
                         const exporter = body.querySelector('[data-act="export"]');
                         if (exporter) exporter.onclick = () => download(JSON.stringify({ format: FORMAT, schemes: schemes.map(({ name, states }) => ({ name, states })) }, null, 2), 'RPH 预设方案.json');
+                        syncBar();
                     };
 
                     // 编辑方案：不改现在的开关，只改方案里记的；还没记进方案的条目默认关着，标出来。
@@ -210,6 +216,59 @@ RPHubSDK.register({
                 }
             });
         }
+
+        // 原生「预设管理」页：列表上方加一个方案下拉框（像酒馆预设面板顶上的下拉框），选中就切换，旁边「管理方案」打开面板。
+        // 用 RPH 自己的下拉框组件，样式和设置页一致；页面切走时随原页面一起销毁，切回来再加上。
+        let bar = null;
+        function syncBar() {
+            if (!bar?.root.isConnected) return;
+            let current = null;
+            try { current = schemes.find(isCurrent) || null; } catch (_) { /* 预设还没加载好 */ }
+            Object.assign(bar.view, {
+                value: current?.id || '',
+                options: schemes.map((scheme) => ({ value: scheme.id, label: scheme.name })),
+                placeholder: schemes.length ? '现在的开关没存成方案' : '还没有方案，点「管理方案」存一个'
+            });
+        }
+        async function mountBar() {
+            await load();
+            const list = document.getElementById('presets-list');
+            const Select = window.RPHubCustomSelect;
+            const Vue = globalThis.Vue;
+            if (bar?.root.isConnected || !list || !Select || !Vue?.createApp) return syncBar();
+            const root = document.createElement('div');
+            root.className = 'mb-4';
+            root.dataset.presetSchemesBar = '';
+            root.innerHTML = `<label class="settings-label">预设方案</label>
+                <div class="flex items-center gap-2"><div class="flex-1 min-w-0" data-select></div>
+                <button type="button" class="modal-secondary-button rph-ui-button" data-manage>管理方案</button></div>`;
+            root.querySelector('[data-manage]').onclick = openPanel;
+            const view = Vue.reactive({ value: '', options: [], placeholder: '' });
+            const app = Vue.createApp({
+                render: () => Vue.h(Select, {
+                    modelValue: view.value, options: view.options, placeholder: view.placeholder, buttonClass: 'settings-control',
+                    'onUpdate:modelValue': (id) => {
+                        const scheme = schemes.find((item) => item.id === id);
+                        if (scheme) switchTo(scheme);
+                        syncBar();
+                    }
+                })
+            });
+            app.mount(root.querySelector('[data-select]'));
+            list.before(root);
+            bar = { root, view, app };
+            syncBar();
+        }
+        ctx.app.watch(() => ctx.app.get('currentView'), (view) => {
+            if (view !== 'presets') {
+                bar?.app.unmount();
+                bar = null;
+                return;
+            }
+            globalThis.Vue.nextTick(() => mountBar().catch((error) => ctx.log('预设页方案栏没加上', error)));
+        }, { immediate: true });
+        // 在原生列表里手动开关条目后，下拉框跟着显示对应的方案（或「没存成方案」）。
+        ctx.app.watch(() => (ctx.app.get('presets') || []).map((preset) => `${preset.name}\n${isOn(preset)}`).join('\n'), syncBar);
 
         ctx.ui.addComposerButton({ label: '预设方案', text: '方案', onClick: openPanel });
         ctx.ui.addSidebarEntry({ label: '预设方案', onClick: openPanel });

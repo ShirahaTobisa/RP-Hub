@@ -114,6 +114,33 @@ try {
     await saveAs('同上');
     assert.equal(await row('同上').locator('.rph-ui-muted').first().textContent(), '和现在的开关一样');
     console.log('PASS schemes survive a reload and switch after it');
+
+    // RPH 自己的「预设管理」页：列表上方的方案下拉框显示当前方案、选中就切换；手动改开关后显示没存成方案；切走再回来只有一个。
+    await page.keyboard.press('Escape');
+    const setView = (view) => page.evaluate((view) => {
+        const a = document.querySelector('#app').__vue_app__;
+        (a._instance?.proxy || a._container._vnode.component.proxy).currentView = view;
+    }, view);
+    await setView('presets');
+    const bar = page.locator('[data-preset-schemes-bar]');
+    const trigger = bar.locator('button[aria-haspopup="listbox"]');
+    await trigger.waitFor();
+    assert.equal((await trigger.textContent()).trim(), '分享来的');
+    assert.equal(await bar.evaluate((node) => node.nextElementSibling?.id), 'presets-list', 'the bar sits right above the native preset list');
+    await trigger.click();
+    await page.getByRole('option', { name: '日常' }).click();
+    assert.deepEqual(await switches(), ['A:true', 'B:false', '第一个:true', '第二个:false', 'new:false']);
+    await page.waitForFunction(() => document.querySelector('[data-preset-schemes-bar] button[aria-haspopup="listbox"]').textContent.trim() === '日常');
+    await setSwitch('第二个', true);
+    await page.waitForFunction(() => document.querySelector('[data-preset-schemes-bar] button[aria-haspopup="listbox"]').textContent.trim() === '现在的开关没存成方案');
+    await setView('chat');
+    await bar.waitFor({ state: 'detached' });
+    await setView('presets');
+    await trigger.waitFor();
+    assert.equal(await bar.count(), 1);
+    await bar.getByRole('button', { name: '管理方案' }).click();
+    await row('日常').waitFor();
+    console.log('PASS the native preset page gets a scheme dropdown that switches in one pick and follows manual toggles');
 } finally {
     await browser.close();
     await harness.close();
