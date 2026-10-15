@@ -21,6 +21,7 @@ const original = oldRuns.original, edited = oldRuns.edited;
 const marker = 'image###blue sky, white clouds, landscape###';
 const canonical = source => { const url = new URL(source, harness.url); url.searchParams.delete('_rph_retry'); return url.pathname + url.search; };
 const posts = () => report.imageRequests.filter(r => r.method === 'POST').length;
+const thumbs = () => report.thumbUploads || 0;
 function passed(name) { report.passed.push(name); console.log('PASS ' + name); }
 const row = page => page.locator('[data-chat-index="0"][data-role="assistant"]');
 const frame = page => row(page).locator('.rp-generated-image-frame');
@@ -87,7 +88,7 @@ async function device(seed, mobile = false) {
                 if (req.method() === 'PUT') report.imageRequests.at(-1).contentType = req.headers()['content-type'];
                 return imageFiles.has(key) ? route.fulfill(fixtureImage) : route.fulfill({ status:404, json:{error:'fixture original missing'} });
             }
-            if (url.pathname === '/api/rp-image-thumb') return route.fulfill({json:{ok:true}});
+            if (url.pathname === '/api/rp-image-thumb') { report.thumbUploads = thumbs() + 1; return route.fulfill({json:{ok:true}}); }
             if (url.pathname === '/image/api/settings') return route.fulfill({json: generationSettings ? {ok:true, settings:generationSettings} : {}});
             if (url.pathname === '/api/rp-sync') {
                 if (url.searchParams.get('action') === 'upload-part') {
@@ -176,12 +177,16 @@ try {
         }
         assert.equal(posts(),beforePosts);
         passed('desktop native add/delete/replace prose retains exact image URL and parameters');
+        assert.equal(thumbs(), 0, 'loading stored images re-uploaded thumbnails');
         await frame(page).locator('.rp-image-reroll-button').click();
         await page.waitForFunction(before=>document.querySelector('[data-chat-index="0"] .rp-generated-image-frame img')?.src !== before, harness.url+expected);
         const rerolled = await imageUrl(page); assert.notEqual(rerolled,expected); assert.equal(posts(),beforePosts+1);
+        for (let i = 0; i < 50 && thumbs() < 1; i += 1) await page.waitForTimeout(100);
+        assert.equal(thumbs(), 1, 'a freshly generated image did not upload its thumbnail');
         await edit(page,edited); assert.equal(await imageUrl(page),rerolled);
         await page.reload({waitUntil:'domcontentloaded'}); await ready(page); assert.equal(await imageUrl(page),rerolled);
-        passed('explicit reroll survives edit/save/reload');
+        await page.waitForTimeout(700); assert.equal(thumbs(), 1, 'reloading a stored image re-uploaded its thumbnail');
+        passed('explicit reroll survives edit/save/reload; thumbnail uploaded once, not on every load');
         await app(page,'selectCharacter',1); await ready(page);
         assert.equal(await frame(page).locator('img').count(),0);
         await app(page,'selectCharacter',0); await ready(page); assert.equal(await imageUrl(page),rerolled);

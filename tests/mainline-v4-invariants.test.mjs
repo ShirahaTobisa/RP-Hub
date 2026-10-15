@@ -25,8 +25,8 @@ function normalizedWorkerSegment(source, startMarker, endMarker) {
 }
 
 const protectedFiles = new Map([
-    ['DB/image-module.js', '8D99332074F2E41CF902EC0918072687CF30A4F47DBCF52FF532EC456ECB8AF4'],
-    ['_worker.js', '82D7917B9C3B3EB2D96C1E4D70D4933EC956B9261A04A4B069312A42BCDB36D1'],
+    ['DB/image-module.js', '7F75F5E4C09531E551E6DD07719541E10CAC9097C8925CDCA600A0C63A333F08'],
+    ['_worker.js', 'A32197744BE5536829DE6A2D196375B2313DD28794EC4AE0E2CEC87DF514A08C'],
     ['DB/char-store.js', 'A02451B65EA470AAA936A772EA75900C323618CFA579953350996771D744D7FE'],
     ['DB/bootstrap.js', '8A5D1C2DB552EF81CDB800BD067D4CE01277EC92D318354B6A1CF0E3B327BEC6'],
     ['DB/styles.css', '27ADB383C9C86E8D6BB85E2B910D799688B8B80AA4C837C135C5944FBD6BECD7'],
@@ -45,7 +45,7 @@ assert.equal(workerSource.split(workshopInjection).length - 1, 1, 'workshop load
 const workerWithoutWorkshopInjection = workerSource.replace(/<script src="\/DB\/nav-adapter\.js\?v=sync-195"><\/script>\r?\n/, '').replace(`${workshopInjection}${workerSource.includes(`${workshopInjection}\r\n`) ? '\r\n' : '\n'}`, '');
 assert.equal(
     sha256Bytes(Buffer.from(workerWithoutWorkshopInjection, 'utf8')),
-    '96422225FE81001E88563D9D7B24B47035C08F3810FC22BA734307E28852ACBC',
+    'A7D058E83598BE600D73048A58D65DF1300EE764116CE5A4526DF342381C992D',
     '_worker.js differs from the current img baseline by more than the workshop injection line'
 );
 const stableWorkerSegments = [

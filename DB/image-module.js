@@ -256,9 +256,33 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         showImageToast('图片记录保存失败，可能影响同步');
     }
 
+    function describeGenerationError(error) {
+        const text = String(error?.message || '').replace(/^图片生成失败[：:]\s*/, '').trim();
+        return Array.from(text).slice(0, 80).join('');
+    }
+
+    // 一轮回复里几张图一起失败只弹一条，带上 Worker/插件给的原因。
+    // 重绘后旧 img 还没丢时，新旧两个 img 共用一次请求、拿到同一个 Error，只算一张。
+    const generationFailures = { reasons: new Set(), errors: new Set(), count: 0, timer: 0 };
     function reportImageGenerationFailure(error = null) {
         log('image generation failed', error);
-        showImageToast('图片生成失败，请检查密钥或服务状态');
+        if (error instanceof Object) {
+            if (generationFailures.errors.has(error)) return;
+            generationFailures.errors.add(error);
+        }
+        const reason = describeGenerationError(error);
+        if (reason) generationFailures.reasons.add(reason);
+        generationFailures.count += 1;
+        clearTimeout(generationFailures.timer);
+        generationFailures.timer = setTimeout(() => {
+            const { count } = generationFailures;
+            const [first, ...others] = generationFailures.reasons;
+            generationFailures.reasons.clear();
+            generationFailures.errors.clear();
+            generationFailures.count = 0;
+            if (!first) return showImageToast('图片生成失败，请检查密钥或服务状态');
+            showImageToast(`图片生成失败${count > 1 ? `（${count} 张）` : ''}：${first}${others.length ? `；另有 ${others.length} 种原因` : ''}`);
+        }, 800);
     }
 
     function hashText(value) {
@@ -1926,7 +1950,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             image.src = retryUrl.toString();
         }).catch((error) => {
             image.dataset.rphImageGenerationState = 'failed';
-            image.alt = '生图失败，请检查密钥或服务状态';
+            image.alt = `生图失败：${describeGenerationError(error) || '请检查密钥或服务状态'}`;
             reportImageGenerationFailure(error);
         });
     }
@@ -1978,11 +2002,13 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         if (!(image instanceof HTMLImageElement)) return;
         const frame = image.closest('.rp-generated-image-frame');
         if (!frame) return;
+        // 只有这个页面刚生成出来的图（重试加载）才顺手传缩略图；已存好的图每次加载不再重做，缺的由图片管理页补。
+        const justGenerated = image.dataset.rphImageGenerationState === 'retrying';
         delete image.dataset.rphImageGenerationState;
         if (frame.getAttribute('data-image-render-key')) {
             scheduleSave({ uuid: frame.getAttribute('data-character-uuid') || '' });
         }
-        uploadImageThumbnail(image).catch((error) => log('thumbnail task failed', error));
+        if (justGenerated) uploadImageThumbnail(image).catch((error) => log('thumbnail task failed', error));
     }
 
     async function getRecordBucketEntry(key, ownerUuid = '') {

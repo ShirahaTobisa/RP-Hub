@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('../', import.meta.url));
 const tests = [
     'image-edit.test.mjs',
+    'image-failure-toast.test.mjs',
     'image-active-character.test.mjs',
     'image-active-character-redlines.test.mjs',
     'image-attribution-189.test.mjs',

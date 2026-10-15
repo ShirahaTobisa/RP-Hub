@@ -515,6 +515,11 @@ async function fetchImageWithTimeout(url) {
     }
 }
 
+// 不用的 R2 对象把流关掉，不留给 GC。
+async function discardBody(object) {
+    try { await object?.body?.cancel?.(); } catch (_) { }
+}
+
 function imageResponse(body, contentType, extraHeaders = {}) {
     return new Response(body, {
         headers: {
@@ -689,30 +694,44 @@ async function handleImageRender(request, env) {
     if (migrated) candidates.push({ params, key: migrated.key, deletedKey: createImageDeletedKey(migrated.characterName, migrated.checksum) });
     const bucket = getBucket(env);
 
-    // Check all provider candidates for tombstones before checking any cache.
-    for (const candidate of candidates) {
-        const deleted = await bucket.get(candidate.deletedKey);
-        if (deleted) {
-            return imageResponse(request.method === 'HEAD' ? null : deletedImagePlaceholder(candidate.params.character_name), 'image/svg+xml; charset=utf-8', {
-                'cache-control': 'private, no-store',
-                'content-security-policy': "default-src 'none'; sandbox",
-                'x-rp-image-cache': 'DELETED',
-                'x-rp-image-key': imageHeaderValue(candidate.key)
-            });
-        }
+    // 墓碑和原图一起并行查，不再逐个等：有墓碑就回占位图（删掉的图不能再显示），否则按候选顺序取第一张存在的图。
+    const [tombstones, objects] = await Promise.all([
+        Promise.all(candidates.map((candidate) => bucket.get(candidate.deletedKey))),
+        Promise.all(candidates.map((candidate) => bucket.get(candidate.key)))
+    ]);
+    const deletedAt = tombstones.findIndex(Boolean);
+    const hitAt = deletedAt >= 0 ? -1 : objects.findIndex(Boolean);
+    await Promise.all([...tombstones, ...objects.filter((object, index) => index !== hitAt)].map(discardBody));
+    if (deletedAt >= 0) {
+        const candidate = candidates[deletedAt];
+        return imageResponse(request.method === 'HEAD' ? null : deletedImagePlaceholder(candidate.params.character_name), 'image/svg+xml; charset=utf-8', {
+            'cache-control': 'private, no-store',
+            'content-security-policy': "default-src 'none'; sandbox",
+            'x-rp-image-cache': 'DELETED',
+            'x-rp-image-key': imageHeaderValue(candidate.key)
+        });
     }
-
-    for (const candidate of candidates) {
-        const cached = await bucket.get(candidate.key);
-        if (cached) {
-            const contentType = normalizeRasterContentType(cached.httpMetadata?.contentType);
-            if (!contentType) return error('缓存图片格式不受支持。', 415);
-            return imageResponse(request.method === 'HEAD' ? null : cached.body, contentType, {
-                'content-length': String(cached.size || 0),
-                'x-rp-image-cache': 'HIT',
-                'x-rp-image-key': imageHeaderValue(candidate.key)
-            });
+    if (hitAt >= 0) {
+        const candidate = candidates[hitAt];
+        const cached = objects[hitAt];
+        const contentType = normalizeRasterContentType(cached.httpMetadata?.contentType);
+        if (!contentType) return error('缓存图片格式不受支持。', 415);
+        // 存好的图不会再变（重新生成会换 seed，地址就不同）：让浏览器留一份，每次显示前只带 ETag 问一句“变了没”，
+        // 没变回 304 不传正文；删掉的图在上面已经回了占位图。
+        const headers = {
+            'cache-control': 'private, no-cache',
+            etag: cached.httpEtag,
+            'x-rp-image-cache': 'HIT',
+            'x-rp-image-key': imageHeaderValue(candidate.key)
+        };
+        if (cached.httpEtag && request.headers.get('if-none-match') === cached.httpEtag) {
+            await discardBody(cached);
+            return new Response(null, { status: 304, headers });
         }
+        return imageResponse(request.method === 'HEAD' ? null : cached.body, contentType, {
+            'content-length': String(cached.size || 0),
+            ...headers
+        });
     }
 
     if (request.method === 'PUT') return storeUploadedImage(request, env, bucket, primary);

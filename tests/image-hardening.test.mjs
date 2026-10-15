@@ -343,7 +343,14 @@ async function testNameKeyCompatibilityAndAliases() {
     const cachedResponse = await worker.fetch(new Request(firstUrl), env, new WaitUntilContext());
     assert.equal(cachedResponse.status, 200);
     assert.equal(cachedResponse.headers.get('x-rp-image-cache'), 'HIT');
-    assert.match(cachedResponse.headers.get('cache-control') || '', /no-store/i);
+    // 命中的图让浏览器留着，之后只带 ETag 来问：没变回 304，不再传正文。
+    assert.match(cachedResponse.headers.get('cache-control') || '', /no-cache/i);
+    const etag = cachedResponse.headers.get('etag');
+    assert.match(etag || '', /^".+"$/, 'cache hit must carry an ETag');
+    const revalidated = await worker.fetch(new Request(firstUrl, { headers: { 'if-none-match': etag } }), env, new WaitUntilContext());
+    assert.equal(revalidated.status, 304);
+    assert.equal(revalidated.headers.get('x-rp-image-cache'), 'HIT');
+    assert.equal(await revalidated.text(), '');
     assert.equal(upstream.calls.length, 1, 'cache hit called the image provider again');
 
     const legacyProviderUrl = new URL(firstUrl);
@@ -529,6 +536,12 @@ async function testThumbnailAuthDeleteAndTombstonePrecedence() {
     assert.equal(deletedRender.headers.get('x-rp-image-cache'), 'DELETED');
     assert.match(deletedRender.headers.get('content-type') || '', /image\/svg\+xml/);
     assert.equal(upstream.calls.length, providerCallsBefore, 'tombstoned image called the provider again');
+    // 浏览器带着删除前的 ETag 来问，也要拿到占位图，不能回 304 让它继续用旧图。
+    const staleRender = await worker.fetch(new Request(renderUrl, {
+        headers: { 'if-none-match': `"${bucket.record(imageKey).etag}"` }
+    }), env, new WaitUntilContext());
+    assert.equal(staleRender.status, 200);
+    assert.equal(staleRender.headers.get('x-rp-image-cache'), 'DELETED');
 }
 
 async function testImageTokenAuthAndProviderMismatch() {
