@@ -206,7 +206,6 @@
     let selfUpdateCheckButton = null;
     let selfUpdateApplyButton = null;
     let selfUpdateRollbackButton = null;
-    let forkExportButton = null;
     let selfUpdateInfo = null;
     let selfUpdateStatus = null;
     let selfUpdateVersionButton = null;
@@ -2667,7 +2666,7 @@
         if (appUpdateCheckButton) appUpdateCheckButton.disabled = disabled;
         if (appUpdateApplyButton) appUpdateApplyButton.disabled = disabled;
         if (appUpdateRollbackButton) appUpdateRollbackButton.disabled = disabled;
-        for (const button of [selfUpdateCheckButton, selfUpdateApplyButton, selfUpdateRollbackButton, forkExportButton, selfUpdateVersionButton]) {
+        for (const button of [selfUpdateCheckButton, selfUpdateApplyButton, selfUpdateRollbackButton, selfUpdateVersionButton]) {
             if (button) button.disabled = disabled;
         }
         if (appUpdateVersionButton) appUpdateVersionButton.disabled = disabled;
@@ -2675,8 +2674,8 @@
     }
 
     function getVueProxy() {
-        const appRoot = document.getElementById('app');
-        return appRoot?.__vue_app__?._instance?.proxy || null;
+        const app = document.getElementById('app')?.__vue_app__;
+        return app?._instance?.proxy || app?._container?._vnode?.component?.proxy || null;
     }
 
     async function flushAppState() {
@@ -3079,7 +3078,6 @@
                             <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="self-update-check">检测版本</button>
                             <button type="button" class="rp-sync-modal__button modal-primary-button" data-action="self-update-apply">一键更新</button>
                             <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="self-update-rollback">回退上一次部署</button>
-                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="fork-export">转成魔改版的数据</button>
                         </div>
                     </div>
                 </details>
@@ -3099,7 +3097,6 @@
         selfUpdateCheckButton = modalRoot.querySelector('[data-action="self-update-check"]');
         selfUpdateApplyButton = modalRoot.querySelector('[data-action="self-update-apply"]');
         selfUpdateRollbackButton = modalRoot.querySelector('[data-action="self-update-rollback"]');
-        forkExportButton = modalRoot.querySelector('[data-action="fork-export"]');
         selfUpdateInfo = modalRoot.querySelector('[data-role="self-update-info"]');
         selfUpdateVersionButton = modalRoot.querySelector('[data-action="self-update-version-button"]');
         selfUpdateVersionMenu = modalRoot.querySelector('[data-action="self-update-version-menu"]');
@@ -3118,7 +3115,6 @@
         selfUpdateCheckButton.addEventListener('click', () => checkSelfUpdate().catch(() => { }));
         selfUpdateApplyButton.addEventListener('click', () => applySelfUpdate().catch(() => { }));
         selfUpdateRollbackButton.addEventListener('click', () => rollbackSelfUpdate().catch(() => { }));
-        forkExportButton.addEventListener('click', () => convertToFork().catch(() => { }));
         for (const [button, menu] of [[appUpdateVersionButton, appUpdateVersionMenu], [selfUpdateVersionButton, selfUpdateVersionMenu]]) {
             button.addEventListener('click', () => {
                 if (!state.syncing) menu.classList.toggle('is-open');
@@ -3231,6 +3227,36 @@
             await exportForkSnapshot();
             updateProgress(100, '已经转好。接下来用魔改版的一键部署页「更新」这个站点，程序就换成魔改版了；换完后每台设备在魔改版里点一次「下载」。');
         });
+    }
+
+    // 这个按钮很少用，怕误触，不放同步面板，放在 RPH 设置页最底下「空间管理」里。
+    function ensureForkExportEntry() {
+        const heading = [...document.querySelectorAll('h4.settings-subheading')].find((node) => node.textContent.trim() === '空间管理');
+        const section = heading?.closest('.pt-6');
+        if (!section || section.querySelector('[data-action="fork-export"]')) return;
+        const row = document.createElement('div');
+        row.className = 'flex items-center justify-between gap-3 mt-6 text-xs text-gray-500';
+        row.innerHTML = '<span>要换成魔改版（cy-2-u/rp）时用</span><button type="button" class="settings-action flex-shrink-0 whitespace-nowrap" data-action="fork-export">转成魔改版的数据</button>';
+        row.lastChild.addEventListener('click', () => convertToFork().catch(() => { }));
+        section.appendChild(row);
+    }
+
+    // 只在设置页打开时观察页面变化，离开就停，不影响聊天时的性能。
+    function watchSettingsView() {
+        let observer = null;
+        const start = setInterval(() => {
+            const proxy = getVueProxy();
+            if (!proxy || !globalThis.Vue?.watch) return;
+            clearInterval(start);
+            globalThis.Vue.watch(() => proxy.currentView, (view) => {
+                observer?.disconnect();
+                observer = null;
+                if (view !== 'settings') return;
+                ensureForkExportEntry();
+                observer = new MutationObserver(ensureForkExportEntry);
+                observer.observe(document.getElementById('app'), { childList: true, subtree: true });
+            }, { immediate: true });
+        }, 1000);
     }
 
     function returnSyncFocus() {
@@ -3473,4 +3499,5 @@
         ensureModal();
         mountSyncButton();
     }
+    watchSettingsView();
 })();
