@@ -83,6 +83,42 @@ try {
         await b.context.close();
         console.log(`PASS ${kind.toUpperCase()} backup imports into another site, keeping that site's sync password and state`);
     }
+
+    // 柳贯一 20.3.2 导出的 1.2 版备份：日期、Blob、定型数组带类型标记，多一个结束标记文件，导入后类型照原样还原。
+    const liuZip = await a.page.evaluate(async () => {
+        const b64 = (bytes) => btoa(String.fromCharCode(...bytes));
+        const createdAt = '2026-10-17T00:00:00.000Z';
+        const record = { k: 'rp_hub_liu12_probe', v: { at: { __rphub_type__: 'Date', value: createdAt },
+            blob: { __rphub_bin__: b64([7, 8, 9]), __rphub_type__: 'Blob', __rphub_mime__: 'audio/mpeg' }, view: { __rphub_bin__: b64([1, 2]), __rphub_type__: 'Uint8Array' } } };
+        const manifest = { format: 'rphub-backup-zip', version: '1.2', plugin: '柳贯一插件', pluginVersion: '20.3.2', createdAt, totalRecords: 1, volumes: 1, volumeMode: 'concatenated-zip-stream',
+            databases: [{ name: 'RPHubDB', stores: [{ store: 'store', keyPath: null, autoInc: false, indexes: [], records: 1, chunks: ['RPHubDB/store/chunk-0000.jsonl'] }] }],
+            webStorage: { localStorage: 1, sessionStorage: 0 } };
+        const zip = new JSZip();
+        zip.file('RPHubDB/store/chunk-0000.jsonl', JSON.stringify(record) + '\n');
+        zip.file('storage/localStorage.json', JSON.stringify({ rphub_notes_v1: '柳贯一 20.3.2 的便签' }));
+        zip.file('storage/sessionStorage.json', '{}');
+        zip.file('manifest.json', JSON.stringify(manifest));
+        zip.file('backup.complete.json', JSON.stringify({ format: manifest.format, createdAt, totalRecords: 1 }));
+        return Array.from(await zip.generateAsync({ type: 'uint8array' }));
+    });
+    const b = await openSite(siteB, { local: {}, records: [] });
+    await openBackupPanel(b.page);
+    const chooser = b.page.waitForEvent('filechooser');
+    await b.page.locator('[data-rph-workshop-panel] [data-act="import"]').click();
+    await (await chooser).setFiles({ name: 'RPHub全站备份_柳贯一.zip', mimeType: 'application/zip', buffer: Buffer.from(liuZip) });
+    await b.page.locator('[data-rph-ui-confirm] [data-rph-ui-confirm-accept]').click();
+    await b.page.waitForEvent('load', { timeout: 30000 });
+    await initializeFixture(b.page);
+    const probe = await b.page.evaluate(async () => {
+        const db = await fixture.db();
+        const value = await new Promise((resolve) => { const request = db.transaction('store').objectStore('store').get('rp_hub_liu12_probe'); request.onsuccess = () => resolve(request.result); });
+        db.close();
+        return { at: value.at instanceof Date && value.at.toISOString(), blob: value.blob instanceof Blob && [value.blob.type, ...new Uint8Array(await value.blob.arrayBuffer())],
+            view: value.view instanceof Uint8Array && [...value.view], note: localStorage.getItem('rphub_notes_v1') };
+    });
+    assert.deepEqual(probe, { at: '2026-10-17T00:00:00.000Z', blob: ['audio/mpeg', 7, 8, 9], view: [1, 2], note: '柳贯一 20.3.2 的便签' });
+    await b.context.close();
+    console.log('PASS a version 1.2 backup from the Liuguanyi plugin 20.3.2 restores dates, blobs and typed arrays');
     await a.context.close();
     assert.deepEqual(errors, []);
 } finally {

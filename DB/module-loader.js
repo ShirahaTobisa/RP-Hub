@@ -2,8 +2,8 @@
 (() => {
     'use strict';
 
-    const API_VERSION = 5;
-    const LOADER_VERSION = 'r2-workshop-5';
+    const API_VERSION = 6;
+    const LOADER_VERSION = 'r2-workshop-6';
     const LIST_KEY = 'rp_hub_workshop_modules_v1';
     const DB_NAME = 'RPHubDB';
     const DB_STORE = 'store';
@@ -31,6 +31,7 @@
         managementBody: null,
         appSettled: false,
         resolveAppSettled: null,
+        mounted: null,
         runtimeActive: false,
         safeMode: false,
         chatObserver: null,
@@ -74,7 +75,8 @@
             url,
             enabled: value.enabled === true,
             addedAt: Number.isFinite(value.addedAt) ? value.addedAt : 0,
-            lastStatus: VALID_STATUSES.has(value.lastStatus) ? value.lastStatus : ''
+            lastStatus: VALID_STATUSES.has(value.lastStatus) ? value.lastStatus : '',
+            beforeMount: value.beforeMount === true
         };
     }
 
@@ -106,7 +108,8 @@
                 url: entry.url,
                 enabled: entry.enabled,
                 addedAt: entry.addedAt,
-                lastStatus: entry.lastStatus
+                lastStatus: entry.lastStatus,
+                ...(entry.beforeMount ? { beforeMount: true } : {})
             }))));
             return true;
         } catch (error) {
@@ -997,7 +1000,8 @@
             name: manifest.name.trim(),
             version: manifest.version.trim(),
             requiresApi: manifest.requiresApi,
-            init: manifest.init
+            init: manifest.init,
+            beforeMount: typeof manifest.beforeMount === 'function' ? manifest.beforeMount : null
         };
     }
 
@@ -1028,6 +1032,8 @@
         runtime.entry.name = checked.name;
         runtime.entry.version = checked.version;
         runtime.entry.lastStatus = '';
+        if (checked.beforeMount && !runtime.entry.beforeMount) showToast(`${checked.name} 要再刷新一次才能完整生效`, { kind: 'info' });
+        runtime.entry.beforeMount = !!checked.beforeMount;
         writeInstallations();
         refreshManagementPanel();
         runtime.initializing = appSettled.then(() => initializeRuntime(runtime));
@@ -1063,7 +1069,7 @@
                 if (!runtime.registrationAttempted) setRuntimeStatus(runtime, 'load-error');
             }, REGISTER_TIMEOUT_MS);
         };
-        runtime.loading = appSettled.then(async () => {
+        runtime.loading = (entry.beforeMount ? Promise.resolve() : appSettled).then(async () => {
             const code = await loadModuleSource(entry);
             script.textContent = code;
             document.head.appendChild(script);
@@ -1088,7 +1094,32 @@
             showToast(`安全模式:已跳过 ${enabledCount} 个模块`, { kind: 'info' });
         }
         if (state.runtimeActive) installRuntimeHooks();
-        setTimeout(settleApp, APP_STARTUP_SETTLE_MS);
+        Promise.resolve(state.mounted).finally(() => setTimeout(settleApp, APP_STARTUP_SETTLE_MS));
+    }
+
+    // API 6：上次运行时登记过 beforeMount 的插件先于页面加载，官方 app.mount('#app') 等它们加载完
+    // （最多 REGISTER_TIMEOUT_MS）再挂载，插件借此改官方根组件和页面模板。新装或更新的插件刷新一次后生效。
+    function holdMount(runtimes) {
+        const createApp = window.Vue?.createApp;
+        if (!runtimes.length || typeof createApp !== 'function') return;
+        window.Vue.createApp = function (...args) {
+            const app = createApp.apply(this, args);
+            const mount = app.mount;
+            app.mount = function (target, ...rest) {
+                if (target !== '#app') return mount.call(this, target, ...rest);
+                window.Vue.createApp = createApp;
+                const timeout = new Promise((resolve) => setTimeout(resolve, REGISTER_TIMEOUT_MS));
+                state.mounted = Promise.race([Promise.allSettled(runtimes.map((runtime) => runtime.loading)), timeout]).then(() => {
+                    for (const runtime of runtimes) {
+                        if (state.registeredIds.get(runtime.manifest?.id) !== runtime) continue;
+                        try { runtime.manifest.beforeMount?.({ options: app._component, root: document.querySelector(target) }); }
+                        catch (error) { log(`module ${runtime.manifest.id} beforeMount failed`, error); }
+                    }
+                    mount.call(app, target, ...rest);
+                });
+            };
+            return app;
+        };
     }
 
     window.RPHubNavAdapter.registerEntry({
@@ -1103,6 +1134,7 @@
     state.runtimeActive = !state.safeMode && enabled.length > 0;
     if (state.runtimeActive) {
         for (const entry of enabled) createRuntime(entry);
+        holdMount(enabled.filter((entry) => entry.beforeMount).map((entry) => state.runtimesByUrl.get(entry.url)));
     }
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', startDomRuntime, { once: true });

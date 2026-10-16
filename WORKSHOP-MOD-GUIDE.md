@@ -1,6 +1,6 @@
 # RP-Hub 创意工坊 Mod 作者指南
 
-这份指南描述当前 `DB/module-loader.js` 的 API 5，兼容原有 API 1～4 模块。指南和 `examples/` 都是教材，
+这份指南描述当前 `DB/module-loader.js` 的 API 6，兼容原有 API 1～5 模块。指南和 `examples/` 都是教材，
 不会进入 `dist/` 或发布 ZIP。
 
 ## 1. 这是什么与信任模型
@@ -50,8 +50,9 @@ Mod 是由用户在“模块管理”面板通过 URL 或文件导入安装的 J
 | `id` | 必填字符串，必须匹配 `^[a-z0-9-]{3,32}$`；也是存储隔离和卸载清理的身份。 |
 | `name` | 必填、非空字符串；显示在模块管理面板。 |
 | `version` | 必填、非空字符串；loader 不解释版本格式，只负责显示。 |
-| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `5`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`，使用 `ctx.image` 的模块声明 `5`。 |
+| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `6`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`，使用 `ctx.image` 的模块声明 `5`；离不开 `beforeMount` 的模块声明 `6`（可有可无的不用改，旧外壳会忽略它）。 |
 | `init(ctx)` | 必填函数；应用启动落定后调用。抛错会隔离为 `init-error`。 |
+| `beforeMount({ options, root })` | 可选函数（API 6）；官方页面挂载前调用一次，见下文。 |
 
 文件加载后要立刻同步调用 `RPHubSDK.register(manifest)`。模块必须在 3 秒期限内注册，不能
 等网络、定时器或其他异步回调完成后再注册。
@@ -177,10 +178,19 @@ ctx.requests.onChat(body => {
 
 完整例子见 `DB/modules/nai2api-web.js`（Nai2API 网页任务，支持 1–50 步）。
 
+### `beforeMount`（API 6）
+
+有些改动只能在官方页面挂载前做，比如给官方根组件加状态、改页面模板。manifest 里写了 `beforeMount` 的插件，加载器会在下次打开页面时先加载它，并让官方 `app.mount('#app')` 等它加载完（最多 3 秒，超时照常挂载）。
+
+- `options` 是官方根组件的选项（`setup`、`components` 等），可以直接替换或修改；`root` 是 `#app` 元素，改它的 `innerHTML` 就是改页面模板。
+- 只调用一次，在 `init` 之前，这时页面还没挂载，不能用 `ctx`；抛错只记日志，页面照常挂载。
+- 加载器要等插件第一次注册才知道它有 `beforeMount`，所以新装后（或第一次加上 `beforeMount` 的更新后）会提示再刷新一次，之后每次打开页面都先加载它。
+- 官方代码对不上时应保持原样，不要半改。例子见 `DB/modules/liuguanyi-20.3.2.js`（聊天模型五槽）。
+
 ### `ctx.log`、版本与上游信息
 
 `ctx.log(...)` 会以 `[RPH-mod:<id>]` 前缀写入控制台。`ctx.version` 是
-`{ api: 4, loader: 'r2-workshop-4' }`。`ctx.upstream.updateInfo` 是页面提供的
+`{ api: 6, loader: 'r2-workshop-6' }`。`ctx.upstream.updateInfo` 是页面提供的
 `RPH_R2_UPDATE_INFO` 原值，也可能是 `null`；请判空读取。
 
 ## 5. 生命周期与状态徽记

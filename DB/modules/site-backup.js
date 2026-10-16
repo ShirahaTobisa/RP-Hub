@@ -3,7 +3,7 @@
 // 和原版的区别：同步密码、同步状态、测试版的同步缓存不导出；导入时保留目标站点自己的这些设置；
 // 导入期间暂停页面自动保存（与云同步恢复相同的做法），写完立即刷新。
 RPHubSDK.register({
-    id: 'site-backup', name: '全站备份', version: '1.0.0', requiresApi: 1,
+    id: 'site-backup', name: '全站备份', version: '1.0.1', requiresApi: 1,
     init(ctx) {
         'use strict';
         const JSZIP_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
@@ -71,11 +71,16 @@ RPHubSDK.register({
             }
             return undefined;
         }
+        // 柳贯一 20.3 起的备份（1.2 版）给日期、Blob 和定型数组标了类型，按类型还原；没标类型但带 MIME 的是 Blob。
         function restoreDeep(value) {
             if (value === null || typeof value !== 'object') return value;
+            if (value.__rphub_type__ === 'Date') return new Date(value.value);
             if (typeof value.__rphub_bin__ === 'string') {
                 const u8 = b64ToBytes(value.__rphub_bin__);
-                return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+                const buffer = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+                if (value.__rphub_type__ === 'Blob' || (!value.__rphub_type__ && '__rphub_mime__' in value)) return new Blob([buffer], { type: value.__rphub_mime__ || '' });
+                const View = { Uint8Array, Uint8ClampedArray, Int8Array, Uint16Array, Int16Array, Uint32Array, Int32Array, Float32Array, Float64Array, DataView }[value.__rphub_type__];
+                return View ? new View(buffer) : buffer;
             }
             if (Array.isArray(value)) return value.map(restoreDeep);
             const out = {};
@@ -236,7 +241,7 @@ RPHubSDK.register({
             const ss = readWebStorage(sessionStorage);
             const zip = new JSZip();
             const manifest = {
-                format: 'rphub-backup-zip', version: '1.0', plugin: '全站备份', pluginVersion: '1.0.0',
+                format: 'rphub-backup-zip', version: '1.0', plugin: '全站备份', pluginVersion: '1.0.1',
                 createdAt: new Date().toISOString(), databases: [], webStorage: {}, totalRecords: 0
             };
             for (const db of databases) {

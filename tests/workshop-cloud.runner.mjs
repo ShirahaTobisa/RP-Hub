@@ -7,7 +7,7 @@ import { startHarness, initializeFixture, chromium, chrome, root, defaultUpstrea
 
 const evidence = path.join(root, 'evidence/workshop-cloud-20260917');
 await fs.mkdir(evidence, { recursive: true });
-const plugin = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-20.1.2.js'), 'utf8');
+const plugin = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-20.3.2.js'), 'utf8');
 const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const report = { passed: [], pageErrors: [], blocked: [], snapshots: [] };
@@ -145,7 +145,7 @@ async function records(page) {
             });
             return { scripts: await read('scripts'), data: await read('data'),
                 list: JSON.parse(localStorage.getItem('rp_hub_workshop_modules_v1')), notes: localStorage.getItem('rphub_notes_v1'),
-                settings: localStorage.getItem('rphub_split_apis_v2'), theme: localStorage.getItem('rphub_theme_color_v1'), playlist: localStorage.getItem('sakura_gramophone_playlist_v6') };
+                settings: localStorage.getItem('rphub_split_apis_v2'), theme: localStorage.getItem('rphub_theme_color_v1'), playlist: localStorage.getItem('sakura_gramophone_playlist_v6'), slots: localStorage.getItem('rphub_sakura_chat_extra_slots_v1') };
         } finally { db.close(); }
     });
 }
@@ -156,6 +156,7 @@ try {
     await a.evaluate(async encodedAudio => {
         localStorage.setItem('rphub_notes_v1', 'legacy note');
         localStorage.setItem('rphub_theme_color_v1', '#248572');
+        localStorage.setItem('rphub_sakura_chat_extra_slots_v1', JSON.stringify({ models: ['fourth-model', 'fifth-model'] }));
         localStorage.setItem('rphub_split_apis_v2', JSON.stringify({ memory: { active: 'custom', customUrls: { custom: 'https://fixture.invalid' }, keys: { custom: 'fixture-key' } } }));
         const db = await fixture.db('SakuraMomentsDB', 'moments');
         await fixture.write(db, [['list', Array.from({ length: 25 }, (_, i) => ({ id: String(i), title: 'Long moment ' + i,
@@ -248,6 +249,7 @@ try {
     assert.equal(restored.theme, initial.theme);
     assert.equal(restored.settings, initial.settings);
     assert.equal(restored.playlist, initial.playlist);
+    assert.equal(restored.slots, '{"models":["fourth-model","fifth-model"]}', 'chat model slots 4 and 5 sync too');
     assert.equal(await b.evaluate(() => localStorage.getItem('rp_hub_sync_password_v1')), 'device-b-password');
     passed('fresh mobile context pulls source, state, notes, long text, settings and audio');
     await b.evaluate(() => {

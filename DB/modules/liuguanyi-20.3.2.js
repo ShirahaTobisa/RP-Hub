@@ -1,7 +1,97 @@
-// Adapted from RP-Hub 终极美化 & 全功能增强 v20.1.2, author 苏萝萝.
+// Adapted from RP-Hub 终极美化 & 全功能增强 v20.3.2, author 苏萝萝.
 // Workshop edition: no image-generation integration; persistent data supports cloud sync.
 RPHubSDK.register({
-    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.1.2-rph.1', requiresApi: 2,
+    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.3.2-rph.1', requiresApi: 2,
+    // 原生五槽：页面挂载前把聊天模型槽位扩到五个，并恢复输入混淆开关。加载器 API 6 起才会调用，
+    // 旧外壳或官方代码对不上时保持官方三槽。
+    beforeMount({ options, root }) {
+        function replaceOne(text, old, value) {
+            if (text.split(old).length !== 2) throw new Error('原生五槽兼容检查失败: ' + old.slice(0,70));
+            return text.replace(old,value);
+        }
+        function transformSetup(source) {
+            let s = source;
+            s = replaceOne(s, 'fastModel: DEFAULT_API_CONFIG.fastModel,', "fastModel: DEFAULT_API_CONFIG.fastModel,\n            fourthModel: '', fifthModel: '',");
+            const start = s.indexOf('        watch(() => [settings.apiUrl, settings.apiKey, settings.model],');
+            const end = s.indexOf('        // Watch image gen and model settings for sync',start);
+            if (start < 0 || end < 0) throw new Error('找不到官方模型回写监听');
+            s = s.slice(0,start) + `        // Native slots share a single source of truth; preserve explicit selection for duplicate models.
+        try {
+            const old = JSON.parse(localStorage.getItem('rphub_sakura_chat_extra_slots_v1') || '{}');
+            if (!settings.fourthModel) settings.fourthModel = old.models?.[0] || '';
+            if (!settings.fifthModel) settings.fifthModel = old.models?.[1] || '';
+        } catch (_) {}
+        watch(() => [settings.apiUrl, settings.apiKey, settings.model], () => {
+            const slots = chatModelSlots.value;
+            const selected = slots.find(slot => slot.mode === currentModelMode.value && slot.model === settings.model);
+            if (!selected) {
+                const match = slots.find(slot => slot.model && slot.model === settings.model);
+                if (match) currentModelMode.value = match.mode;
+                else { settings.qualityModel = settings.model; currentModelMode.value = 'quality'; }
+            }
+            syncSettingsToGenerator();
+        });
+` + s.slice(end);
+            s = replaceOne(s, "                if (val === 'fast') {\n                    settings.model = settings.fastModel;\n                } else if (val === 'balanced') {\n                    settings.model = settings.balancedModel;\n                } else {\n                    settings.model = settings.qualityModel;\n                }", "                const slot = chatModelSlots.value.find(slot => slot.mode === val);\n                if (slot?.model) settings.model = slot.model;");
+            s = replaceOne(s,"{ mode: 'fast', model: settings.fastModel }", "{ mode: 'fast', model: settings.fastModel },\n            { mode: 'fourth', model: settings.fourthModel },\n            { mode: 'fifth', model: settings.fifthModel }");
+            s = replaceOne(s,'const [qualityModel, balancedModel, fastModel] = models;', 'const [qualityModel, balancedModel, fastModel, fourthModel, fifthModel] = models;');
+            s = replaceOne(s,"            settings.fastModel = fastModel || '';", "            settings.fastModel = fastModel || '';\n            settings.fourthModel = fourthModel || '';\n            settings.fifthModel = fifthModel || '';\n            localStorage.setItem('rphub_sakura_chat_extra_slots_v1', JSON.stringify({models:[settings.fourthModel,settings.fifthModel]}));");
+            // Restore the native setting while retaining the host's latest request pipeline.
+            if (!/inputObfuscation\s*:/.test(s))
+                s = replaceOne(s, 'preventTruncation: false,', 'preventTruncation: false,\n            inputObfuscation: true,');
+            const automatic = "const obfuscateInput = /gemini/i.test(String(requestModel || ''));";
+            const controlled = "const obfuscateInput = /gemini/i.test(String(requestModel || '')) && settings.inputObfuscation === true;";
+            if (s.includes(automatic)) s = replaceOne(s, automatic, controlled);
+            else if (!s.includes(controlled)) throw new Error('找不到官方输入混淆请求条件');
+            return s;
+        }
+        function patchComponents(components) {
+            const modal = components?.ModelSelectorModal;
+            if (!modal || modal.__sakuraNativeFive) return;
+            const template = replaceOne(modal.template, 'class="grid shrink-0 grid-cols-3 gap-2 px-4 pt-3 sm:px-5"', 'class="sakura-native-five-strip flex shrink-0 gap-2 px-4 pt-3 sm:px-5" style="overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch"');
+            const nextTemplate = replaceOne(template, 'class="min-w-0 rounded-xl border p-2.5 text-left transition-colors', 'style="flex:0 0 112px;min-width:112px" class="min-w-0 rounded-xl border p-2.5 text-left transition-colors');
+            const data = modal.data;
+            modal.data = function() { return {...data.call(this), draftSlotModels: ['', '', '', '', '']}; };
+            modal.watch = {...modal.watch, show(visible) {
+                if (visible && this.target === 'quickModels') {
+                    this.activeSlot = 0;
+                    this.draftSlotModels = [0,1,2,3,4].map(index => this.slotModels[index] || '');
+                }
+            }};
+            modal.template = nextTemplate;
+            modal.__sakuraNativeFive = true;
+        }
+        function patchRoot(html) {
+            let s = replaceOne(html, ':slot-models="[settings.qualityModel, settings.balancedModel, settings.fastModel]"', ':slot-models="[settings.qualityModel, settings.balancedModel, settings.fastModel, settings.fourthModel, settings.fifthModel]"');
+            s = replaceOne(s,'settings.fastModel].filter(Boolean).length', 'settings.fastModel, settings.fourthModel, settings.fifthModel].filter(Boolean).length');
+            s = replaceOne(s,'/ 3 个槽位','/ 5 个槽位');
+            if (!s.includes('v-model="settings.inputObfuscation"')) {
+                const anchor = s.indexOf('v-model="settings.preventTruncation"');
+                const end = s.indexOf('</label>', anchor);
+                if (anchor < 0 || end < 0) throw new Error('找不到官方输入选项位置');
+                const toggle = '<label title="仅对 Gemini 生效；将整理后的本轮用户消息交给 read_user_input，关闭后按原消息发送" class="flex cursor-pointer items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-600 transition-colors hover:bg-gray-100">' +
+                    '<span>输入混淆</span><span class="relative inline-flex flex-none items-center">' +
+                    '<input v-model="settings.inputObfuscation" type="checkbox" class="settings-toggle-input sr-only">' +
+                    '<span class="settings-toggle settings-toggle--compact settings-toggle--solid"></span></span></label>';
+                s = s.slice(0,end + 8) + toggle + s.slice(end + 8);
+            }
+            return s;
+        }
+        if (!options?.setup || !String(options.setup).includes('const chatModelSlots = computed')) return;
+        try {
+            let source = transformSetup(String(options.setup));
+            if (/^setup\s*\(/.test(source)) source = 'function ' + source;
+            const setup = (0,eval)('(' + source + ')');
+            const html = patchRoot(root.innerHTML);
+            patchComponents(window.RPHubComponents);
+            options.setup = setup;
+            root.innerHTML = html;
+            window.__sakuraNativeFiveStatus = 'mounted';
+        } catch (error) {
+            window.__sakuraNativeFiveStatus = 'failed';
+            console.error('[苏萝萝] 原生五槽未启用，保留官方三槽',error);
+        }
+    },
     async init(ctx) {
     'use strict';
     if (globalThis.__rphLiuguanyiInitialized) return;
@@ -119,7 +209,9 @@ RPHubSDK.register({
         { id: 'siliconflow', name: 'SiliconFlow', apiUrl: 'https://api.siliconflow.cn/v1', defaultModel: 'deepseek-ai/DeepSeek-V3', icon: 'https://siliconflow.cn/favicon.ico' },
         { id: 'custom', name: '自定义 1', apiUrl: '', defaultModel: '', icon: '' },
         { id: 'custom2', name: '自定义 2', apiUrl: '', defaultModel: '', icon: '' },
-        { id: 'custom3', name: '自定义 3', apiUrl: '', defaultModel: '', icon: '' }
+        { id: 'custom3', name: '自定义 3', apiUrl: '', defaultModel: '', icon: '' },
+        { id: 'custom4', name: '自定义 4', apiUrl: '', defaultModel: '', icon: '' },
+        { id: 'custom5', name: '自定义 5', apiUrl: '', defaultModel: '', icon: '' }
     ];
 
     const POPULAR_FAMILIES = ['claude', 'gemini', 'deepseek', 'gpt', 'qwen', 'llama', 'glm', 'minimax', 'moonshot', 'grok', 'embedding'];
@@ -132,6 +224,7 @@ RPHubSDK.register({
 
     function stripNextResponseProtocol(text) {
         if (typeof text !== 'string') return text;
+        if (text.indexOf('next_response') === -1) return text;
         return text
             .replace(/<next_response\b[^>]*>[\s\S]*?<\/next_response>/gi, '')
             .replace(/<next_response\b[^>]*>[\s\S]*$/gi, '')
@@ -152,6 +245,130 @@ RPHubSDK.register({
             .trim();
     }
 
+    // ============ 🧹 next_response 全链路剥离：状态层 + 显示层 ============
+    // 官方在组装请求时把 <next_response> 块拼到最新 user 消息尾部（请求副本）。
+    // 网络层已在 hookedFetch 内清洗；这里补齐「Vue 状态层(chatHistory)」与
+    // 「显示层(聊天气泡 DOM)」，并对历史脏数据做一次性 + 持续兜底。
+    function stripNextResponseDeep(value) {
+        if (typeof value === 'string') return stripNextResponseProtocol(value);
+        if (Array.isArray(value)) return value.map(stripNextResponseDeep);
+        if (value && typeof value === 'object') {
+            const out = Object.assign({}, value);
+            if (typeof value.text === 'string') out.text = stripNextResponseProtocol(value.text);
+            if (typeof value.content === 'string') out.content = stripNextResponseProtocol(value.content);
+            return out;
+        }
+        return value;
+    }
+
+    function scrubChatHistoryNextResponse() {
+        try {
+            const st = getVueState();
+            const holder = st && st.chatHistory;
+            const history = unref(holder);
+            if (!Array.isArray(history)) return false;
+            let changed = false;
+            history.forEach(msg => {
+                if (!msg || typeof msg !== 'object') return;
+                if (typeof msg.content === 'string') {
+                    const cleaned = stripNextResponseProtocol(msg.content);
+                    if (cleaned !== msg.content) { msg.content = cleaned; changed = true; }
+                } else if (Array.isArray(msg.content)) {
+                    const cleaned = stripNextResponseDeep(msg.content);
+                    if (JSON.stringify(cleaned) !== JSON.stringify(msg.content)) { msg.content = cleaned; changed = true; }
+                }
+                if (typeof msg.renderedContent === 'string' && /next_response/i.test(msg.renderedContent)) {
+                    const cleaned = stripNextResponseProtocolInHtml(msg.renderedContent);
+                    if (cleaned !== msg.renderedContent) { msg.renderedContent = cleaned; changed = true; }
+                }
+                if (typeof msg.reasoning === 'string') {
+                    const cleaned = stripNextResponseProtocol(msg.reasoning);
+                    if (cleaned !== msg.reasoning) { msg.reasoning = cleaned; changed = true; }
+                }
+                if (typeof msg.reasoning_content === 'string') {
+                    const cleaned = stripNextResponseProtocol(msg.reasoning_content);
+                    if (cleaned !== msg.reasoning_content) { msg.reasoning_content = cleaned; changed = true; }
+                }
+            });
+            return changed;
+        } catch (_) { return false; }
+    }
+
+    function scrubChatBubblesDom() {
+        try {
+            const roots = document.querySelectorAll('.markdown-body, .message-content, .message-content-wrapper, .cot-ui, [class*="message-content"]');
+            if (!roots.length) return;
+            roots.forEach(root => {
+                if (!/next_response/i.test(root.textContent || '')) return;
+                const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+                const nodes = [];
+                let node;
+                while ((node = walker.nextNode())) nodes.push(node);
+                let stripping = false;
+                nodes.forEach(textNode => {
+                    const value = textNode.nodeValue || '';
+                    if (!stripping && /<next_response\b/i.test(value)) {
+                        const start = value.search(/<next_response\b/i);
+                        const before = value.slice(0, start);
+                        const afterStart = value.slice(start);
+                        const endMatch = afterStart.match(/<\/next_response>/i);
+                        if (endMatch) textNode.nodeValue = before + afterStart.slice(endMatch.index + endMatch[0].length);
+                        else { textNode.nodeValue = before; stripping = true; }
+                    } else if (stripping) {
+                        const endMatch = value.match(/<\/next_response>/i);
+                        if (endMatch) { textNode.nodeValue = value.slice(endMatch.index + endMatch[0].length); stripping = false; }
+                        else textNode.nodeValue = '';
+                    }
+                });
+            });
+        } catch (_) {}
+    }
+
+    let chatBubbleObserver = null;
+    let _cbScrubPending = false;
+    function startChatBubbleScrubber() {
+        if (window.__sakuraNextResponseGuard) return;
+        window.__sakuraNextResponseGuard = true;
+        let tries = 0;
+        const arm = () => {
+            const st = getVueState();
+            if (!st || !unref(st.chatHistory)) {
+                if (++tries < 240) setTimeout(arm, 500);
+                return;
+            }
+            scrubChatHistoryNextResponse();
+            scrubChatBubblesDom();
+            if (chatBubbleObserver || !document.documentElement) return;
+            chatBubbleObserver = new MutationObserver(mutations => {
+                if (_cbScrubPending) return;
+                let relevant = false;
+                for (let i = 0; i < mutations.length; i++) {
+                    const m = mutations[i];
+                    if (m.type === 'characterData') {
+                        const v = m.target && m.target.nodeValue;
+                        if (v && v.indexOf('next_response') !== -1) { relevant = true; break; }
+                    } else if (m.addedNodes && m.addedNodes.length) {
+                        for (let j = 0; j < m.addedNodes.length; j++) {
+                            const n = m.addedNodes[j];
+                            const t = n.nodeType === 3 ? n.nodeValue : (n.textContent || '');
+                            if (t && t.indexOf('next_response') !== -1) { relevant = true; break; }
+                        }
+                        if (relevant) break;
+                    }
+                }
+                if (!relevant) return;
+                _cbScrubPending = true;
+                requestAnimationFrame(() => {
+                    _cbScrubPending = false;
+                    scrubChatHistoryNextResponse();
+                    scrubChatBubblesDom();
+                });
+            });
+            chatBubbleObserver.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+        };
+        arm();
+    }
+
     function scrubContextViewerNextResponse() {
         try {
             const st = getVueState();
@@ -160,14 +377,21 @@ RPHubSDK.register({
             if (!Array.isArray(current)) return;
             const cleaned = current
                 .map(message => {
-                    if (!message || typeof message.content !== 'string') return message;
-                    const nextContent = stripNextResponseProtocol(message.content);
+                    if (!message) return message;
+                    let nextContent = message.content;
+                    if (typeof message.content === 'string') {
+                        nextContent = stripNextResponseProtocol(message.content);
+                    } else if (Array.isArray(message.content)) {
+                        nextContent = stripNextResponseDeep(message.content);
+                    }
                     const nextRendered = typeof message.renderedContent === 'string'
                         ? stripNextResponseProtocolInHtml(message.renderedContent)
                         : message.renderedContent;
                     return { ...message, content: nextContent, renderedContent: nextRendered };
                 })
-                .filter(message => !message || typeof message.content !== 'string' || message.content.trim() !== '');
+                .filter(message => !message
+                    || typeof message.content !== 'string'
+                    || message.content.trim() !== '');
             // Vue setupState/proxy 可能已经自动解包 ref，此时 holder 本身就是数组。
             if (Array.isArray(holder)) {
                 holder.splice(0, holder.length, ...cleaned);
@@ -181,10 +405,15 @@ RPHubSDK.register({
         try {
             // 🚀 快速短路：候选选择器与下方收集一致，无任何弹窗/浮层时直接退出，
             // 避免 TreeWalker 全文档遍历（流式打字期间的主要隐形开销）。
-            if (!document.querySelector('[role="dialog"], .fixed, [class*="modal"]')) return;
-            const title = '真实上下文请求';
-            const candidates = [...document.querySelectorAll('[role="dialog"], .fixed, [class*="modal"]')]
-                .filter(el => String(el.textContent || '').includes(title));
+            // 官方 2.0.1 弹窗根为 .ctx-viewer（ModalShell → .app-modal-panel / .app-modal-overlay）。
+            if (!document.querySelector('.ctx-viewer, .app-modal-panel, [role="dialog"], .fixed, [class*="modal"]')) return;
+            // 官方标题实为「上下文查看器」；旧指纹「真实上下文请求」一并保留兼容。
+            const titles = ['上下文查看器', '真实上下文请求'];
+            const candidates = [...document.querySelectorAll('.ctx-viewer, .app-modal-panel, .app-modal-overlay, [role="dialog"], .fixed, [class*="modal"]')]
+                .filter(el => {
+                    const text = String(el.textContent || '');
+                    return titles.some(t => text.includes(t));
+                });
             candidates.forEach(root => {
                 const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
                 const nodes = [];
@@ -231,6 +460,10 @@ RPHubSDK.register({
             _cvScrubPending = true;
             requestAnimationFrame(() => {
                 _cvScrubPending = false;
+                // 弹窗打开时才回清 state（官方 setTimeout(0) 会晚于请求同步段写入脏数据）。
+                if (document.querySelector('.ctx-viewer, .app-modal-panel')) {
+                    scrubContextViewerNextResponse();
+                }
                 scrubContextViewerDom();
             });
         });
@@ -242,10 +475,21 @@ RPHubSDK.register({
             selectedId: 'custom',
             keys: {},
             models: {},
-            customUrls: { custom: '', custom2: '', custom3: '' }
+            customUrls: { custom: '', custom2: '', custom3: '', custom4: '', custom5: '' }
         };
     }
 
+    function normalizeChannelState(value) {
+        const base = getInitialChannelState();
+        const source = value && typeof value === 'object' ? value : {};
+        return {
+            ...base,
+            ...source,
+            keys: { ...base.keys, ...(source.keys || {}) },
+            models: { ...base.models, ...(source.models || {}) },
+            customUrls: { ...base.customUrls, ...(source.customUrls || {}) }
+        };
+    }
     function loadSplitApis() {
         try {
             const raw = pluginStorage.getItem(SPLIT_API_KEY);
@@ -254,8 +498,9 @@ RPHubSDK.register({
                 if (oldRaw) {
                     const oldData = JSON.parse(oldRaw);
                     const migrated = {
-                        memory: { selectedId: 'custom', keys: { custom: oldData.memory?.key || '' }, customUrls: { custom: oldData.memory?.url || '', custom2: '', custom3: '' } },
-                        ui: { selectedId: 'custom', keys: { custom: oldData.ui?.key || '' }, customUrls: { custom: oldData.ui?.url || '', custom2: '', custom3: '' } }
+                        main: normalizeChannelState(),
+                        memory: normalizeChannelState({ selectedId: 'custom', keys: { custom: oldData.memory?.key || '' }, customUrls: { custom: oldData.memory?.url || '' } }),
+                        ui: normalizeChannelState({ selectedId: 'custom', keys: { custom: oldData.ui?.key || '' }, customUrls: { custom: oldData.ui?.url || '' } })
                     };
                     saveSplitApis(migrated);
                     return migrated;
@@ -263,11 +508,12 @@ RPHubSDK.register({
             }
             const data = raw ? JSON.parse(raw) : {};
             return {
-                memory: Object.assign(getInitialChannelState(), data.memory || {}),
-                ui: Object.assign(getInitialChannelState(), data.ui || {})
+                main: normalizeChannelState(data.main),
+                memory: normalizeChannelState(data.memory),
+                ui: normalizeChannelState(data.ui)
             };
         } catch (e) {
-            return { memory: getInitialChannelState(), ui: getInitialChannelState() };
+            return { main: getInitialChannelState(), memory: getInitialChannelState(), ui: getInitialChannelState() };
         }
     }
 
@@ -573,6 +819,227 @@ RPHubSDK.register({
         // 流式响应结束、官方 finally 过滤、Vue 渲染分别可能处于不同微任务中，分层补偿但不循环监听。
         [0, 80, 250, 700, 1400].forEach(delay => setTimeout(restore, delay));
     }
+    // ============ ⏱️ 流保活：破解官方 120s「无数据」硬超时 ============
+    // 官方 api-utils.js 的 withApiResponse 给每个请求挂了 120s 无数据超时：
+    //   timer = setTimeout(() => { timedOut = true; controller.abort(); }, options.timeoutMs ?? 120000)
+    // 它只在 reader.read() 返回时重置计时器。慢模型（如 gemini-4-argon，首字 23s、长思考段
+    // 常 >120s 无 chunk）会被前端误判超时 abort，但服务端其实已生成完并计费（日志完整、费用照扣）。
+    // 这里在原生 SSE 流外包一层「保活流」：真数据长时间不来时注入 SSE 注释行 ": keep-alive"，
+    // 使 read() 定期返回、官方计时器持续重置，永不误超时。注释行不是 data:，官方 readLine
+    // 直接忽略 → 对正文 / 工具调用 / 用量统计零影响；用户点停止（abort）时照常中断。
+    const SAKURA_KEEP_ALIVE_INTERVAL_MS = 15000;
+    const SAKURA_KEEP_ALIVE_IDLE_MS = 10000;
+    function wrapSseKeepAlive(response, monitor) {
+        try {
+            if (!response || !response.body) return response;
+            const contentType = response.headers.get('content-type') || '';
+            if (!/text\/event-stream/i.test(contentType)) { monitor && monitor.onEnd && monitor.onEnd(); return response; }
+            if (typeof ReadableStream !== 'function' || typeof TextEncoder !== 'function') return response;
+            if (typeof response.body.getReader !== 'function') return response;
+            const nativeReader = response.body.getReader();
+            const keepAliveChunk = new TextEncoder().encode(': keep-alive\n\n');
+            const monitorDecoder = new TextDecoder();
+            let lastDataAt = Date.now();
+            let finished = false;
+            let controllerRef = null;
+            // 边界安全位：只有上一个 chunk 以换行(\n / \r)结尾时，才允许注入注释行。
+            // 否则上游可能正停在一个「不完整的 data 行」中间（如只发了半段 JSON），
+            // 此时插入 ': keep-alive' 会被官方 readLine 当成该行的一部分 → 污染 JSON。
+            // 初始为 true：流刚建立时必然处于事件边界。
+            let tailSafe = true;
+            const timer = setInterval(() => {
+                if (finished || !controllerRef) return;
+                if (!tailSafe) return; // 处于半个事件中间：宁可不注入，也绝不污染数据
+                if (Date.now() - lastDataAt < SAKURA_KEEP_ALIVE_IDLE_MS) return;
+                try {
+                    controllerRef.enqueue(keepAliveChunk);
+                    lastDataAt = Date.now();
+                } catch (_) {}
+            }, SAKURA_KEEP_ALIVE_INTERVAL_MS);
+            const stopTimer = () => {
+                if (finished) return;
+                finished = true;
+                clearInterval(timer);
+            };
+            const stream = new ReadableStream({
+                start(controller) { controllerRef = controller; },
+                async pull(controller) {
+                    try {
+                        const chunk = await nativeReader.read();
+                        if (chunk.done) {
+                            stopTimer();
+                            monitor && monitor.onEnd && monitor.onEnd();
+                            try { controller.close(); } catch (_) {}
+                            return;
+                        }
+                        lastDataAt = Date.now();
+                        try { monitor && monitor.onData && monitor.onData(monitorDecoder.decode(chunk.value, { stream: true })); } catch (_) {}
+                        // 更新边界安全位：本 chunk 最后一个字节是否为换行
+                        if (chunk.value && chunk.value.length) {
+                            const lastByte = chunk.value[chunk.value.length - 1];
+                            tailSafe = (lastByte === 10 || lastByte === 13);
+                        }
+                        controller.enqueue(chunk.value);
+                    } catch (error) {
+                        stopTimer();
+                        monitor && monitor.onError && monitor.onError(error);
+                        try { controller.error(error); } catch (_) {}
+                    }
+                },
+                cancel(reason) {
+                    stopTimer();
+                    monitor && monitor.onEnd && monitor.onEnd();
+                    try { nativeReader.cancel(reason); } catch (_) {}
+                }
+            });
+            return new Response(stream, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers
+            });
+        } catch (_) {
+            return response;
+        }
+    }
+
+    // ===== 状态可视化（V20.1.11）：全部内聚到官方思考气泡，零独立浮层 =====
+    // 官方主气泡 .typing-bubble 与工具等待 .active-tool-waiting 内都有 .typing-indicator 三点。
+    // 插件只在 SSE 旁路嗅探到状态变化时给它们挂 class，文案与颜色纯 CSS 渲染，
+    // 颜色统一走 --sakura-theme-color（自动跟随主题色），不插入子节点、不改官方 Vue state 与计时。
+    const SAKURA_MONITOR_STYLE_ID = 'sakura-response-monitor-style';
+    let sakuraMonitorTimer = null;
+    let sakuraMonitorState = null;
+    function sakuraFmtDuration(ms) {
+        const total = Math.max(0, Math.floor(ms / 1000));
+        if (total < 60) return total + 's';
+        return Math.floor(total / 60) + ':' + String(total % 60).padStart(2, '0');
+    }
+    function sakuraEnsureMonitorStyles() {
+        if (document.getElementById(SAKURA_MONITOR_STYLE_ID)) return;
+        const style = document.createElement('style');
+        style.id = SAKURA_MONITOR_STYLE_ID;
+        const T = 'var(--sakura-theme-color, #ff6b95)';
+        style.textContent = [
+            // 状态作为气泡内的轻量副标题显示，不再绘制独立胶囊，避免和消息主体割裂。
+            '.typing-bubble.sakura-model-waiting::after,.active-tool-waiting.sakura-model-waiting::after{content:var(--sakura-status-text,"等待模型响应")}',
+            '.typing-bubble.sakura-model-responding::after,.active-tool-waiting.sakura-model-responding::after{content:var(--sakura-status-text,"模型正在响应")}',
+            '.typing-bubble.sakura-model-stalled::after,.active-tool-waiting.sakura-model-stalled::after{content:var(--sakura-status-text,"模型正在长思考")}',
+            '.typing-bubble.sakura-model-waiting::after,.active-tool-waiting.sakura-model-waiting::after,'
+          + '.typing-bubble.sakura-model-responding::after,.active-tool-waiting.sakura-model-responding::after,'
+          + '.typing-bubble.sakura-model-stalled::after,.active-tool-waiting.sakura-model-stalled::after{'
+          + 'display:block;margin-top:7px;padding:0 2px;text-align:left;'
+          + 'font-size:10.5px;line-height:1.45;font-weight:500;letter-spacing:.1px;'
+          + 'font-variant-numeric:tabular-nums;white-space:normal;overflow-wrap:anywhere;'
+          + 'opacity:.76;transition:color .2s ease,opacity .2s ease}',
+            // 等待：低存在感灰色副标题
+            '.typing-bubble.sakura-model-waiting::after,.active-tool-waiting.sakura-model-waiting::after{color:#858b96}',
+            // 响应中：只用主题色强调状态文字和三点，不制造额外外框
+            '.typing-bubble.sakura-model-responding .typing-indicator span,.active-tool-waiting.sakura-model-responding .typing-indicator span{'
+          + 'background:' + T + '!important;background-image:none!important;animation-duration:.75s!important;'
+          + 'box-shadow:0 0 6px color-mix(in srgb,' + T + ' 48%,transparent)!important}',
+            '.typing-bubble.sakura-model-responding::after,.active-tool-waiting.sakura-model-responding::after{color:' + T + ';opacity:.9}',
+            // 静默：语义警告黄，但仍保持副标题形态
+            '.typing-bubble.sakura-model-stalled .typing-indicator span,.active-tool-waiting.sakura-model-stalled .typing-indicator span{'
+          + 'background:#ffb020!important;background-image:none!important;animation-play-state:paused!important;'
+          + 'box-shadow:0 0 6px rgba(255,176,32,.42)!important}',
+            '.typing-bubble.sakura-model-stalled::after,.active-tool-waiting.sakura-model-stalled::after{color:#d08a12;opacity:.9}',
+            // 夜间模式：副标题只提高文字对比度，不恢复胶囊背景
+            ':root[data-app-theme="dark"] .typing-bubble.sakura-model-waiting::after,:root[data-app-theme="dark"] .active-tool-waiting.sakura-model-waiting::after{color:#b0b6c2}',
+            ':root[data-app-theme="dark"] .typing-bubble.sakura-model-responding::after,:root[data-app-theme="dark"] .active-tool-waiting.sakura-model-responding::after{color:' + T + ';opacity:.95}',
+            ':root[data-app-theme="dark"] .typing-bubble.sakura-model-stalled::after,:root[data-app-theme="dark"] .active-tool-waiting.sakura-model-stalled::after{color:#ffc247;opacity:.95}'
+        ].join('\n');
+        (document.head || document.documentElement).appendChild(style);
+    }
+    // 更新 :root 上的状态文案变量（供伪元素 content 读取）；传空则移除。
+    function sakuraSetStatusText(text) {
+        try {
+            const root = document.documentElement;
+            if (text) root.style.setProperty('--sakura-status-text', '"' + String(text).replace(/["\\]/g, '\\$&') + '"');
+            else root.style.removeProperty('--sakura-status-text');
+        } catch (_) {}
+    }
+    // 把监视器的实时状态映射到官方思考气泡的 class 上（只加 class，不改结构/逻辑）。
+    // Vue 对 .typing-bubble 用的是静态 class，不会被 patch 覆盖；再加 500ms 定时兜底同步。
+    let _sakuraTypingSyncAt = 0;
+    function sakuraSyncTypingIndicator(force) {
+        const now = Date.now();
+        if (!force && now - _sakuraTypingSyncAt < 150) return;
+        _sakuraTypingSyncAt = now;
+        try {
+            const nodes = document.querySelectorAll('.typing-bubble, .active-tool-waiting');
+            if (!nodes.length) return;
+            const s = sakuraMonitorState;
+            let cls = '';
+            if (s && !s.ended) {
+                if (!s.received) cls = 'sakura-model-waiting';
+                else if (now - s.lastDataAt > 30000) cls = 'sakura-model-stalled';
+                else cls = 'sakura-model-responding';
+            }
+            nodes.forEach(node => {
+                node.classList.remove('sakura-model-waiting', 'sakura-model-responding', 'sakura-model-stalled');
+                if (cls) node.classList.add(cls);
+            });
+        } catch (_) {}
+    }
+    function sakuraRenderMonitor() {
+        const s = sakuraMonitorState;
+        if (!s) return;
+        const now = Date.now();
+        if (!s.received) {
+            sakuraSetStatusText('等待模型响应 · 已 ' + sakuraFmtDuration(now - s.startAt));
+        } else {
+            const silent = now - s.lastDataAt;
+            if (silent > 30000) sakuraSetStatusText('静默 ' + sakuraFmtDuration(silent) + ' · 可能在长思考');
+            else sakuraSetStatusText('模型响应中 · 累计 ' + s.chars + ' 字 · 静默 ' + sakuraFmtDuration(silent));
+        }
+        sakuraSyncTypingIndicator();
+    }
+    function sakuraStartResponseMonitor() {
+        try {
+            sakuraEnsureMonitorStyles();
+            if (sakuraMonitorTimer) { clearInterval(sakuraMonitorTimer); sakuraMonitorTimer = null; }
+            sakuraMonitorState = { startAt: Date.now(), lastDataAt: Date.now(), received: false, chars: 0, ended: false };
+            sakuraRenderMonitor();
+            sakuraMonitorTimer = setInterval(sakuraRenderMonitor, 500);
+        } catch (_) {}
+        const state = sakuraMonitorState;
+        return {
+            onResponse() {
+                if (sakuraMonitorState !== state || state.ended) return;
+                sakuraRenderMonitor();
+            },
+            onData(text) {
+                const s = state;
+                if (sakuraMonitorState !== state || !s || s.ended) return;
+                s.lastDataAt = Date.now();
+                if (typeof text === 'string') {
+                    s.chars += text.length;
+                    // 仅在出现「实质增量」(正文 / 工具参数 / 推理内容) 时才判定为已响应，
+                    // 避免上游空心跳帧(仅 role 声明或空 delta)被误报成「正在吐字」。
+                    if (!s.received && /"(?:arguments|content|reasoning_content|reasoning|thinking|thinking_content|thought|thoughts|reasoning_text|refusal|text)":\s*"(?!")/.test(text)) {
+                        s.received = true;
+                    }
+                }
+                sakuraRenderMonitor();
+            },
+            onEnd() {
+                const s = state;
+                if (sakuraMonitorState !== state || !s || s.ended) return;
+                s.ended = true;
+                if (sakuraMonitorTimer) { clearInterval(sakuraMonitorTimer); sakuraMonitorTimer = null; }
+                sakuraSetStatusText('');
+                sakuraSyncTypingIndicator(true);
+            },
+            onError() {
+                const s = state;
+                if (sakuraMonitorState !== state || !s || s.ended) return;
+                s.ended = true;
+                if (sakuraMonitorTimer) { clearInterval(sakuraMonitorTimer); sakuraMonitorTimer = null; }
+                sakuraSetStatusText('');
+                sakuraSyncTypingIndicator(true);
+            }
+        };
+    }
     function observeMainChatCompletionResponse(response) {
         try {
             if (!response || typeof response.clone !== 'function') return response;
@@ -621,9 +1088,14 @@ RPHubSDK.register({
             if (parsedBody && Array.isArray(parsedBody.messages) && isMainChatRequest) {
                 // 只有主聊天允许插件清洗；记忆/UI副模型请求保持官方原始消息。
                 parsedBody.messages.forEach(msg => {
-                    if (msg && typeof msg.content === 'string') {
+                    if (!msg) return;
+                    if (typeof msg.content === 'string') {
                         msg.content = stripNextResponseProtocol(msg.content);
+                    } else if (Array.isArray(msg.content)) {
+                        msg.content = stripNextResponseDeep(msg.content);
                     }
+                    if (typeof msg.reasoning === 'string') msg.reasoning = stripNextResponseProtocol(msg.reasoning);
+                    if (typeof msg.reasoning_content === 'string') msg.reasoning_content = stripNextResponseProtocol(msg.reasoning_content);
                 });
                 sanitizeOutgoingAssistantMessages(parsedBody.messages);
             }
@@ -687,9 +1159,15 @@ RPHubSDK.register({
 
             if (parsedBody && Array.isArray(parsedBody.messages)) {
                 newInit.body = JSON.stringify(parsedBody);
-                // 请求体采用同一清理结果后，再同步上下文查看器显示层。
+                // 请求体采用同一清理结果后，再同步上下文查看器显示层与聊天历史/气泡显示层。
                 scrubContextViewerNextResponse();
+                scrubChatHistoryNextResponse();
                 startContextViewerDomScrubber();
+                startChatBubbleScrubber();
+                // 官方在 setTimeout(0) 里才写 lastContextMessages，晚于本同步段；
+                // 这里延迟补两次，确保上下文查看器的数据源最终也是干净的。
+                setTimeout(scrubContextViewerNextResponse, 0);
+                setTimeout(scrubContextViewerNextResponse, 60);
             }
 
             const isClassicMemoryRequest = parsedBody?.messages?.some(message => {
@@ -732,8 +1210,20 @@ RPHubSDK.register({
             // V4：网络层零改写。温度由 UI 层 Vue 同步 watch 守护（installPreferenceGuards），
             // 官方请求体读的就是 settings.temperature，天然正确；流式同理跟随 settings.stream。
             if (isMainChatRequest) {
-                const response = await _nativeFetch.call(this, input, newInit);
-                return observeMainChatCompletionResponse(response);
+                // 请求发出前就点亮监视胶囊，让用户立刻知道「已发出、正在等模型」。
+                const monitor = sakuraStartResponseMonitor();
+                let response;
+                try {
+                    response = await _nativeFetch.call(this, input, newInit);
+                } catch (error) {
+                    monitor.onError(error);
+                    throw error;
+                }
+                monitor.onResponse(response);
+                const observed = observeMainChatCompletionResponse(response);
+                // 慢模型保护：包一层 SSE 保活流，避免官方 120s「无数据」超时误掐连接。
+                // 同时把 monitor 传入，旁路嗅探实时数据量供悬浮胶囊显示。
+                return wrapSseKeepAlive(observed, monitor);
             }
 
             return _nativeFetch.call(this, input, newInit);
@@ -2995,6 +3485,116 @@ function injectGramophoneButton() {
         return card;
     }
 
+    // 原位五槽位：官方始终使用 custom，插件管理槽位身份，避免官方启动归并额外 ID。
+    let sakuraMainSlots = null;
+    function installNativeMainSlots() {
+        const st = getVueState();
+        const settings = getRuntimeValue(st?.settings);
+        if (!settings || !window.Vue?.watch || typeof st.selectApiProvider !== 'function') return;
+        if (!sakuraMainSlots || sakuraMainSlots.settings !== settings) {
+            sakuraMainSlots?.stop?.();
+            const data = loadSplitApis();
+            const ids = ['custom','custom2','custom3','custom4','custom5'];
+            const main = data.main;
+            let active = ids.includes(main.selectedId) ? main.selectedId : 'custom';
+            // Preserve preview slots; import official custom only into an empty slot 1.
+            if (!main.customUrls.custom && !main.keys.custom) {
+                main.customUrls.custom = settings.customApiUrl || (settings.apiProviderId === 'custom' ? settings.apiUrl : '') || '';
+                main.keys.custom = settings.apiProviderKeys?.custom || (settings.apiProviderId === 'custom' ? settings.apiKey : '') || '';
+            }
+            if (settings.apiProviderId === 'custom') {
+                const match = ids.find(id => main.customUrls[id] === settings.apiUrl && main.keys[id] === settings.apiKey);
+                // Official config is authoritative on refresh; don't silently replace it.
+                if (match) active = match;
+            }
+            main.selectedId = active;
+            const ctl = { settings, active, switching: false, stop: null };
+            const persist = () => {
+                const latest = loadSplitApis();
+                latest.main = main;
+                try { pluginStorage.setItem(SPLIT_API_KEY, JSON.stringify(latest)); }
+                catch (error) { console.error('[苏萝萝] 主 API 槽位保存失败', error); }
+            };
+            const saveCurrent = () => {
+                if (ctl.switching || settings.apiProviderId !== 'custom') return;
+                main.selectedId = ctl.active;
+                main.customUrls[ctl.active] = settings.apiUrl || '';
+                main.keys[ctl.active] = settings.apiKey || '';
+                main.models[ctl.active] = settings.model || '';
+                persist();
+            };
+            ctl.choose = id => {
+                if (['isGenerating','isRemoteGenerating','isReceiving','isConversationBusy'].some(key => getRuntimeValue(st[key]) === true)) {
+                    alert('请等待当前生成结束再切换 API'); return;
+                }
+                saveCurrent();
+                ctl.switching = true;
+                try {
+                    st.selectApiProvider({ id: 'custom', name: '自定义', apiUrl: '', icon: '' });
+                    ctl.active = id; main.selectedId = id;
+                    settings.customApiUrl = main.customUrls[id] || '';
+                    settings.apiUrl = settings.customApiUrl;
+                    settings.apiProviderKeys = { ...(settings.apiProviderKeys || {}), custom: main.keys[id] || '' };
+                    settings.apiKey = main.keys[id] || '';
+                    if (main.models[id]) settings.model = main.models[id];
+                    persist();
+                } finally { ctl.switching = false; }
+                installNativeMainSlots();
+            };
+            ctl.saveCurrent = saveCurrent;
+            persist();
+            ctl.stop = window.Vue.watch(() => [settings.apiProviderId, settings.apiUrl, settings.apiKey, settings.model], saveCurrent, { flush: 'sync' });
+            sakuraMainSlots = ctl;
+        }
+        const ctl = sakuraMainSlots;
+        document.querySelectorAll('.api-provider-selector-container').forEach(container => {
+            if (!container.dataset.sakuraMainSlots) {
+                container.dataset.sakuraMainSlots = '1';
+                // Save before native supplier selection mutates the current settings.
+                container.addEventListener('click', event => {
+                    const button = event.target.closest('button');
+                    if (!button || !container.contains(button) || button === container.firstElementChild) return;
+                    const slot = button.dataset.sakuraSlot;
+                    if (slot) {
+                        event.preventDefault(); event.stopImmediatePropagation();
+                        sakuraMainSlots.choose(slot); return;
+                    }
+                    sakuraMainSlots.saveCurrent();
+                    sakuraMainSlots.switching = true;
+                    queueMicrotask(() => { sakuraMainSlots.switching = false; });
+                }, true);
+            }
+            const menu = container.querySelector(':scope > div');
+            if (menu) {
+                const original = [...menu.children].find(el => el.tagName === 'BUTTON' && !el.dataset.sakuraSlot && /手动输入 API 地址/.test(el.textContent));
+                if (original) {
+                    original.dataset.sakuraSlot = 'custom';
+                    const label = original.querySelector('.font-bold');
+                    if (label) label.textContent = '自定义 1';
+                    for (let i = 2; i <= 5; i++) {
+                        const clone = original.cloneNode(true);
+                        clone.dataset.sakuraSlot = 'custom' + i;
+                        clone.querySelector('.font-bold').textContent = '自定义 ' + i;
+                        menu.appendChild(clone);
+                    }
+                }
+                menu.querySelectorAll('[data-sakura-slot]').forEach(button => {
+                    const selected = settings.apiProviderId === 'custom' && ctl.active === button.dataset.sakuraSlot;
+                    ['bg-primary-50','text-primary-700'].forEach(cls => button.classList.toggle(cls, selected));
+                    ['hover:bg-gray-50','text-gray-700'].forEach(cls => button.classList.toggle(cls, !selected));
+                    // Remove the copied native checkmark; each row gets its own selection state.
+                    const check = button.querySelector('svg.ml-2');
+                    if (check) check.remove();
+                    button.setAttribute('aria-pressed', String(selected));
+                });
+            }
+            const label = container.firstElementChild?.querySelector('.font-bold');
+            if (settings.apiProviderId === 'custom' && label) {
+                const text = '自定义 ' + (ctl.active === 'custom' ? '1' : ctl.active.slice(6));
+                if (label.textContent !== text) label.textContent = text;
+            }
+        });
+    }
     function injectSplitApiPanels() {
         const headers = document.querySelectorAll('settings-page-header, .settings-page-header');
         for (const hdr of headers) {
@@ -3427,7 +4027,9 @@ function injectGramophoneButton() {
     .model-selector-heading h3,.model-selector-heading .text-gray-900{color:#4a323c!important}
     .model-selector-heading button{color:#6b5560!important}
     .model-selector-list .text-gray-500{color:#8a7078!important}
-    /* 槽位选择按钮（聊天模型槽位 1/2/3） */
+    /* 原生五槽滑块，沿用官方过渡动画；只在真有五个槽位时生效，五槽没启用时不压扁官方三槽。 */
+    .chat-model-slots:has(> button:nth-of-type(5)) > .segmented-switch__indicator {height:calc((100% - 2rem) / 5)!important;}
+    /* 聊天模型槽位 1～5 */
     .model-selector-heading + div button{color:#3f3f46!important}
     /* 官方设置页：模型按钮 / 模型行 */
     .settings-model-button,.settings-model-button *{color:#4a323c!important}
@@ -3893,7 +4495,9 @@ function injectGramophoneButton() {
        严重方圆割裂（边角凸出、不丝滑）。现把 input/textarea 从全局 outline 摘除，聚焦反馈交给
        .input-island:focus-within 的柔和环形阴影，天然跟随岛体圆角、贴着包裹。 */
     .island-input:focus,.island-input:focus-visible,textarea.island-input:focus{outline:none!important;box-shadow:none!important}
-    .input-island:focus-within{border-color:rgb(var(--primary-500) / .38)!important;box-shadow:var(--glass-highlight),var(--shadow-3),0 0 0 3px rgb(var(--primary-500) / .12)!important;transition:box-shadow .2s ease,border-color .2s ease!important}
+    /* V20.1.5：聚焦环改主题粉。旧版这里吃官方 --primary-500(蓝 90 111 240)，
+       导致日间聚焦时输入岛冒出一圈蓝边；夜间那条早先已硬编码粉色，故只有日间发蓝。 */
+    .input-island:focus-within{border-color:rgba(255,107,149,.42)!important;box-shadow:var(--glass-highlight),var(--shadow-3),0 0 0 3px rgba(255,107,149,.14)!important;transition:box-shadow .2s ease,border-color .2s ease!important}
     /* ===== V20.0.1 修复②：复活猫爪发送键 =====
        仅锁定 2.0.0 官方方形发送岛 .island-send（发送态，排除中止红块 .island-send--stop），
        沿用官方 2.25rem / 0.75rem 同心方块形制，不回落 1.9.8 的圆形，避免方圆混血；
@@ -3905,6 +4509,13 @@ function injectGramophoneButton() {
     .island-send:not(.island-send--stop):active:not(:disabled){background:linear-gradient(135deg,#ff7597 0%,#e83a5e 100%)!important}
     .island-send:not(.island-send--stop):active:not(:disabled)::before{transform:translate(-50%,-50%) scale(.82) rotate(-12deg)!important}
     :root[data-sakura-night="1"] .island-send:not(.island-send--stop){box-shadow:0 4px 14px rgba(255,105,180,.32)!important}
+    /* ===== V20.1.4：官方 .island-button 激活态粉化 =====
+       官方 .island-button.is-active 默认走 --primary-500(蓝 90 111 240)：
+       color: var(--c-accent-text) + background: rgb(var(--primary-500)/.14)。
+       插件此前只粉化了 .island-send，漏掉工具栏内的 island-button，
+       导致"快捷面板""自动生图"激活后仍是一块官方蓝。这里统一改成主题粉。 */
+    .island-button.is-active{color:#ff6b95!important;background:rgba(255,107,149,.14)!important}
+    :root[data-sakura-night="1"] .island-button.is-active{color:#ff9ec2!important;background:rgba(255,107,149,.18)!important}
     :where(button,input,textarea,select):disabled{cursor:not-allowed!important}
     .settings-field input:not([type="checkbox"]):not([type="radio"]),.settings-field textarea,.settings-field select{border-radius:12px;transition:border-color .12s ease,box-shadow .12s ease,background-color .12s ease}
     .settings-field input:not([type="checkbox"]):not([type="radio"]):focus,.settings-field textarea:focus,.settings-field select:focus{border-color:#ff9ebb!important;box-shadow:0 0 0 2px rgba(255,107,149,.12)!important;outline:none!important}
@@ -4427,8 +5038,15 @@ function injectGramophoneButton() {
     :root[data-sakura-night="1"] div[data-role="user"] .msg-bubble-glass{background:#3d3d3d!important;border-color:var(--sakura-theme-color,#ff6b95)!important;box-shadow:0 4px 14px rgba(0,0,0,.28)!important;color:#ececec!important}
     :root[data-sakura-night="1"] div[data-role="user"] .markdown-body{color:inherit!important}
 
-    /* —— 官方输入岛 / 输入框：夜间翻深 —— */
-    :root[data-sakura-night="1"] .input-island,
+    /* —— 官方输入岛（夜间）—— V20.1.3 修复 ——
+       旧版这里 .input-island, 后面夹了注释再跟 .message-action-bar{background:transparent}，
+       CSS 注释被忽略后两个选择器共用同一个规则块，导致夜间输入岛被强制 transparent 全透，
+       官方本来的深灰玻璃底(--glass-bg-strong: rgba(36,36,43,.93))被一刀削平。
+       现拆分为独立规则：深灰半透明 + 顶部内高光 + 多层悬浮阴影，聚焦态另补粉环。 */
+    :root[data-sakura-night="1"] .input-island{background:linear-gradient(160deg,rgba(255,255,255,.05),transparent 46%),rgba(42,42,50,.94)!important;border-color:rgba(255,255,255,.14)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 10px 28px -10px rgba(0,0,0,.62),0 4px 14px -6px rgba(0,0,0,.45),0 0 0 1px rgba(255,255,255,.03)!important;-webkit-backdrop-filter:blur(20px) saturate(150%)!important;backdrop-filter:blur(20px) saturate(150%)!important;transition:box-shadow .2s ease,border-color .2s ease!important}
+    :root[data-sakura-night="1"] .input-island:focus-within{border-color:rgba(255,138,176,.5)!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.09),0 10px 28px -10px rgba(0,0,0,.62),0 4px 14px -6px rgba(0,0,0,.45),0 0 0 3px rgba(255,107,149,.16)!important}
+    :root[data-sakura-night="1"] .island-input{color:#ececec!important;-webkit-text-fill-color:#ececec!important;caret-color:#ff8fae!important}
+    :root[data-sakura-night="1"] .island-input::placeholder{color:rgba(200,200,210,.5)!important}
 
     /* —— 动作按钮栏 / 思考卡片 / Toast —— */
     :root[data-sakura-night="1"] .app-main .message-action-bar{background:transparent!important;border-top-color:rgba(255,255,255,.08)!important}
@@ -6301,6 +6919,7 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
         safe(injectMessageBookmarkButtons);
         safe(injectGramophoneButton);
         safe(injectSplitApiPanels);
+        safe(installNativeMainSlots);
         safe(injectClassicMemoryEditButtons);
         safe(restoreMemoryImportExport);
         safe(injectFullscreenComposer);
@@ -6424,6 +7043,7 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
         try { injectCleanViewButton(); } catch (_) {}
     }, 1800);
     try { injectCleanViewButton(); } catch (_) {}
+    try { startChatBubbleScrubber(); } catch (_) {}
     // ============================================================
 
     ctx.ui.addSidebarEntry({ label: '文字名场面', onClick: openMomentsPanel });

@@ -33,7 +33,7 @@
             'rphub_user_temperature_pref', 'rphub_user_stream_pref', 'rphub_user_characterview_pref',
             'rphub_theme_color_v1', 'rphub_theme_custom_slots_v1', 'rphub_theme_custom_names_v1',
             'rphub_splash_custom_v1', 'rphub_splash_list_v1', 'rphub_presence_days_v1',
-            'sakura_gramophone_playlist_v6', 'sakura_gramophone_settings_v1'
+            'sakura_gramophone_playlist_v6', 'sakura_gramophone_settings_v1', 'rphub_sakura_chat_extra_slots_v1'
         ],
         ignoredLocalStorageKeys: ['roleplay_hub_update_id'],
         chunkSize: 2 * 1024 * 1024,
