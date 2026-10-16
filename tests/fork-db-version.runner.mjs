@@ -57,6 +57,45 @@ try {
     const imageDb = await page.evaluate(async () => (await RPHubImageModule.flushRecords().then(() => 'ok', (error) => String(error?.message || error))));
     assert.equal(imageDb, 'ok', 'the image module can open the same database too');
     console.log('PASS a browser whose RPHubDB was upgraded by the fork still loads its data on the test build');
+
+    // 正常使用不受影响：全新的浏览器照样建出版本 1 的库，新建角色、保存、刷新后还在。
+    const fresh = await (await browser.newContext({ viewport: { width: 1280, height: 900 } })).newPage();
+    fresh.on('pageerror', (error) => errors.push(error.message));
+    await fresh.addInitScript(() => localStorage.setItem('roleplay_hub_update_id', '9999999990'));
+    const vmCall = (script) => fresh.evaluate(script);
+    await fresh.goto(harness.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
+    await fresh.waitForFunction(() => document.querySelector('#app')?.__vue_app__, null, { timeout: 45000 });
+    await fresh.waitForTimeout(2000);
+    await vmCall(() => {
+        const app = document.querySelector('#app').__vue_app__;
+        const vm = (app._instance || app._container._vnode.component).proxy;
+        vm.createNewCharacter();
+        vm.editingCharacter.data.name = '新用户角色';
+        vm.saveCharacter();
+    });
+    const readIndex = () => vmCall(() => new Promise((resolve) => {
+        const request = indexedDB.open('RPHubDB');
+        request.onsuccess = () => {
+            const db = request.result;
+            const get = db.transaction('store').objectStore('store').get('rp_hub_character_index');
+            get.onsuccess = () => { const value = { version: db.version, stores: [...db.objectStoreNames], order: get.result?.order?.length || 0 }; db.close(); resolve(value); };
+        };
+    }));
+    let stored = await readIndex();
+    for (let attempt = 0; attempt < 20 && !stored.order; attempt += 1) {
+        await fresh.waitForTimeout(250);
+        stored = await readIndex();
+    }
+    assert.deepEqual(stored, { version: 1, stores: ['store'], order: 1 }, 'a new browser still gets a version 1 database with the RPH store');
+    await fresh.reload({ waitUntil: 'domcontentloaded' });
+    await fresh.waitForFunction(() => document.querySelector('#app')?.__vue_app__, null, { timeout: 45000 });
+    await fresh.waitForTimeout(2000);
+    const names = await vmCall(() => {
+        const app = document.querySelector('#app').__vue_app__;
+        return (app._instance || app._container._vnode.component).proxy.characters.map((item) => item.name);
+    });
+    assert.deepEqual(names, ['新用户角色']);
+    console.log('PASS a new browser creates a version 1 database, saves a character and keeps it after reload');
     assert.deepEqual(errors, []);
 } finally {
     await browser.close();

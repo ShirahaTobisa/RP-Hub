@@ -3,6 +3,7 @@
 // 按版本 1 打开 RPHubDB 时改为按它现有的版本打开：新库照样建成版本 1，版本 1 的库不受影响。
 (function () {
     'use strict';
+    if (typeof IDBFactory === 'undefined') return;
     const nativeOpen = IDBFactory.prototype.open;
     if (nativeOpen.rphVersionTolerant) return;
     const open = function (name, version) {
