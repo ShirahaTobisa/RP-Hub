@@ -1,3 +1,17 @@
+// 魔改版（cy-2-u/rp）会给 RPHubDB 加它自己的表，把版本升到 2；RPH 和生图模块固定按版本 1 打开，
+// 同一网址换成测试版后浏览器会拒绝（VersionError），页面报“加载保存的数据失败”。
+// 按版本 1 打开 RPHubDB 时改为按它现有的版本打开：新库照样建成版本 1，版本 1 的库不受影响。
+(function () {
+    'use strict';
+    const nativeOpen = IDBFactory.prototype.open;
+    if (nativeOpen.rphVersionTolerant) return;
+    const open = function (name, version) {
+        return name === 'RPHubDB' && version === 1 ? nativeOpen.call(this, name) : nativeOpen.apply(this, arguments);
+    };
+    open.rphVersionTolerant = true;
+    IDBFactory.prototype.open = open;
+})();
+
 (function () {
     'use strict';
 
