@@ -1,14 +1,22 @@
-// 接口示范 mod：把 RP-Hub 测试版插件接口（API 5）的每一项各用一次，写插件时照着抄。
+// 接口示范 mod：把 RP-Hub 测试版插件接口（API 6）的每一项各用一次，写插件时照着抄。
 // 默认不改动任何聊天内容；“请求改写示范”要在面板里手动打开。
 (() => {
     'use strict';
+
+    let mountInfo = '';
 
     // ① register：文件加载后立刻同步调用，3 秒内没注册会被判为加载失败。
     RPHubSDK.register({
         id: 'api-demo',
         name: '接口示范',
-        version: '1.1.0',
-        requiresApi: 5,
+        version: '1.2.0',
+        requiresApi: 6,
+        // ⑫ beforeMount（API 6）：官方页面挂载前调用一次，可以改官方根组件（options）和页面模板（root.innerHTML）。
+        // 这里只看不改；真改的例子见 DB/modules/liuguanyi-20.4.2.js（聊天模型五槽）。这时还没有 ctx。
+        // 新装后（或第一次加上 beforeMount 的更新后）要按提示再刷新一次，之后每次打开页面都会先调用它。
+        beforeMount({ options, root }) {
+            mountInfo = `挂载前看到 ${Object.keys(options.components || {}).length} 个官方组件，页面模板 ${root.innerHTML.length} 字`;
+        },
         init(ctx) {
             // ② 日志、版本、上游信息
             ctx.log('已加载', ctx.version, ctx.upstream.updateInfo);
@@ -19,6 +27,7 @@
                 events.unshift(`${new Date().toLocaleTimeString()}  ${text}`);
                 events.length = Math.min(events.length, 20);
             };
+            record(mountInfo || '这次没调用 beforeMount（新装或刚升级后要再刷新一次）');
 
             // ④ ctx.events：每个回调都要自己 try/catch，出错不能影响页面
             const on = (name, callback) => ctx.events.on(name, (payload) => {
