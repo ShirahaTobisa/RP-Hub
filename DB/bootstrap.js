@@ -3231,13 +3231,21 @@
 
     // 这个按钮很少用，怕误触，不放同步面板，放在 RPH 设置页最底下「空间管理」里。
     function ensureForkExportEntry() {
-        const heading = [...document.querySelectorAll('h4.settings-subheading')].find((node) => node.textContent.trim() === '空间管理');
-        const section = heading?.closest('.pt-6');
-        if (!section || section.querySelector('[data-action="fork-export"]')) return;
+        const headings = [...document.querySelectorAll('h4.settings-subheading')];
+        if (!headings.length || document.querySelector('[data-action="fork-export"]')) return;
+        // 2.0.3 及更早放进上游的「空间管理」；2.0.4 起上游删了这一段，就在设置页最底下自己补一段。
+        let section = headings.find((node) => node.textContent.trim() === '空间管理')?.closest('.pt-6');
         const row = document.createElement('div');
-        row.className = 'flex items-center justify-between gap-3 mt-6 text-xs text-gray-500';
+        row.className = `flex items-center justify-between gap-3 text-xs text-gray-500${section ? ' mt-6' : ''}`;
         row.innerHTML = '<span>要换成魔改版（cy-2-u/rp）时用</span><button type="button" class="settings-action flex-shrink-0 whitespace-nowrap" data-action="fork-export">转成魔改版的数据</button>';
         row.lastChild.addEventListener('click', () => convertToFork().catch(() => { }));
+        if (!section) {
+            const last = headings[headings.length - 1].closest('.pt-6');
+            if (!last?.parentElement) return;
+            section = document.createElement('div');
+            section.className = 'pt-6 border-t border-gray-100 mt-6';
+            last.parentElement.appendChild(section);
+        }
         section.appendChild(row);
     }
 
