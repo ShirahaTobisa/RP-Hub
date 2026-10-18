@@ -806,14 +806,15 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                 && record.contentHash === descriptor.contentHash
                 && record.occurrenceIndex === descriptor.occurrenceIndex
                 && record.prompt === descriptor.prompt);
-        if (exact && (exact.status !== 'skipped' || !exact.imageSignature)) return exact;
+        if (exact && exact.status !== 'skipped') return exact;
         // 魔改版迁来的图：魔改版只按分支、消息、第几张认图（流式输出到一半就生图，内容指纹是半截的；提示词从地址读回，& 后被截、+ 变空格），
-        // 对不上时照它的规则找，也盖过因为没认出它而留下的「未生成」占位。
+        // 对不上时照它的规则找，也盖过因为没认出它而留下的「未生成」占位和自动生图关着时记下的跳过。
         const forkSlot = records.find((record) => record.fork && record.status !== 'skipped'
             && record.occurrenceIndex === descriptor.occurrenceIndex
             && (descriptor.messageId ? record.messageId === descriptor.messageId
                 : record.messageIndex === descriptor.messageIndex && record.contentHash === descriptor.contentHash));
         if (forkSlot) return forkSlot;
+        if (exact && !exact.imageSignature) return exact;
         if (!descriptor.messageId || !descriptor.branchId || !descriptor.promptLayout) return exact;
 
         const family = records.filter((record) => record.messageId === descriptor.messageId);

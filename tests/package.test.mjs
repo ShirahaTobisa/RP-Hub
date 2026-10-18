@@ -42,7 +42,7 @@ const versionedAssets = [
     ['DB/image-module.js', '/DB/image-module.js'],
     ['DB/module-loader.js', '/DB/module-loader.js']
 ];
-const EXPECTED_DIST_WORKER_SHA256 = '9899b76b86375d2ec369a422c9faacdff6665f7aafbd6fced9c5808ae3dfa652';
+const EXPECTED_DIST_WORKER_SHA256 = '49ea6b70d692d60ff8e236f9f9827b581f98af22373d068347a8b4af1643ed87';
 
 function runPackage() {
     const result = spawnSync(process.execPath, [

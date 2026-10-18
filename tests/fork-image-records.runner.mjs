@@ -12,12 +12,14 @@ const upstreamMarkers = (text) => [...text.matchAll(/image###((?:(?!image###|###
 const params = { provider: '', model: 'nai-diffusion-4-5-full', artist: 'artist:x', size: '竖图', steps: '28', scale: '5', cfg: '0', sampler: 'k_euler_ancestral', negative: '', nocache: '0', noise_schedule: 'karras', rerollNonce: '' };
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64');
 
-// at：魔改版生成每张图那一刻的正文（算内容指纹用）。placeholders：修复前测试版没认出来，已替这些位置存了「未生成」占位。
+// at：魔改版生成每张图那一刻的正文（算内容指纹用）。placeholders：修复前测试版没认出来，已替这些位置存了「未生成」占位；
+// autoSkipped：自动生图关着时打开过，存下的是不带签名的跳过记录。
 const scenes = [
     { name: '一张图，回复写到一半就生成', final: '她站在窗前。\n\nimage###1girl, smile###\n\n雨停了。', at: ['她站在窗前。\n\nimage###1girl, smile###'], expect: ['image'] },
     { name: '两张图，流式中先后生成', final: '开头。\n\nimage###1girl, smile###\n\n中间。\n\nimage###2girls, park###\n\n结尾。', at: ['开头。\n\nimage###1girl, smile###', '开头。\n\nimage###1girl, smile###\n\n中间。\n\nimage###2girls, park###'], expect: ['image', 'image'] },
     { name: '提示词里有 &', final: '文字。\n\nimage###cat & dog###', at: ['文字。\n\nimage###cat & dog###'], expect: ['image'] },
     { name: '修复前已留下未生成占位', final: '开头。\n\nimage###sky###\n\n中间。\n\nimage###sea###', at: ['开头。\n\nimage###sky###', '开头。\n\nimage###sky###\n\n中间。\n\nimage###sea###'], placeholders: true, expect: ['image', 'image'] },
+    { name: '自动生图关着时留下的跳过记录', final: '开头。\n\nimage###moon###\n\n结尾。', at: ['开头。\n\nimage###moon###'], autoSkipped: true, expect: ['image'] },
     { name: '测试版自己的图', final: '文字。\n\nimage###native one###', native: 'rendered', expect: ['image'] },
     { name: '测试版自己的未生成占位', final: '文字。\n\nimage###native two###', native: 'placeholder', expect: ['manual'] }
 ];
@@ -45,6 +47,7 @@ for (const scene of scenes) {
         record.key = ['main', id, occurrenceIndex, record.promptHash].join(':');
         records.push(record);
         if (scene.placeholders) records.push(ourRecord(id, index, scene.final, occurrenceIndex, raw, { imageSignature: 'placeholder-' + occurrenceIndex, status: 'skipped' }));
+        if (scene.autoSkipped) records.push(ourRecord(id, index, scene.final, occurrenceIndex, raw, { imageSignature: '', status: 'skipped', skipped: true }));
     });
 }
 
