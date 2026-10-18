@@ -185,7 +185,7 @@ ctx.requests.onChat(body => {
 - `options` 是官方根组件的选项（`setup`、`components` 等），可以直接替换或修改；`root` 是 `#app` 元素，改它的 `innerHTML` 就是改页面模板。
 - 只调用一次，在 `init` 之前，这时页面还没挂载，不能用 `ctx`；抛错只记日志，页面照常挂载。
 - 加载器要等插件第一次注册才知道它有 `beforeMount`，所以新装后（或第一次加上 `beforeMount` 的更新后）会提示再刷新一次，之后每次打开页面都先加载它。
-- 官方代码对不上时应保持原样，不要半改。例子见 `DB/modules/liuguanyi-20.3.2.js`（聊天模型五槽）。
+- 官方代码对不上时应保持原样，不要半改。例子见 `DB/modules/liuguanyi-20.4.2.js`（聊天模型五槽）。
 
 ### `ctx.log`、版本与上游信息
 

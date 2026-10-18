@@ -1,7 +1,7 @@
-// Adapted from RP-Hub 终极美化 & 全功能增强 v20.3.2, author 苏萝萝.
+// Adapted from RP-Hub 终极美化 & 全功能增强 v20.4.2, author 苏萝萝.
 // Workshop edition: no image-generation integration; persistent data supports cloud sync.
 RPHubSDK.register({
-    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.3.2-rph.1', requiresApi: 2,
+    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.4.2-rph.1', requiresApi: 2,
     // 原生五槽：页面挂载前把聊天模型槽位扩到五个，并恢复输入混淆开关。加载器 API 6 起才会调用，
     // 旧外壳或官方代码对不上时保持官方三槽。
     beforeMount({ options, root }) {
@@ -45,7 +45,41 @@ RPHubSDK.register({
             else if (!s.includes(controlled)) throw new Error('找不到官方输入混淆请求条件');
             return s;
         }
+        // 仅改更新公告组件：取消强制等待，保留官方关闭、已读与远端更新通知。
+        function patchUpdateNotification(components) {
+            const modal = components?.UpdateNotificationModal;
+            if (!modal || modal.__sakuraInstantNotice) return;
+            try {
+                let source = String(modal.setup);
+                const start = source.indexOf('            const startCountdown = () => {');
+                const end = source.indexOf('            const showRemoteUpdate = ', start);
+                if (start < 0 || end < 0) throw new Error('找不到公告倒计时边界');
+                source = source.slice(0, start) + `            const startCountdown = () => {
+                clearInterval(countdownTimer);
+                countdownTimer = null;
+                countdown.value = 0;
+            };
+` + source.slice(end);
+                if (/^setup\s*\(/.test(source)) source = 'function ' + source;
+                const setup = new Function('ref', 'onBeforeUnmount', 'return (' + source + ');')(window.Vue.ref, window.Vue.onBeforeUnmount);
+                let template = replaceOne(modal.template, ':disabled="!remoteUpdateId && countdown > 0"', '');
+                template = replaceOne(template, `:class="{ 'opacity-50 cursor-not-allowed': !remoteUpdateId && countdown > 0 }"`, '');
+                template = replaceOne(template, '<span v-if="!remoteUpdateId && countdown > 0">({{ countdown }}s)</span>', '');
+                const footerStart = template.indexOf('                        <div class="mt-8 mb-2 flex justify-end">');
+                const footerEnd = template.indexOf('                        </div>', footerStart) + '                        </div>'.length;
+                if (footerStart < 0 || footerEnd < footerStart) throw new Error('找不到公告确认栏');
+                const footer = template.slice(footerStart, footerEnd).replace('mt-8 mb-2 flex justify-end', 'shrink-0 p-4 border-t border-gray-100 flex justify-end');
+                template = template.slice(0, footerStart) + template.slice(footerEnd);
+                template = replaceOne(template, '            </modal-shell>', footer + '\n            </modal-shell>');
+                modal.setup = setup;
+                modal.template = template;
+                modal.__sakuraInstantNotice = true;
+            } catch (error) {
+                console.warn('[苏萝萝] 公告免等待适配失败，保留官方公告', error);
+            }
+        }
         function patchComponents(components) {
+            patchUpdateNotification(components);
             const modal = components?.ModelSelectorModal;
             if (!modal || modal.__sakuraNativeFive) return;
             const template = replaceOne(modal.template, 'class="grid shrink-0 grid-cols-3 gap-2 px-4 pt-3 sm:px-5"', 'class="sakura-native-five-strip flex shrink-0 gap-2 px-4 pt-3 sm:px-5" style="overflow-x:auto;flex-wrap:nowrap;-webkit-overflow-scrolling:touch"');
@@ -456,6 +490,8 @@ RPHubSDK.register({
         // 🚀 性能：characterData 监听在流式打字时每字符触发一次；rAF 合并同帧多次变更，
         // 弹窗不存在时 scrubContextViewerDom 内部零成本短路——视觉行为完全不变。
         contextViewerDomObserver = new MutationObserver(() => {
+            // 上下文查看器未打开时不排队 rAF；流式渲染会产生大量 DOM 变更，但与此功能无关。
+            if (!document.querySelector('.ctx-viewer, .app-modal-panel, [role="dialog"]')) return;
             if (_cvScrubPending) return;
             _cvScrubPending = true;
             requestAnimationFrame(() => {
@@ -829,11 +865,67 @@ RPHubSDK.register({
     // 直接忽略 → 对正文 / 工具调用 / 用量统计零影响；用户点停止（abort）时照常中断。
     const SAKURA_KEEP_ALIVE_INTERVAL_MS = 15000;
     const SAKURA_KEEP_ALIVE_IDLE_MS = 10000;
-    function wrapSseKeepAlive(response, monitor) {
+    async function wrapSseKeepAlive(response, monitor, forceSse = false) {
         try {
             if (!response || !response.body) return response;
             const contentType = response.headers.get('content-type') || '';
-            if (!/text\/event-stream/i.test(contentType)) { monitor && monitor.onEnd && monitor.onEnd(); return response; }
+            if (!forceSse && !/text\/event-stream/i.test(contentType)) { monitor && monitor.onEnd && monitor.onEnd(); return response; }
+            if (forceSse && !/text\/event-stream/i.test(contentType)) {
+                // 不使用 response.clone()：部分移动端/代理对 tee 背压处理不稳定，会让正式流读不到首块。
+                // 预读结果统一通过回放流送回，避免首块丢失；首字节慢时也不取消底层 read。
+                if (typeof TextDecoder !== 'function') return response;
+                const sourceReader = response.body.getReader?.();
+                if (!sourceReader) return response;
+                try {
+                    const firstRead = sourceReader.read();
+                    const probe = await Promise.race([
+                        firstRead,
+                        new Promise(resolve => setTimeout(() => resolve({ probeTimedOut: true }), 1500))
+                    ]);
+                    const hasFirstChunk = !probe?.probeTimedOut && !probe?.done && probe?.value;
+                    const probeText = hasFirstChunk
+                        ? new TextDecoder().decode(probe.value, { stream: true }) : '';
+                    const isSse = hasFirstChunk && /^\s*(?::|data:)/m.test(probeText);
+                    const headers = new Headers(response.headers);
+                    if (isSse) headers.set('content-type', 'text/event-stream');
+                    let firstSent = false;
+                    let pendingFirst = hasFirstChunk ? Promise.resolve(probe) : firstRead;
+                    const replay = new ReadableStream({
+                        async pull(controller) {
+                            try {
+                                if (!firstSent) {
+                                    firstSent = true;
+                                    const first = await pendingFirst;
+                                    if (first.done) {
+                                        try { sourceReader.releaseLock(); } catch (_) {}
+                                        controller.close();
+                                    } else controller.enqueue(first.value);
+                                    return;
+                                }
+                                const next = await sourceReader.read();
+                                if (next.done) {
+                                    try { sourceReader.releaseLock(); } catch (_) {}
+                                    controller.close();
+                                } else controller.enqueue(next.value);
+                            } catch (error) {
+                                try { sourceReader.releaseLock(); } catch (_) {}
+                                controller.error(error);
+                            }
+                        },
+                        cancel(reason) {
+                            try { sourceReader.cancel(reason); } catch (_) {}
+                            try { sourceReader.releaseLock(); } catch (_) {}
+                        }
+                    });
+                    return wrapSseKeepAlive(new Response(replay, {
+                        status: response.status, statusText: response.statusText, headers
+                    }), monitor, isSse);
+                } catch (_) {
+                    try { await sourceReader.cancel(); } catch (_) {}
+                    try { sourceReader.releaseLock(); } catch (_) {}
+                    return response;
+                }
+            }
             if (typeof ReadableStream !== 'function' || typeof TextEncoder !== 'function') return response;
             if (typeof response.body.getReader !== 'function') return response;
             const nativeReader = response.body.getReader();
@@ -908,6 +1000,7 @@ RPHubSDK.register({
     // 颜色统一走 --sakura-theme-color（自动跟随主题色），不插入子节点、不改官方 Vue state 与计时。
     const SAKURA_MONITOR_STYLE_ID = 'sakura-response-monitor-style';
     let sakuraMonitorTimer = null;
+    let sakuraMonitorRaf = 0;
     let sakuraMonitorState = null;
     function sakuraFmtDuration(ms) {
         const total = Math.max(0, Math.floor(ms / 1000));
@@ -983,7 +1076,7 @@ RPHubSDK.register({
     }
     function sakuraRenderMonitor() {
         const s = sakuraMonitorState;
-        if (!s) return;
+        if (!s || s.ended) return;
         const now = Date.now();
         if (!s.received) {
             sakuraSetStatusText('等待模型响应 · 已 ' + sakuraFmtDuration(now - s.startAt));
@@ -993,6 +1086,14 @@ RPHubSDK.register({
             else sakuraSetStatusText('模型响应中 · 累计 ' + s.chars + ' 字 · 静默 ' + sakuraFmtDuration(silent));
         }
         sakuraSyncTypingIndicator();
+    }
+    function sakuraScheduleRenderMonitor() {
+        if (sakuraMonitorRaf) return;
+        const schedule = window.requestAnimationFrame || (fn => setTimeout(fn, 16));
+        sakuraMonitorRaf = schedule(() => {
+            sakuraMonitorRaf = 0;
+            sakuraRenderMonitor();
+        });
     }
     function sakuraStartResponseMonitor() {
         try {
@@ -1006,7 +1107,7 @@ RPHubSDK.register({
         return {
             onResponse() {
                 if (sakuraMonitorState !== state || state.ended) return;
-                sakuraRenderMonitor();
+                sakuraScheduleRenderMonitor();
             },
             onData(text) {
                 const s = state;
@@ -1020,7 +1121,7 @@ RPHubSDK.register({
                         s.received = true;
                     }
                 }
-                sakuraRenderMonitor();
+                sakuraScheduleRenderMonitor();
             },
             onEnd() {
                 const s = state;
@@ -1040,7 +1141,10 @@ RPHubSDK.register({
             }
         };
     }
-    function observeMainChatCompletionResponse(response) {
+    function observeMainChatCompletionResponse(response, isStreaming = false) {
+        // 流式响应不能再开第二条 text() 消费链；部分代理对 Response.clone() 的 tee 背压处理会卡住正式 reader。
+        // 非流式响应仍保留旁路观察，用于恢复官方后处理可能误删的正文。
+        if (isStreaming) return response;
         try {
             if (!response || typeof response.clone !== 'function') return response;
             response.clone().text().then(raw => {
@@ -1119,7 +1223,7 @@ RPHubSDK.register({
                 }
                 throw error;
             }
-            if (retryTransient && (response.status === 502 || response.status === 524)
+            if (retryTransient && (response.status === 502 || response.status === 503 || response.status === 504 || response.status === 524)
                 && attempt < maxRetries && !newInit.signal?.aborted) {
                 await new Promise(resolve => setTimeout(resolve, 700 * (attempt + 1)));
                 return send(attempt + 1);
@@ -1196,10 +1300,12 @@ RPHubSDK.register({
             if (isUiAnalysisRequest) {
                 if (uiConf.url && uiConf.key) {
                     // 用户配置了副模型分流：分流接管！若选了预设供应商（如 DeepSeek）才自动替换，自定义地址若未指定则不乱改
-                    if (uiConf.model && parsedBody && !uiConf.isCustom) {
+                    // 变量分析模型由 RP-Hub 的“分析模型”设置决定。分流供应商只负责换 URL/Key，
+                    // 不能用供应商默认模型覆盖它；不同中转站的模型别名和渠道并不一致。
+                    if (parsedBody && !parsedBody.model && uiConf.model) {
                         parsedBody.model = uiConf.model;
                     }
-                    return reroute(buildCustomEndpoint(uiConf.url, 'chat/completions'), uiConf.key);
+                    return reroute(buildCustomEndpoint(uiConf.url, 'chat/completions'), uiConf.key, { retryTransient: true });
                 } else {
                     // 未配置分流：默认使用主 API / 官方默认副通道，保证正常分析，井水不犯河水！
                     return _nativeFetch.call(this, input, newInit);
@@ -1220,10 +1326,12 @@ RPHubSDK.register({
                     throw error;
                 }
                 monitor.onResponse(response);
-                const observed = observeMainChatCompletionResponse(response);
-                // 慢模型保护：包一层 SSE 保活流，避免官方 120s「无数据」超时误掐连接。
-                // 同时把 monitor 传入，旁路嗅探实时数据量供悬浮胶囊显示。
-                return wrapSseKeepAlive(observed, monitor);
+                // 流式请求只允许一条消费链：禁止 clone().text() 与正式 reader 并行，避免代理 tee 背压造成假死。
+                const wantsStream = parsedBody?.stream === true;
+                const observed = observeMainChatCompletionResponse(response, wantsStream);
+                // 有些中转站实际返回 SSE，却错误标成 application/json 或不带 Content-Type。
+                // 官方 api-utils 会因此走 response.text()，等整段结束才显示；只对明确 stream 请求强制按 SSE 消费。
+                return wrapSseKeepAlive(observed, monitor, wantsStream);
             }
 
             return _nativeFetch.call(this, input, newInit);
@@ -1427,7 +1535,10 @@ function getCharKey() {
         const memories = st && Array.isArray(unref(st.displayedClassicMemories))
             ? unref(st.displayedClassicMemories)
             : (st && Array.isArray(unref(st.classicMemories)) ? unref(st.classicMemories) : null);
-        if (!memories) return;
+        if (!memories) {
+            scheduleClassicMemoryButtonRetry();
+            return;
+        }
         let injected = 0;
         cards.forEach(card => {
             if (card.querySelector('.sakura-mem-edit')) return;
@@ -1436,8 +1547,19 @@ function getCharKey() {
             if (!summaryEl) return;
             const summaryText = (summaryEl.textContent || '').trim();
             if (!summaryText) return;
-            const mem = memories.find(m => (m.summary || '').trim() === summaryText);
-            if (!mem) return;
+            const turnText = card.querySelector('.memory-item__turn')?.textContent || '';
+            const turnMatch = turnText.match(/\d+/);
+            const cardTurn = turnMatch ? Number(turnMatch[0]) : NaN;
+            const validMemories = memories.filter(m => m && m.id != null);
+            const byId = card.dataset.memoryId
+                ? validMemories.find(m => String(m.id) === String(card.dataset.memoryId)) : null;
+            const byTurn = Number.isFinite(cardTurn)
+                ? validMemories.filter(m => Number(m.turn) === cardTurn) : [];
+            const candidates = byTurn.length ? byTurn : validMemories;
+            const sameSummary = candidates.filter(m => String(m.summary || '').trim() === summaryText);
+            const mem = byId || (sameSummary.length === 1 ? sameSummary[0] : null)
+                || (byTurn.length === 1 ? byTurn[0] : null);
+            if (!mem) { scheduleClassicMemoryButtonRetry(); return; }
             // 新版头容器：.memory-item__head；旧版兼容：mb-2.5 / mb-3 / firstElementChild
             const header = card.querySelector('.memory-item__head') || card.querySelector('[class*="mb-2.5"]') || card.querySelector('.mb-3') || card.firstElementChild;
             if (!header) return;
@@ -1457,8 +1579,15 @@ function getCharKey() {
                 '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>');
             const delBtn = mkIconBtn('sakura-mem-del', '删除这条总结',
                 '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>');
+            btn.addEventListener('click', ev => {
+                ev.preventDefault();
+                ev.stopImmediatePropagation();
+                ev.stopPropagation();
+                openClassicMemoryEditor(mem);
+            });
             delBtn.addEventListener('click', ev => {
                 ev.preventDefault();
+                ev.stopImmediatePropagation();
                 ev.stopPropagation();
                 deleteClassicMemoryEntry(mem);
             });
@@ -1472,7 +1601,10 @@ function getCharKey() {
             }
             injected++;
         });
-        if (injected) console.log(`[苏萝萝] 已注入 ${injected} 个经典记忆编辑按钮`);
+        if (injected) {
+            classicMemoryButtonRetryCount = 0;
+            console.log(`[苏萝萝] 已注入 ${injected} 个经典记忆编辑按钮`);
+        }
     }
 
     // 删除单条经典记忆：与编辑同机制（官方存储层直写 + 正门重载）。
@@ -1672,7 +1804,7 @@ function getCharKey() {
         await ensureMomentsHydrated();
         const list = getMomentsStore();
         const next = list.filter(m => m && m.id !== momentId);
-        if (next.length !== list.length) await saveMomentsStore(next);
+        return next.length === list.length || await saveMomentsStore(next);
     }
 
 
@@ -1844,7 +1976,7 @@ function getCharKey() {
                     card.querySelector('.sm-card-del').addEventListener('click', e => {
                         e.stopPropagation();
                         openMomentConfirmDialog(`确认移除名场面「${item.title || '名场面'}」？`, async () => {
-                            await deleteCharacterMoment(item.id);
+                            if (!await deleteCharacterMoment(item.id)) { showMomentToast('删除失败，原始存档已保留，请重试'); return; }
                             renderList();
                         });
                     });
@@ -1889,7 +2021,7 @@ function getCharKey() {
 // ================= 🎵 暗夜留声机（随身听）核心引擎与持久化 =================
 function gpEsc(str) {
     if (!str) return '';
-    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '"');
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 const GRAMOPHONE_DB_NAME = 'sakura_gramophone_db';
 const GRAMOPHONE_DB_STORE = 'tracks';
@@ -1933,7 +2065,8 @@ function loadGramophoneData() {
 function saveGramophonePlaylist() {
     try {
         pluginStorage.setItem(GRAMOPHONE_STORAGE_KEY, JSON.stringify(_gpPlaylist));
-    } catch (_) {}
+        return true;
+    } catch (_) { return false; }
 }
 
 function saveGramophoneSettings() {
@@ -2219,24 +2352,31 @@ function addDirectUrlTrack() {
 }
 
 async function importLocalTrackFiles(e) {
-    const files = Array.from(e.target.files || []);
+    const input = e.target;
+    const files = Array.from(input.files || []);
     if (!files.length) return;
-    for (const file of files) {
-        const id = 'local-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
-        const title = file.name.replace(/\.[^/.]+$/, '').slice(0, 30);
-        await saveLocalTrackFile(id, file);
-        _gpPlaylist.push({
-            id,
-            title: title,
-            type: 'local'
-        });
-    }
-    saveGramophonePlaylist();
-    renderGramophoneList();
-    showMomentToast(`已成功导入 ${files.length} 首本地曲目`);
-    e.target.value = '';
+    let imported = 0;
+    try {
+        for (const file of files) {
+            const id = 'local-' + Date.now() + '-' + Math.random().toString(36).slice(2, 7);
+            const title = file.name.replace(/\.[^/.]+$/, '').slice(0, 30);
+            let saved = false;
+            try { saved = await saveLocalTrackFile(id, file); } catch (_) {}
+            if (!saved) continue;
+            _gpPlaylist.push({ id, title, type: 'local' });
+            if (!saveGramophonePlaylist()) {
+                _gpPlaylist.pop();
+                try { await removeLocalTrackFile(id); } catch (_) {}
+                continue;
+            }
+            imported++;
+        }
+        renderGramophoneList();
+        showMomentToast(imported === files.length
+            ? `已成功导入 ${imported} 首本地曲目`
+            : `导入成功 ${imported} 首，失败 ${files.length - imported} 首，请检查存储空间后重试`);
+    } finally { input.value = ''; }
 }
-
 function deleteTrack(index) {
     if (index < 0 || index >= _gpPlaylist.length) return;
     const track = _gpPlaylist[index];
@@ -4433,7 +4573,7 @@ function injectGramophoneButton() {
     .sakura-close-btn{font-size:15px!important;color:#b88799!important}
     .sakura-close-btn:hover{background:#ffeaf1!important;color:#c85278!important}
 
-    /* V20 原生派：名场面顶替自动生图的设定保留，但外观彻底回归官方 .island-button ghost 风格，不再强加粉底/粉边 */
+    /* 名场面与留声机使用官方 .island-button 外观；自动生图保留原生功能。 */
 
     /* 对话卡片、思考卡片和提示统一质感 */
     .msg-bubble-glass,.native-thinking-card,.cot-ui{border-radius:18px!important;border-color:rgba(232,184,200,.62)!important}
@@ -6892,6 +7032,17 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
         }
         console.log('[苏萝萝] 记忆导入/导出已恢复（1.8.9 原生复刻）');
     }
+    let classicMemoryButtonRetryTimer = null;
+    let classicMemoryButtonRetryCount = 0;
+    function scheduleClassicMemoryButtonRetry() {
+        if (classicMemoryButtonRetryTimer || classicMemoryButtonRetryCount >= 12) return;
+        classicMemoryButtonRetryTimer = setTimeout(() => {
+            classicMemoryButtonRetryTimer = null;
+            classicMemoryButtonRetryCount++;
+            try { injectClassicMemoryEditButtons(); } catch (_) {}
+
+        }, 250);
+    }
     // ================= 4. 调度 =================
     function safe(fn) {
         try { fn(); } catch (e) { console.warn('[苏萝萝] 模块异常:', e); }
@@ -6911,6 +7062,7 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
     //   是移动端"点哪都卡"的主源之一。改为最多每 150ms 跑一次（肉眼无感的注入延迟），
     //   负载直降约 10 倍；切页时仍由下方 syncState() 立即补一次，保证按钮即时出现。
     let _rafPending = false;
+    let _injectDelayTimer = null;
     let _lastInjectAt = 0;
     const INJECT_MIN_INTERVAL = 150;
     function runInjections() {
@@ -6924,6 +7076,7 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
         safe(restoreMemoryImportExport);
         safe(injectFullscreenComposer);
         safe(injectEntrySearch);
+        safe(injectCleanViewButton);
         // ⚠️ 注意：温度 / 流式 / 角色卡视图守护已全部改为 Vue 同步 watch（installPreferenceGuards），
         // 不受 Observer 闸门影响，也不在本函数里跑。
     }
@@ -6933,14 +7086,24 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
         requestAnimationFrame(() => {
             _rafPending = false;
             const now = Date.now();
-            if (now - _lastInjectAt < INJECT_MIN_INTERVAL) return;
+            const wait = INJECT_MIN_INTERVAL - (now - _lastInjectAt);
+            if (wait > 0) {
+                if (!_injectDelayTimer) {
+                    _injectDelayTimer = setTimeout(() => {
+                        _injectDelayTimer = null;
+                        _lastInjectAt = Date.now();
+                        runInjections();
+                    }, wait);
+                }
+                return;
+            }
             _lastInjectAt = now;
             runInjections();
         });
     });
     observer.observe(document.documentElement, { childList: true, subtree: true });
     // 低频兜底轮询：覆盖 observer 可能漏掉的情况
-    setInterval(syncState, 2000);
+    setInterval(syncState, 10000);
     await migratePrivateData();
     await ensureMomentsHydrated();
     syncState();
@@ -7038,11 +7201,8 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
         btn.onclick = e => { e.preventDefault(); e.stopImmediatePropagation(); toggleCleanView(); };
         wrap.insertBefore(btn, full);
     }
-    setInterval(() => {
-        if (document.hidden) return; // 🚀 后台标签页零消耗
-        try { injectCleanViewButton(); } catch (_) {}
-    }, 1800);
-    try { injectCleanViewButton(); } catch (_) {}
+    // 复用统一 MutationObserver 注入调度，不再单独每 1.8 秒扫描一次全页。
+    try { injectCleanViewButton(); } catch (_) {};
     try { startChatBubbleScrubber(); } catch (_) {}
     // ============================================================
 
