@@ -62,7 +62,9 @@ export async function startHarness({ upstream, assets = process.env.RPH_PACKAGE_
             if (url.pathname === '/' || url.pathname === '/index.html') {
                 response.setHeader('content-type', 'text/html; charset=utf-8');
                 if (upstream) {
-                    const html = await fs.readFile(path.join(upstream, 'index.html'), 'utf8');
+                    // 和外壳一样去掉原作者的在线心跳、检测新版本地址：测试不去问原作者的服务器，他发新版也不会弹窗挡住页面。
+                    const html = (await fs.readFile(path.join(upstream, 'index.html'), 'utf8'))
+                        .replace(/<meta name="rphub-(?:presence|update)-api"[^>]*>\s*/g, '');
                     const scripts = ['ui-kit', 'nav-adapter', 'char-store', 'bootstrap', 'image-module', 'module-loader']
                         .map(name => `<script src="/DB/${name}.js"></script>`).join('');
                     response.end(html.replace('</head>', `<link rel="stylesheet" href="/DB/styles.css">${scripts}</head>`));
