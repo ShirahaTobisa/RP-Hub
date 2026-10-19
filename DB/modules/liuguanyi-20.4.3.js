@@ -1,7 +1,7 @@
-// Adapted from RP-Hub 终极美化 & 全功能增强 v20.4.2, author 苏萝萝.
+// Adapted from RP-Hub 终极美化 & 全功能增强 v20.4.3, author 苏萝萝.
 // Workshop edition: no image-generation integration; persistent data supports cloud sync.
 RPHubSDK.register({
-    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.4.2-rph.1', requiresApi: 2,
+    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.4.3-rph.1', requiresApi: 2,
     // 原生五槽：页面挂载前把聊天模型槽位扩到五个，并恢复输入混淆开关。加载器 API 6 起才会调用，
     // 旧外壳或官方代码对不上时保持官方三槽。
     beforeMount({ options, root }) {
@@ -5687,14 +5687,29 @@ function injectGramophoneButton() {
     }
     function injectSakuraSettingsSection() {
         if (document.getElementById('sakura-personal-section')) return;
-        // 锚点：官方「空间管理」标题（settings-section-heading 内含该文案）所在的分区容器。
-        const headings = document.querySelectorAll('h4.settings-section-heading, h4.settings-subheading');
-        let storageSection = null;
-        for (const h of headings) {
-            if ((h.textContent || '').includes('空间管理')) {
-                storageSection = h.closest('div.pt-6') || h.parentElement?.parentElement;
-                break;
+        // 优先跟随本地灾备区域，其次兼容官方新旧设置分区。
+        let storageSection = document.getElementById('sakura-local-backup-section');
+        if (!storageSection) {
+            const headings = document.querySelectorAll('h3, h4');
+            for (const h of headings) {
+                const title = (h.textContent || '').trim();
+                if (title === '空间管理' || title === '备份与转移') {
+                    storageSection = h.closest('.pt-6') || h.parentElement;
+                    break;
+                }
             }
+        }
+        if (!storageSection) {
+            const upload = Array.from(document.querySelectorAll('button[type="button"]'))
+                .find(b => (b.textContent || '').trim() === '上传备份');
+            storageSection = upload && upload.closest('.pt-6');
+        }
+        // 测试版不显示官方「备份与转移」，2.0.4 起又没有「空间管理」：接在设置页最后一个分区后面。
+        let insertAfter = false;
+        if (!storageSection) {
+            const subs = document.querySelectorAll('h4.settings-subheading');
+            storageSection = subs.length ? subs[subs.length - 1].closest('.pt-6') : null;
+            insertAfter = true;
         }
         if (!storageSection || !storageSection.parentElement) return;
         const section = document.createElement('div');
@@ -5724,7 +5739,7 @@ function injectGramophoneButton() {
         };
         // 只注册到全局唯一的 5 秒校准器，不给每个分区单独开循环。
         presenceBadgeRefreshers.push(refreshBadges);
-        storageSection.parentElement.insertBefore(section, storageSection);
+        storageSection.parentElement.insertBefore(section, insertAfter ? storageSection.nextSibling : storageSection);
         // 必须在插入 DOM 后刷新，否则 isConnected 尚未成立会留下空徽章。
         refreshBadges();
         // 点击处理走全局事件委托（见 document click 委托里的 .sakura-personal-card 分支），

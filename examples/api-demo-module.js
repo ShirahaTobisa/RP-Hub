@@ -12,7 +12,7 @@
         version: '1.2.0',
         requiresApi: 6,
         // ⑫ beforeMount（API 6）：官方页面挂载前调用一次，可以改官方根组件（options）和页面模板（root.innerHTML）。
-        // 这里只看不改；真改的例子见 DB/modules/liuguanyi-20.4.2.js（聊天模型五槽）。这时还没有 ctx。
+        // 这里只看不改；真改的例子见 DB/modules/liuguanyi-20.4.3.js（聊天模型五槽）。这时还没有 ctx。
         // 新装后（或第一次加上 beforeMount 的更新后）要按提示再刷新一次，之后每次打开页面都会先调用它。
         beforeMount({ options, root }) {
             mountInfo = `挂载前看到 ${Object.keys(options.components || {}).length} 个官方组件，页面模板 ${root.innerHTML.length} 字`;

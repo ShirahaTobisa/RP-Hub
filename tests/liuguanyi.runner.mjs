@@ -3,9 +3,9 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { startHarness, initializeFixture, chromium, chrome, defaultUpstream, root } from './sync-195.helpers.mjs';
 
-// 柳贯一 20.4.2 工坊版：加载器第一次运行它时记下它有 beforeMount，刷新后官方页面挂载前就改成聊天模型五槽、
+// 柳贯一 20.4.3 工坊版：加载器第一次运行它时记下它有 beforeMount，刷新后官方页面挂载前就改成聊天模型五槽、
 // 恢复输入混淆开关；开关关掉后 Gemini 请求不再混淆；插件包的流式保活不影响回复正文。
-const source = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-20.4.2.js'), 'utf8');
+const source = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-20.4.3.js'), 'utf8');
 const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const page = await (await browser.newContext()).newPage();
@@ -90,6 +90,11 @@ try {
     await page.locator('.chat-model-slots > button').nth(3).click();
     assert.equal(await page.evaluate(() => vm().settings.model), 'fourth-model');
     console.log('PASS slot 4 keeps its saved model and selecting it switches the chat model');
+
+    // 2.0.4 起官方没有「空间管理」，测试版又不显示「备份与转移」，「樱花个性化」要接在设置页最后。
+    await page.evaluate(() => { vm().currentView = 'settings'; });
+    await page.locator('#sakura-personal-section').waitFor({ timeout: 15000 });
+    console.log('PASS the settings page shows the sakura personalization section');
     assert.deepEqual(errors, []);
 } finally {
     await browser.close();
