@@ -4,7 +4,7 @@
 // 「预设管理」页顶上有方案下拉框，选中就切换；聊天输入框上方的「方案」按钮和模块管理里也能打开方案面板。
 // 方案存在插件数据里，随云同步。导出的文件带上方案用到的条目内容，别人导入时缺的条目会补上（先关着），同名方案会被替换。
 RPHubSDK.register({
-    id: 'preset-schemes', name: '预设方案', version: '1.2.0', requiresApi: 4,
+    id: 'preset-schemes', name: '预设方案', version: '1.2.1', requiresApi: 4,
     init(ctx) {
         'use strict';
         const FORMAT = 'rph-preset-schemes-v1';
@@ -262,10 +262,11 @@ RPHubSDK.register({
             if (!bar?.root.isConnected) return;
             let current = null;
             try { current = schemes.find(isCurrent) || null; } catch (_) { /* 预设还没加载好 */ }
+            // 官方 2.0.5 的下拉框去掉了占位文字，没对上方案时在最上面放一条点不了的提示，各版本显示一样。
+            const hint = { value: '', label: schemes.length ? '现在的开关没存成方案' : '还没有方案，点「管理方案」存一个', disabled: true };
             Object.assign(bar.view, {
                 value: current?.id || '',
-                options: schemes.map((scheme) => ({ value: scheme.id, label: scheme.name })),
-                placeholder: schemes.length ? '现在的开关没存成方案' : '还没有方案，点「管理方案」存一个'
+                options: [...(current ? [] : [hint]), ...schemes.map((scheme) => ({ value: scheme.id, label: scheme.name }))]
             });
         }
         async function mountBar() {
@@ -286,10 +287,10 @@ RPHubSDK.register({
             root.querySelector('[data-manage]').onclick = openPanel;
             root.querySelector('[data-import]').onclick = () => pickImport();
             root.querySelector('[data-export]').onclick = () => exportSchemes(schemes, 'RPH 预设方案.json');
-            const view = Vue.reactive({ value: '', options: [], placeholder: '' });
+            const view = Vue.reactive({ value: '', options: [] });
             const app = Vue.createApp({
                 render: () => Vue.h(Select, {
-                    modelValue: view.value, options: view.options, placeholder: view.placeholder, buttonClass: 'settings-control',
+                    modelValue: view.value, options: view.options, buttonClass: 'settings-control',
                     'onUpdate:modelValue': (id) => {
                         const scheme = schemes.find((item) => item.id === id);
                         if (scheme) switchTo(scheme);
