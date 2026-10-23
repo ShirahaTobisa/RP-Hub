@@ -1,6 +1,6 @@
 // 角色语音：让 AI 回复里的人物开口说话（旁白、叙述不念，那是「朗读」插件的事）。
 // 一次 AI 调用（插件接口 API 7 的 ctx.ai）分析每句是谁说的、用什么语气；人物的台词按「配音表」用 Fish Audio 的声音念，
-// 语气写成 Fish 认的句首 [方括号]。音色从 Fish 公共声音库里挑（不占 Fish 账号的保存名额）：可以让 AI 按世界书挑，也可以自己搜、试听。
+// 语气写成 Fish 认的句首 [方括号]。音色从 Fish 公共声音库里挑（不占 Fish 账号的保存名额）：可以让 AI 按世界书挑，也可以自己搜、试听，或者直接粘贴声音 ID。
 // 聊天页有个状态悬浮窗：显示最新回复分析了没有、谁说了几句、正在说谁的台词，带「分析」「播放/停止」按钮。
 // 分析过的回复里，人物的每句台词画虚线，点一下能看是谁说的、什么语气，能只播这一句或从这句开始；句与句之间按 AI 给的节奏停顿。
 (() => {
@@ -50,7 +50,6 @@
     const STYLE = `.${SPEAKING}{background:rgba(96,165,250,.18);border-radius:6px;box-shadow:0 0 0 3px rgba(96,165,250,.18)}
 ::highlight(rph-voice-line){text-decoration:underline dotted rgba(96,165,250,.85);text-decoration-thickness:1.5px}
 ::highlight(rph-voice-now){background-color:rgba(96,165,250,.28)}
-[data-rph-workshop-page] .settings-card__body>p.rph-ui-muted{margin:0 0 .75rem}
 .rph-voice-pop{position:fixed;z-index:60;max-width:min(300px,calc(100vw - 16px));padding:10px 12px;border-radius:12px;background:var(--c-elevated,#fff);color:var(--c-text,#111827);border:1px solid var(--c-border-soft,#e5e7eb);box-shadow:0 8px 24px rgba(0,0,0,.16);font-size:13px}
 .rph-voice-pop__tone{margin:2px 0 8px;color:var(--c-text-3,#6b7280);font-size:12px;overflow-wrap:anywhere}
 .rph-voice-pop__actions{display:flex;gap:6px}
@@ -70,7 +69,7 @@
 .rph-voice-widget.is-busy .rph-voice-widget__dot{box-shadow:0 0 0 3px rgba(96,165,250,.45),0 6px 18px rgba(0,0,0,.16)}`;
 
     RPHubSDK.register({
-        id: 'character-voice', name: '角色语音', version: '1.2.1', requiresApi: 7,
+        id: 'character-voice', name: '角色语音', version: '1.2.2', requiresApi: 7,
         init(ctx) {
             const player = new Audio(); // 都用这一个播放器：手机上点过一次以后，自动播放也能出声
             const preview = new Audio(); // 声音库的试听
@@ -741,6 +740,13 @@
                 const data = await libraryPage({ title, page });
                 return { voices: (data.items || []).filter((item) => item?._id).map(toVoice), total: Number(data.total) || 0 };
             }
+            // 按 ID 查一个声音；带上密钥，自己账号里的私有声音也查得到。
+            async function lookupVoice(id) {
+                const key = get('fishKey').trim();
+                const response = await fetch(`${FISH_LIBRARY}/${id}`, key ? { headers: { Authorization: `Bearer ${key}` } } : {});
+                if (!response.ok) throw new Error(response.status === 404 ? '没找到这个声音，检查一下 ID' : `查声音失败（${response.status}）`);
+                return toVoice(await response.json());
+            }
             // AI 挑：几组条件各搜一页，合在一起按对得上的程度排，取前 8 个。
             async function searchLibrary(queries, want = {}) {
                 const found = new Map();
@@ -845,20 +851,17 @@
                         <div class="settings-card">
                         <div class="settings-card__header"><div class="settings-card__title">${icon(GEAR_PATHS, 'w-5 h-5 mr-2')}基本设置</div></div>
                         <div class="settings-card__body">
-                        <p class="rph-ui-muted">让回复里的人物开口说话：AI 分析每句是谁说的、用什么语气，人物的台词按下面的配音表用 Fish Audio 的声音念。旁白和叙述不念。</p>
                         <label class="rph-ui-field">Fish Audio 密钥<input class="rph-ui-input" type="text" data-k="fishKey" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" style="-webkit-text-security:disc" placeholder="在 fish.audio 的开发者页面申请"></label>
                         <div class="rph-ui-field"><span>模型</span><select class="rph-ui-input" data-k="fishModel">
                             <option value="fish-audio/s2.1-pro-free">S2.1 Pro 免费版</option>
                             <option value="fish-audio/s2.1-pro">S2.1 Pro（按字数收费）</option>
                         </select></div>
-                        <p class="rph-ui-muted">免费版和收费版是同一个模型，但 Fish 说免费版的请求可能会被留下来改进模型。密钥会随云同步存进你自己的存储桶。</p>
                         <div class="rph-ui-field"><span>分析用的模型</span><select class="rph-ui-input" data-k="analysisModel"></select></div>
                         <div class="rph-ui-actions" style="justify-content:space-between;align-items:center;margin:-0.25rem 0 0.75rem"><span class="rph-ui-muted" data-models-note></span><button type="button" class="modal-secondary-button rph-ui-button" data-refresh-models>刷新模型列表</button></div>
                         <div class="rph-ui-field"><span>什么时候分析</span><select class="rph-ui-input" data-k="analyzeMode">
                             <option value="click">点「分析」或播放时才分析</option>
                             <option value="auto">每条回复结束后自动分析</option>
                         </select></div>
-                        <p class="rph-ui-muted">每条回复分析一次（一次 AI 调用），结果会存下来，重听不再分析。</p>
                         ${toggle('autoPlay', '回复结束后自动说')}
                         ${toggle('userLines', '你扮演的角色的台词也念')}
                         ${toggle('widget', '在聊天页显示状态悬浮窗')}
@@ -867,7 +870,6 @@
                         <div class="settings-card">
                         <div class="settings-card__header"><div class="settings-card__title">${icon([PEOPLE_PATH], 'w-5 h-5 mr-2')}配音表<span class="rph-ui-muted" style="margin-left:0.5rem;font-weight:400" data-card-name></span></div></div>
                         <div class="settings-card__body">
-                            <p class="rph-ui-muted">点悬浮窗的「分析」后，回复里说话的人物会自己加进来；也可以在下面手动添加。音色从 Fish 公共声音库里挑，不占你 Fish 账号的保存名额，没挑的用 Fish 的默认声音。</p>
                             <div data-cast></div>
                             <div class="rph-ui-actions" style="margin-top:0.75rem"><input class="rph-ui-input" data-new-person placeholder="人物名字" style="flex:1;min-width:0"><button type="button" class="modal-secondary-button rph-ui-button" data-add-person>添加人物</button></div>
                         </div>
@@ -947,13 +949,13 @@
                         if (!voices.length) area.appendChild(element('p', 'rph-ui-muted', '没找到合适的声音，换个词搜搜。'));
                         voices.forEach((voice) => area.appendChild(voiceRow(name, voice)));
                     };
-                    // 自己搜：每页 20 个，写出一共多少个，底下「加载更多」往后翻。
+                    // 自己搜：每页 20 个，写出一共多少个，底下「加载更多」往后翻。粘贴的是声音 ID 或 fish.audio 声音页网址时直接按 ID 查。
                     const searchBox = (area, name) => {
                         area.replaceChildren();
                         const form = element('div', 'rph-ui-actions');
                         form.style.marginTop = '0.5rem';
                         const input = element('input', 'rph-ui-input');
-                        input.placeholder = '搜声音，比如 少女、御姐、大叔';
+                        input.placeholder = '搜声音，或粘贴声音 ID、网址';
                         input.style.cssText = 'flex:1;min-width:0';
                         const results = element('div');
                         let page = 0;
@@ -966,7 +968,9 @@
                             }
                             more.disabled = true;
                             try {
-                                const { voices, total } = await searchPage(input.value.trim(), page + 1);
+                                const text = input.value.trim();
+                                const id = text.match(/(?:^|\/m\/)([0-9a-f]{32})\b/i)?.[1];
+                                const { voices, total } = id ? { voices: [await lookupVoice(id)], total: 1 } : await searchPage(text, page + 1);
                                 page += 1;
                                 if (fresh) results.replaceChildren(element('p', 'rph-ui-muted', total ? `一共 ${total} 个声音` : '没找到声音，换个词搜搜。'));
                                 more.remove();
@@ -986,7 +990,7 @@
                     function renderCast() {
                         castBox.replaceChildren();
                         const people = readCast();
-                        if (!people.length) castBox.appendChild(element('p', 'rph-ui-muted', '还没有人物。'));
+                        if (!people.length) castBox.appendChild(element('p', 'rph-ui-muted', '还没有人物，分析回复后会自动加进来。'));
                         people.forEach((person) => {
                             const row = element('div', 'rph-ui-row');
                             row.dataset.person = person.name;
