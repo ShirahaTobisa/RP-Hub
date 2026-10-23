@@ -2,8 +2,8 @@
 (() => {
     'use strict';
 
-    const API_VERSION = 6;
-    const LOADER_VERSION = 'r2-workshop-6';
+    const API_VERSION = 7;
+    const LOADER_VERSION = 'r2-workshop-7';
     const LIST_KEY = 'rp_hub_workshop_modules_v1';
     const DB_NAME = 'RPHubDB';
     const DB_STORE = 'store';
@@ -14,8 +14,9 @@
     const CHAT_MUTATION_THROTTLE_MS = 500;
     const VALID_STATUSES = new Set(['ok', 'load-error', 'init-error', 'api-mismatch', '']);
     const VALID_EVENTS = new Set(['ready', 'visibility', 'chat-mutation', 'persistence-flush', 'generation-start', 'generation-end']);
-    // 记忆总结、二次压缩、UI 变量分析等副请求的开头文字；带这些文字的请求不算主聊天。
-    const AUXILIARY_REQUEST_MARKERS = ['你是角色扮演对话的逐轮记忆整理器', '你是角色扮演长期记忆压缩器', '只分析一个UI模板'];
+    // 记忆总结、二次压缩、UI 变量分析和插件经 ctx.ai 发的副请求里带的文字；带这些文字的请求不算主聊天。
+    const AI_REQUEST_MARKER = '（插件附带请求）';
+    const AUXILIARY_REQUEST_MARKERS = ['你是角色扮演对话的逐轮记忆整理器', '你是角色扮演长期记忆压缩器', '只分析一个UI模板', AI_REQUEST_MARKER];
     const MODULE_ID_PATTERN = /^[a-z0-9-]{3,32}$/;
     const RISK_WARNING = '风险警告：第三方代码拥有页面全部权限，包括云同步密码与生图密钥。仅安装你信任的来源。\n\n确认安装此模块吗？';
     const DEFAULT_MIRROR_BASE = 'https://update.rph.mornye.uk';
@@ -960,8 +961,33 @@
             image: {
                 registerProvider: (provider) => imageModule().registerImageProvider(provider),
                 onParams: (handler) => imageModule().onImageParams(handler)
+            },
+            // API 7：用站点设置里的 AI 发一次请求，返回回复文字。
+            ai: {
+                complete: (options) => aiComplete(options)
             }
         };
+    }
+
+    // 默认用 RPH 设置里的「分析模型」（UI 模板分析那个），没设就用主模型；走 RPH 自己的请求函数，多接口分流照常生效。
+    // 系统提示开头带上标记，加载器认得出这是附带请求，不交给 ctx.requests.onChat 改写。
+    async function aiComplete({ messages, model, temperature = 0.3, signal } = {}) {
+        const client = globalThis.RPHubApiClient;
+        const endpoint = globalThis.RPHubApiUtils?.buildApiEndpoint;
+        if (!client?.requestChatCompletion || !endpoint) throw new Error('这个版本的 RPH 不支持插件调用 AI');
+        if (!Array.isArray(messages) || !messages.length) throw new TypeError('ctx.ai.complete 需要 messages');
+        const settings = appGet('settings') || {};
+        if (!String(settings.apiUrl || '').trim()) throw new Error('还没在 RPH 设置里填 AI 接口');
+        const marked = typeof messages[0]?.content === 'string' && messages[0].role === 'system'
+            ? [{ ...messages[0], content: AI_REQUEST_MARKER + messages[0].content }, ...messages.slice(1)]
+            : [{ role: 'system', content: AI_REQUEST_MARKER }, ...messages];
+        const result = await client.requestChatCompletion({
+            url: endpoint(settings.apiUrl, 'chat/completions'),
+            apiKey: settings.apiKey,
+            model: String(model || settings.uiTemplateModel || settings.model || '').trim(),
+            messages: marked, temperature, stream: false, signal
+        });
+        return String(result?.content || '');
     }
 
     function imageModule() {

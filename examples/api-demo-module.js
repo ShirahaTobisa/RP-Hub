@@ -1,4 +1,4 @@
-// 接口示范 mod：把 RP-Hub 测试版插件接口（API 6）的每一项各用一次，写插件时照着抄。
+// 接口示范 mod：把 RP-Hub 测试版插件接口（API 7）的每一项各用一次，写插件时照着抄。
 // 默认不改动任何聊天内容；“请求改写示范”要在面板里手动打开。
 (() => {
     'use strict';
@@ -9,8 +9,8 @@
     RPHubSDK.register({
         id: 'api-demo',
         name: '接口示范',
-        version: '1.2.0',
-        requiresApi: 6,
+        version: '1.3.0',
+        requiresApi: 7,
         // ⑫ beforeMount（API 6）：官方页面挂载前调用一次，可以改官方根组件（options）和页面模板（root.innerHTML）。
         // 这里只看不改；真改的例子见 DB/modules/liuguanyi-20.4.3.js（聊天模型五槽）。这时还没有 ctx。
         // 新装后（或第一次加上 beforeMount 的更新后）要按提示再刷新一次，之后每次打开页面都会先调用它。
@@ -101,6 +101,20 @@
                     button('统计聊天记录键', async () => {
                         const keys = await ctx.appDb.keys('rp_hub_chat_');
                         ctx.ui.toast(`本地存有 ${keys.length} 个角色的聊天记录`, { kind: 'info' });
+                    }),
+                    // ⑬ ctx.ai（API 7）：用站点设置里的 AI 发一次请求，不用自己存密钥
+                    button('让 AI 总结最新回复', async () => {
+                        const reply = (ctx.app.get('chatHistory') || []).findLast((message) => message?.role === 'assistant');
+                        if (!reply) return ctx.ui.toast('还没有 AI 回复', { kind: 'info' });
+                        try {
+                            const text = await ctx.ai.complete({ messages: [
+                                { role: 'system', content: '用一句话总结下面这段回复。' },
+                                { role: 'user', content: String(reply.content || '').slice(0, 4000) }
+                            ] });
+                            ctx.ui.toast(text || 'AI 没有回答', { kind: 'info' });
+                        } catch (error) {
+                            ctx.ui.toast('AI 请求失败：' + (error?.message || error));
+                        }
                     }),
                     button('读取上次保存的数据', async () => {
                         const summary = await ctx.data.get('summary');

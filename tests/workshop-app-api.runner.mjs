@@ -19,6 +19,7 @@ const probeSource = `RPHubSDK.register({ id:'api3-probe', name:'Probe', version:
     ctx.events.on('generation-end', () => probe.events.push('end'));
     ctx.requests.onChat(body => { body.messages.push({ role: 'user', content: '坏插件的改动' }); throw new Error('fixture handler failure'); });
     ctx.requests.onChat(() => { probe.handled++; });
+    probe.ai = ctx.ai;
 } });`;
 
 try {
@@ -132,6 +133,31 @@ try {
     assert.equal(chatBodies[0].messages.length, 2);
     assert.equal(await page.evaluate(() => api3Probe.handled), 3);
     console.log('PASS auxiliary requests are not passed to chat handlers');
+
+    // API 7：ctx.ai.complete 用站点的 AI 接口，默认走「分析模型」，没设就用主模型；就算正在生成也不交给 onChat 改写。
+    chatBodies.splice(0);
+    const aiReply = await page.evaluate(async () => {
+        const proxy = vm();
+        proxy.settings.uiTemplateModel = 'analysis-model';
+        proxy.isGenerating = true;
+        try {
+            return await api3Probe.ai.complete({ messages: [{ role: 'system', content: '总结这段话。' }, { role: 'user', content: '你好' }] });
+        } finally {
+            proxy.isGenerating = false;
+        }
+    });
+    assert.equal(aiReply, '回复正文');
+    assert.equal(chatBodies.length, 1);
+    assert.equal(chatBodies[0].model, 'analysis-model');
+    assert.deepEqual(chatBodies[0].messages, [{ role: 'system', content: '（插件附带请求）总结这段话。' }, { role: 'user', content: '你好' }]);
+    assert.equal(await page.evaluate(() => api3Probe.handled), 3, 'plugin AI requests are not passed to chat handlers');
+    await page.evaluate(async () => {
+        vm().settings.uiTemplateModel = '';
+        await api3Probe.ai.complete({ messages: [{ role: 'user', content: '没有系统提示' }] });
+    });
+    assert.equal(chatBodies[1].model, 'fixture-model', 'the main model is used when no analysis model is set');
+    assert.deepEqual(chatBodies[1].messages, [{ role: 'system', content: '（插件附带请求）' }, { role: 'user', content: '没有系统提示' }]);
+    console.log('PASS ctx.ai.complete uses the site AI, the analysis model first, and skips chat handlers');
 
     // 工坊：从分发端目录安装、刷新后运行、发布新版后原地更新；指纹不符的文件拒绝安装。
     const marketSource = (version) => `RPHubSDK.register({ id: 'market-demo', name: '工坊示例', version: '${version}', requiresApi: 4, init() { globalThis.marketDemoVersion = '${version}'; } });`;

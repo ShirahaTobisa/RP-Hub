@@ -50,7 +50,7 @@ Mod 是由用户在“模块管理”面板通过 URL 或文件导入安装的 J
 | `id` | 必填字符串，必须匹配 `^[a-z0-9-]{3,32}$`；也是存储隔离和卸载清理的身份。 |
 | `name` | 必填、非空字符串；显示在模块管理面板。 |
 | `version` | 必填、非空字符串；loader 不解释版本格式，只负责显示。 |
-| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `6`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`，使用 `ctx.image` 的模块声明 `5`；离不开 `beforeMount` 的模块声明 `6`（可有可无的不用改，旧外壳会忽略它）。 |
+| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `7`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`，使用 `ctx.image` 的模块声明 `5`；离不开 `beforeMount` 的模块声明 `6`（可有可无的不用改，旧外壳会忽略它）；离不开 `ctx.ai` 的模块声明 `7`（可有可无的可以先判断 `ctx.ai` 在不在）。 |
 | `init(ctx)` | 必填函数；应用启动落定后调用。抛错会隔离为 `init-error`。 |
 | `beforeMount({ options, root })` | 可选函数（API 6）；官方页面挂载前调用一次，见下文。 |
 
@@ -187,10 +187,28 @@ ctx.requests.onChat(body => {
 - 加载器要等插件第一次注册才知道它有 `beforeMount`，所以新装后（或第一次加上 `beforeMount` 的更新后）会提示再刷新一次，之后每次打开页面都先加载它。
 - 官方代码对不上时应保持原样，不要半改。例子见 `DB/modules/liuguanyi-20.4.3.js`（聊天模型五槽）。
 
+### `ctx.ai`（API 7）
+
+`complete({ messages, model, temperature, signal })` 用站点设置里的 AI 接口和密钥发一次请求（不流式），返回回复文字的 Promise。
+插件不用自己保存 AI 密钥。
+
+- `messages` 和聊天接口一样，是 `{ role, content }` 数组。`model` 不写时用 RPH 设置里的「分析模型」（UI 模板分析那个），没设就用主模型。`temperature` 默认 `0.3`。
+- 这类请求不会交给 `ctx.requests.onChat` 改写，也不算进聊天记录；多接口分流照常生效。
+- 接口报错时 Promise 拒绝，错误信息是 RPH 整理过的原因；用户没填 AI 接口时也会拒绝。请自己 `catch` 并提示用户。
+
+```js
+const text = await ctx.ai.complete({ messages: [
+    { role: 'system', content: '把下面这段话总结成一句。' },
+    { role: 'user', content: '……' }
+] });
+```
+
+例子见 `DB/modules/tts-reader.js`（分析每句话是谁说的、用什么语气）。
+
 ### `ctx.log`、版本与上游信息
 
 `ctx.log(...)` 会以 `[RPH-mod:<id>]` 前缀写入控制台。`ctx.version` 是
-`{ api: 6, loader: 'r2-workshop-6' }`。`ctx.upstream.updateInfo` 是页面提供的
+`{ api: 7, loader: 'r2-workshop-7' }`。`ctx.upstream.updateInfo` 是页面提供的
 `RPH_R2_UPDATE_INFO` 原值，也可能是 `null`；请判空读取。
 
 ## 5. 生命周期与状态徽记
