@@ -243,6 +243,17 @@ try {
     console.log('PASS playing uses the saved analysis, voices only people with their own voice and tone, pauses as the AI paced it, and shows who is speaking');
 
     // 3b. 点一句台词：小卡片写着谁说的、AI 分析的语气；「播放这句」只播这一句，「从这句开始」播到最后
+    // 点在台词旁边的空白处（「（她心里其实有点紧张。）」独占一段，点这段右边没字的地方）不弹
+    const blank = await page.evaluate(() => {
+        const range = [...CSS.highlights.get('rph-voice-line')][1];
+        const paragraph = range.startContainer.parentElement;
+        paragraph.scrollIntoView({ block: 'center' });
+        const rect = range.getClientRects()[0];
+        return { x: paragraph.getBoundingClientRect().right - 10, y: rect.top + rect.height / 2 };
+    });
+    await page.mouse.click(blank.x, blank.y);
+    await page.waitForTimeout(200);
+    assert.equal(await page.locator('[data-rph-voice-pop]').count(), 0, 'clicking the blank space beside a line does not open the card');
     const clickLine = async (n) => {
         const point = await page.evaluate((i) => {
             const range = [...CSS.highlights.get('rph-voice-line')][i];

@@ -534,7 +534,7 @@
                 const top = y + 14 + height < innerHeight ? y + 14 : Math.max(8, y - height - 14);
                 Object.assign(popover.style, { left: `${left}px`, top: `${top}px` });
             }
-            // 点到台词上才弹；选文字、点别处不打扰。
+            // 点到台词的字上才弹（看点的位置在不在这句话占的那几块里；点旁边空白不算）；选文字、点别处不打扰。
             document.addEventListener('click', (event) => {
                 if (popover?.contains(event.target)) return;
                 closePopover();
@@ -542,17 +542,10 @@
                 const row = event.target.closest?.('[data-chat-index]');
                 const found = row && marks.get(row);
                 if (!found) return;
-                let node = null;
-                let offset = 0;
-                if (document.caretPositionFromPoint) {
-                    const caret = document.caretPositionFromPoint(event.clientX, event.clientY);
-                    [node, offset] = [caret?.offsetNode, caret?.offset];
-                } else if (document.caretRangeFromPoint) {
-                    const caret = document.caretRangeFromPoint(event.clientX, event.clientY);
-                    [node, offset] = [caret?.startContainer, caret?.startOffset];
-                }
-                const mark = node && found.find((item) => item.range.isPointInRange(node, offset));
-                if (mark) openPopover(mark, event.clientX, event.clientY);
+                const { clientX: x, clientY: y } = event;
+                const hit = (rect) => x >= rect.left - 2 && x <= rect.right + 2 && y >= rect.top - 2 && y <= rect.bottom + 2;
+                const mark = found.find((item) => [...item.range.getClientRects()].some(hit));
+                if (mark) openPopover(mark, x, y);
             });
             addEventListener('keydown', (event) => { if (event.key === 'Escape') closePopover(); });
             addEventListener('scroll', closePopover, true);
