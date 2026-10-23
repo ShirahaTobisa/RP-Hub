@@ -1,12 +1,14 @@
 // 角色语音：让 AI 回复里的人物开口说话（旁白、叙述不念，那是「朗读」插件的事）。
-// 每条回复多一次 AI 调用（插件接口 API 7 的 ctx.ai），分析每句是谁说的、用什么语气；人物的台词按「配音表」用 Fish Audio 的声音念，
+// 一次 AI 调用（插件接口 API 7 的 ctx.ai）分析每句是谁说的、用什么语气；人物的台词按「配音表」用 Fish Audio 的声音念，
 // 语气写成 Fish 认的句首 [方括号]。音色从 Fish 公共声音库里挑（不占 Fish 账号的保存名额）：可以让 AI 按世界书挑，也可以自己搜、试听。
+// 聊天页有个状态悬浮窗：显示最新回复分析了没有、谁说了几句、正在说谁的台词，带「分析」「播放/停止」按钮。
 (() => {
     'use strict';
-    const DEFAULTS = { fishKey: '', fishModel: 'fish-audio/s2.1-pro-free', analysisModel: '', autoPlay: '0', userLines: '0' };
+    const DEFAULTS = { fishKey: '', fishModel: 'fish-audio/s2.1-pro-free', analysisModel: '', analyzeMode: 'click', autoPlay: '0', userLines: '0', widget: '1' };
     const FISH_SPEECH = 'https://api.fish.audio/compat/v1/audio/speech';
     const FISH_LIBRARY = 'https://api.fish.audio/model';
     const NARRATOR = '旁白';
+    const WIDGET_KEY = 'rph_voice_widget'; // 悬浮窗的位置和收起状态，每台设备单独存，不跟云同步
     const LIMIT = 200; // 每段最多 200 字：太长等得久，太短请求多
     const CACHE_SIZE = 80; // 重听不重新生成（不再花钱），最多留 80 段，刷新页面后清空
     const ANALYSIS_KEEP = 40; // 每张卡最多存 40 条回复的分析结果
@@ -35,20 +37,37 @@
     ].join('\n');
     const ICON_TALK = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>';
     const ICON_STOP = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path>';
+    // 悬浮窗和「正在说」的底色。颜色用 RPH 自己的主题变量，深色模式跟着变。
+    const STYLE = `.${SPEAKING}{background:rgba(96,165,250,.18);border-radius:6px;box-shadow:0 0 0 3px rgba(96,165,250,.18)}
+.rph-voice-widget{position:fixed;z-index:45;right:12px;bottom:150px;font-size:13px;color:var(--c-text,#111827)}
+.rph-voice-widget[hidden]{display:none}
+.rph-voice-widget__card{width:220px;padding:10px 12px;border-radius:14px;background:var(--c-elevated,#fff);border:1px solid var(--c-border-soft,#e5e7eb);box-shadow:0 8px 24px rgba(0,0,0,.14)}
+.rph-voice-widget__head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;cursor:move;user-select:none;touch-action:none}
+.rph-voice-widget__fold{border:0;background:none;color:var(--c-text-3,#6b7280);cursor:pointer;padding:0 4px;font-size:16px;line-height:1}
+.rph-voice-widget__status{margin:0 0 8px;color:var(--c-text-3,#6b7280);font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+.rph-voice-widget__actions{display:flex;gap:6px}
+.rph-voice-widget__actions>button{flex:1;min-width:0;padding:4px 8px;font-size:12px}
+.rph-voice-widget__dot{display:none;width:42px;height:42px;align-items:center;justify-content:center;border-radius:999px;border:1px solid var(--c-border-soft,#e5e7eb);background:var(--c-elevated,#fff);color:var(--c-accent-text,#2563eb);box-shadow:0 6px 18px rgba(0,0,0,.16);cursor:pointer;touch-action:none}
+.rph-voice-widget.is-folded .rph-voice-widget__card{display:none}
+.rph-voice-widget.is-folded .rph-voice-widget__dot{display:flex}
+.rph-voice-widget.is-busy .rph-voice-widget__dot{box-shadow:0 0 0 3px rgba(96,165,250,.45),0 6px 18px rgba(0,0,0,.16)}`;
 
     RPHubSDK.register({
         id: 'character-voice', name: '角色语音', version: '1.0.0', requiresApi: 7,
         init(ctx) {
             const player = new Audio(); // 都用这一个播放器：手机上点过一次以后，自动播放也能出声
             const preview = new Audio(); // 声音库的试听
-            const highlight = document.createElement('style');
-            highlight.textContent = `.${SPEAKING}{background:rgba(96,165,250,.18);border-radius:6px;box-shadow:0 0 0 3px rgba(96,165,250,.18)}`;
-            document.head.appendChild(highlight);
+            const style = document.createElement('style');
+            style.textContent = STYLE;
+            document.head.appendChild(style);
 
             const get = (key) => ctx.storage.get(key) ?? DEFAULTS[key];
             const character = () => ctx.app.get('currentCharacter') || {};
             const characterId = () => character().uuid || '';
+            const userName = () => ctx.app.get('user')?.name || '';
             const isNarrator = (speaker) => !speaker || speaker === NARRATOR || /narrat/i.test(speaker);
+            // 要念的台词：人物说的；用户扮演的角色默认不念。
+            const voiced = (speaker) => !isNarrator(speaker) && (speaker !== userName() || get('userLines') === '1');
             const readJson = (key, fallback) => {
                 try { return JSON.parse(ctx.storage.get(key) || 'null') ?? fallback; } catch (_) { return fallback; }
             };
@@ -97,6 +116,20 @@
                 })).filter((item) => item.text);
             }
 
+            const messageBody = (index) => document.querySelector(`[data-chat-index="${index}"] .message-content-wrapper > .markdown-body`);
+            const lastReplyIndex = () => (ctx.app.get('chatHistory') || []).findLastIndex((message) => message?.role === 'assistant');
+            // 一条回复按引号切成句：{ el, text, quote（是不是引号里的话） }。
+            function linesOf(index) {
+                const body = messageBody(index);
+                const lines = [];
+                for (const { el, text } of body ? segments(body) : []) {
+                    text.split(new RegExp(`(${QUOTE})`)).forEach((run, i) => {
+                        if (run.trim()) lines.push({ el, text: run.trim(), quote: i % 2 === 1 });
+                    });
+                }
+                return lines;
+            }
+
             // 太长的句子按逗号切成不超过 LIMIT 字的小段。
             function splitText(text) {
                 const out = [];
@@ -126,77 +159,96 @@
                 for (let i = 0; i < text.length; i += 1) value = Math.imul(value ^ text.charCodeAt(i), 0x01000193);
                 return (value >>> 0).toString(16);
             };
+            const keyOf = (lines) => hash(lines.map((line) => line.text).join('\n'));
 
-            // 分析每句是谁说的、什么语气。结果按回复存进 ctx.data（随云同步），重听和别的设备不用再分析。
-            // 分析失败时：引号里的算角色卡本人，其余算旁白（不念）。
-            async function labelLines(lines, signal) {
+            // 分析结果按回复存进 ctx.data（随云同步），重听和别的设备不用再分析；这里留一份在内存里给悬浮窗用。
+            let store = { card: null, data: {} };
+            async function loadStore() {
+                const card = characterId();
+                if (store.card === card) return;
+                const data = (await ctx.data.get(`analysis:${card}`).catch(() => null)) || {};
+                if (characterId() === card) store = { card, data };
+            }
+            function cachedLabels(lines) {
+                const saved = store.card === characterId() ? store.data[keyOf(lines)] : null;
+                return Array.isArray(saved) && saved.length === lines.length ? saved.map(([speaker, tone]) => ({ speaker, tone })) : null;
+            }
+
+            let analyzing = null; // 正在分析的回复序号
+            const failures = new Map(); // 回复序号 → 分析失败的原因
+            const inflight = new Map(); // 同一条回复同时只分析一次
+            // 分析失败时：引号里的算角色卡本人，其余算旁白（不念）。force 为 true 时不用存下的结果，重新分析。
+            async function analyze(index, force = false) {
+                const lines = linesOf(index);
+                if (!lines.length) return { lines, labels: [] };
+                await loadStore();
+                const cached = force ? null : cachedLabels(lines);
+                if (cached) return { lines, labels: cached };
+                const card = characterId();
+                const key = keyOf(lines);
+                if (!inflight.has(key)) inflight.set(key, requestLabels(index, lines, card, key).finally(() => inflight.delete(key)));
+                return { lines, labels: await inflight.get(key) };
+            }
+            async function requestLabels(index, lines, card, key) {
                 const fallback = lines.map((line) => ({ speaker: line.quote ? character().name || NARRATOR : NARRATOR, tone: '' }));
-                const store = `analysis:${characterId()}`;
-                const key = hash(lines.map((line) => line.text).join('\n'));
-                const saved = (await ctx.data.get(store).catch(() => null)) || {};
-                if (Array.isArray(saved[key]) && saved[key].length === lines.length) return saved[key].map(([speaker, tone]) => ({ speaker, tone }));
-                let labels;
+                analyzing = index;
+                failures.delete(index);
+                renderWidget();
                 try {
-                    ctx.ui.toast('正在分析每句是谁说的、用什么语气……', { kind: 'info' });
-                    const names = readCast().map((person) => person.name).join('、') || '（还没有）';
+                    if (!widgetVisible()) ctx.ui.toast('正在分析每句是谁说的、用什么语气……', { kind: 'info' });
                     const reply = await ctx.ai.complete({
                         model: get('analysisModel').trim() || undefined,
-                        signal,
                         messages: [
                             { role: 'system', content: ANALYZE_PROMPT },
-                            { role: 'user', content: `已知人物：${names}；用户扮演：${ctx.app.get('user')?.name || '未知'}\n\n${lines.map((line, i) => `${i + 1}. ${line.text.slice(0, 300)}`).join('\n')}` }
+                            { role: 'user', content: `已知人物：${readCast().map((person) => person.name).join('、') || '（还没有）'}；用户扮演：${userName() || '未知'}\n\n${lines.map((line, i) => `${i + 1}. ${line.text.slice(0, 300)}`).join('\n')}` }
                         ]
                     });
                     const rows = parseJson(reply, '[');
                     if (!Array.isArray(rows)) throw new Error('AI 没有按格式回答');
-                    labels = fallback.map((item, i) => {
+                    const labels = fallback.map((item, i) => {
                         const row = rows.find((entry) => Array.isArray(entry) && Number(entry[0]) === i + 1);
                         if (!row) return item;
                         return { speaker: String(row[1] || '').trim() || NARRATOR, tone: String(row[2] || '').replace(/[[\]]/g, '').trim().slice(0, 60) };
                     });
+                    if (store.card === card) {
+                        store.data = { ...store.data, [key]: labels.map((label) => [label.speaker, label.tone]) };
+                        Object.keys(store.data).slice(0, -ANALYSIS_KEEP).forEach((old) => delete store.data[old]);
+                        ctx.data.set(`analysis:${card}`, store.data).catch((error) => ctx.log('分析结果没存上', error));
+                    }
+                    // 新出现的人物（不算用户扮演的）加进配音表，等用户挑音色；挑之前用 Fish 的默认声音。
+                    const people = readCast();
+                    const fresh = [...new Set(labels.map((label) => label.speaker))].filter((speaker) => !isNarrator(speaker) && speaker !== userName() && !personOf(speaker, people));
+                    if (fresh.length && characterId() === card) saveCast([...people, ...fresh.map((name) => ({ name }))]);
+                    return labels;
                 } catch (error) {
-                    if (signal?.aborted) throw error;
+                    failures.set(index, error?.message || String(error));
                     ctx.ui.toast(`分析说话人失败：${error?.message || error}。这次先把引号里的话当成角色卡本人说的`, { kind: 'warning' });
                     return fallback;
+                } finally {
+                    if (analyzing === index) analyzing = null;
+                    renderWidget();
                 }
-                const next = { ...saved, [key]: labels.map((label) => [label.speaker, label.tone]) };
-                Object.keys(next).slice(0, -ANALYSIS_KEEP).forEach((old) => delete next[old]);
-                ctx.data.set(store, next).catch((error) => ctx.log('分析结果没存上', error));
-                // 新出现的人物（不算用户扮演的）加进配音表，等用户挑音色；挑之前用 Fish 的默认声音。
-                const people = readCast();
-                const userName = ctx.app.get('user')?.name || '';
-                const fresh = [...new Set(labels.map((label) => label.speaker))].filter((speaker) => !isNarrator(speaker) && speaker !== userName && !personOf(speaker, people));
-                if (fresh.length) saveCast([...people, ...fresh.map((name) => ({ name }))]);
-                return labels;
             }
 
-            // 要说的台词：按引号切成句，分析后只留人物说的（用户扮演的角色默认不念），合并同一段里同一人同一语气连着的句子。
-            async function voiceItems(list, current) {
-                const lines = [];
-                for (const { el, text } of list) {
-                    text.split(new RegExp(`(${QUOTE})`)).forEach((run, i) => {
-                        if (run.trim()) lines.push({ el, text: run.trim(), quote: i % 2 === 1 });
-                    });
-                }
-                const labels = await labelLines(lines, current.abort.signal);
+            // 要说的小段：只留人物说的，合并同一段里同一人同一语气连着的句子，少发请求。
+            function itemsOf(lines, labels) {
                 const people = readCast();
-                const userName = ctx.app.get('user')?.name || '';
                 const items = [];
                 lines.forEach((line, i) => {
                     const { speaker, tone } = labels[i];
-                    if (isNarrator(speaker) || (speaker === userName && get('userLines') !== '1')) return;
+                    if (!voiced(speaker)) return;
                     const voice = personOf(speaker, people)?.id || '';
                     const last = items[items.length - 1];
                     if (last && last.el === line.el && last.voice === voice && last.tone === tone && (last.text + line.text).length <= LIMIT) {
                         last.text += line.text;
                         return;
                     }
-                    for (const chunk of splitText(line.text)) items.push({ el: line.el, text: chunk, voice, tone });
+                    for (const chunk of splitText(line.text)) items.push({ el: line.el, text: chunk, voice, tone, speaker });
                 });
                 return items;
             }
 
-            let session = null; // 正在说的：{ index（第几条消息，试听时为 null）, stopped, abort, finish }
+            let session = null; // 正在说的：{ index, stopped, abort, finish, speaker }
             function stop() {
                 if (session) {
                     session.stopped = true;
@@ -206,6 +258,7 @@
                 session = null;
                 player.pause();
                 refreshButtons();
+                renderWidget();
             }
 
             // 手机浏览器只让「点了之后」出声：第一次点按钮时先用同一个播放器放一下静音，之后自动播放也能播。
@@ -262,21 +315,26 @@
                 });
             }
 
-            // build(current) 返回要说的小段 { el, text, voice, tone }；边播边生成下一段，段与段之间不停顿。
-            async function speak(build, index) {
+            // 说一条回复：没分析过先分析，再按人物的声音一句句说；边播边生成下一段，段与段之间不停顿。
+            async function speak(index) {
                 stop();
                 if (!get('fishKey').trim()) return ctx.ui.toast('先在「角色语音设置」里填好 Fish Audio 的密钥', { kind: 'warning' });
-                const current = session = { index, stopped: false, abort: new AbortController() };
+                const current = session = { index, stopped: false, abort: new AbortController(), speaker: '' };
                 refreshButtons();
+                renderWidget();
                 try {
-                    const items = await build(current);
-                    if (!items.length && !current.stopped) ctx.ui.toast('这条回复里没有人物说的话', { kind: 'info' });
+                    const { lines, labels } = await analyze(index);
+                    if (current.stopped) return;
+                    const items = itemsOf(lines, labels);
+                    if (!items.length) ctx.ui.toast('这条回复里没有人物说的话', { kind: 'info' });
                     const loads = [];
                     const load = (i) => (loads[i] ??= synthesize(items[i], current.abort.signal));
                     for (let i = 0; i < items.length && !current.stopped; i += 1) {
                         const blob = await load(i);
                         if (i + 1 < items.length) load(i + 1).catch(() => {});
                         if (current.stopped) break;
+                        current.speaker = items[i].speaker;
+                        renderWidget();
                         items[i].el?.classList.add(SPEAKING);
                         try {
                             await play(blob, current);
@@ -292,18 +350,16 @@
                     if (session === current) {
                         session = null;
                         refreshButtons();
+                        renderWidget();
                     }
                 }
             }
-
-            const messageBody = (index) => document.querySelector(`[data-chat-index="${index}"] .message-content-wrapper > .markdown-body`);
-            function startSpeaking(index) {
-                const body = messageBody(index);
-                const list = body ? segments(body) : [];
-                if (!list.length) return ctx.ui.toast('这条消息没有能念的文字', { kind: 'info' });
-                speak((current) => voiceItems(list, current), index).catch((error) => ctx.log('角色语音失败', error));
+            function toggleSpeaking(index) {
+                if (session?.index === index) return stop();
+                if (!messageBody(index)) return ctx.ui.toast('这条消息没有能念的文字', { kind: 'info' });
+                unlock();
+                speak(index).catch((error) => ctx.log('角色语音失败', error));
             }
-            const lastReplyIndex = () => (ctx.app.get('chatHistory') || []).findLastIndex((message) => message?.role === 'assistant');
 
             // 每条 AI 回复下方那排按钮里加一个「角色语音」，说话的时候变成「停止角色语音」。
             function decorate(row) {
@@ -317,12 +373,7 @@
                     button.className = 'message-action-button';
                     button.dataset.rphVoice = '';
                     button.innerHTML = '<svg class="w-3.5 h-3.5 md:w-4 md:h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"></svg>';
-                    button.addEventListener('click', () => {
-                        const index = Number(button.closest('[data-chat-index]').dataset.chatIndex);
-                        if (session?.index === index) return stop();
-                        unlock();
-                        startSpeaking(index);
-                    });
+                    button.addEventListener('click', () => toggleSpeaking(Number(button.closest('[data-chat-index]').dataset.chatIndex)));
                     bar.prepend(button);
                 }
                 const active = session?.index === Number(row.dataset.chatIndex);
@@ -335,16 +386,143 @@
                 document.querySelectorAll('[data-chat-index][data-role="assistant"]').forEach(decorate);
             }
 
+            // ---- 状态悬浮窗：聊天页右下角，能拖动、能收起成小圆点，位置记在这台设备上 ----
+            let widget = null;
+            const widgetVisible = () => get('widget') === '1' && ctx.app.get('currentView') === 'chat' && !!characterId();
+            function saveWidgetState() {
+                const rect = widget.getBoundingClientRect();
+                try {
+                    localStorage.setItem(WIDGET_KEY, JSON.stringify({ x: Math.round(rect.left), y: Math.round(rect.top), folded: widget.classList.contains('is-folded') }));
+                } catch (_) { /* storage blocked */ }
+            }
+            function placeWidget(x, y) {
+                const width = widget.offsetWidth || 220;
+                const height = widget.offsetHeight || 100;
+                const left = Math.min(Math.max(4, x), Math.max(4, innerWidth - width - 4));
+                const top = Math.min(Math.max(4, y), Math.max(4, innerHeight - height - 4));
+                Object.assign(widget.style, { left: `${left}px`, top: `${top}px`, right: 'auto', bottom: 'auto' });
+            }
+            // 按住拖动；没怎么动就算点击。
+            function draggable(handle, onClick) {
+                handle.addEventListener('pointerdown', (event) => {
+                    if (event.button !== 0 || event.target.closest('[data-collapse]')) return;
+                    const rect = widget.getBoundingClientRect();
+                    const start = { x: event.clientX, y: event.clientY };
+                    let moved = false;
+                    handle.setPointerCapture?.(event.pointerId);
+                    const move = (next) => {
+                        const dx = next.clientX - start.x;
+                        const dy = next.clientY - start.y;
+                        if (!moved && Math.hypot(dx, dy) < 5) return;
+                        moved = true;
+                        placeWidget(rect.left + dx, rect.top + dy);
+                    };
+                    const end = () => {
+                        handle.removeEventListener('pointermove', move);
+                        handle.removeEventListener('pointerup', end);
+                        handle.removeEventListener('pointercancel', end);
+                        if (moved) saveWidgetState(); else onClick?.();
+                    };
+                    handle.addEventListener('pointermove', move);
+                    handle.addEventListener('pointerup', end);
+                    handle.addEventListener('pointercancel', end);
+                });
+            }
+            function setFolded(folded) {
+                widget.classList.toggle('is-folded', folded);
+                const rect = widget.getBoundingClientRect();
+                if (widget.style.left) placeWidget(rect.left, rect.top);
+                saveWidgetState();
+            }
+            function ensureWidget() {
+                if (widget) return widget;
+                widget = document.createElement('div');
+                widget.className = 'rph-voice-widget';
+                widget.dataset.rphVoiceWidget = '';
+                widget.hidden = true;
+                widget.innerHTML = `
+                    <button type="button" class="rph-voice-widget__dot" data-expand title="角色语音" aria-label="展开角色语音"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">${ICON_TALK}</svg></button>
+                    <div class="rph-voice-widget__card">
+                        <div class="rph-voice-widget__head" data-drag><strong>角色语音</strong><button type="button" class="rph-voice-widget__fold" data-collapse title="收起" aria-label="收起">－</button></div>
+                        <p class="rph-voice-widget__status" data-status></p>
+                        <div class="rph-voice-widget__actions">
+                            <button type="button" class="modal-secondary-button rph-ui-button" data-analyze>分析</button>
+                            <button type="button" class="modal-primary-button rph-ui-button" data-play>播放</button>
+                        </div>
+                    </div>`;
+                document.body.appendChild(widget);
+                let saved = null;
+                try { saved = JSON.parse(localStorage.getItem(WIDGET_KEY) || 'null'); } catch (_) { /* storage blocked */ }
+                if (saved?.folded) widget.classList.add('is-folded');
+                if (Number.isFinite(saved?.x) && Number.isFinite(saved?.y)) placeWidget(saved.x, saved.y);
+                draggable(widget.querySelector('[data-drag]'));
+                draggable(widget.querySelector('[data-expand]'), () => setFolded(false));
+                widget.querySelector('[data-collapse]').onclick = () => setFolded(true);
+                widget.querySelector('[data-analyze]').onclick = () => {
+                    const index = lastReplyIndex();
+                    if (index >= 0) analyze(index, true).catch((error) => ctx.log('分析失败', error));
+                };
+                widget.querySelector('[data-play]').onclick = () => {
+                    if (session) return stop();
+                    const index = lastReplyIndex();
+                    if (index >= 0) toggleSpeaking(index);
+                };
+                addEventListener('resize', () => {
+                    if (widget.style.left) placeWidget(parseFloat(widget.style.left), parseFloat(widget.style.top));
+                });
+                return widget;
+            }
+            function renderWidget() {
+                const root = ensureWidget();
+                root.hidden = !widgetVisible();
+                if (root.hidden) return;
+                if (store.card !== characterId()) loadStore().then(renderWidget, () => {});
+                const status = root.querySelector('[data-status]');
+                const analyzeButton = root.querySelector('[data-analyze]');
+                const playButton = root.querySelector('[data-play]');
+                const index = lastReplyIndex();
+                const generating = ctx.app.get('isGenerating') === true;
+                root.classList.toggle('is-busy', !!session || analyzing !== null);
+                playButton.textContent = session ? '停止' : '播放';
+                playButton.disabled = !session && (generating || index < 0);
+                analyzeButton.textContent = '分析';
+                analyzeButton.disabled = generating || index < 0 || analyzing !== null;
+                if (analyzing !== null) return void (status.textContent = '正在分析每句是谁说的……');
+                if (session) return void (status.textContent = `正在说：${session.speaker || '……'}`);
+                if (generating) return void (status.textContent = '等回复写完……');
+                if (index < 0) return void (status.textContent = '还没有 AI 回复');
+                const lines = linesOf(index);
+                const labels = cachedLabels(lines);
+                if (!labels) {
+                    status.textContent = failures.has(index) ? `分析失败：${failures.get(index)}` : (lines.length ? '最新回复还没分析' : '最新回复里没有能念的文字');
+                    return;
+                }
+                analyzeButton.textContent = '重新分析';
+                const counts = new Map();
+                labels.forEach(({ speaker }) => { if (voiced(speaker)) counts.set(speaker, (counts.get(speaker) || 0) + 1); });
+                status.textContent = counts.size ? `最新回复：${[...counts].map(([name, count]) => `${name} ${count} 句`).join(' · ')}` : '最新回复里没有人物台词';
+            }
+
             ctx.events.on('chat-mutation', ({ dirtyRows }) => {
-                try { dirtyRows.forEach(decorate); } catch (error) { ctx.log('角色语音按钮没加上', error); }
+                try {
+                    dirtyRows.forEach(decorate);
+                    renderWidget();
+                } catch (error) {
+                    ctx.log('角色语音按钮没加上', error);
+                }
             });
             ctx.events.on('generation-start', () => {
-                try { if (session) stop(); } catch (error) { ctx.log('停止角色语音失败', error); }
+                try {
+                    if (session) stop(); else renderWidget();
+                } catch (error) {
+                    ctx.log('停止角色语音失败', error);
+                }
             });
-            // 回复结束后自动说：等页面把插图、面板换好再分析，同一条只自动说一次（工具调用续写变长了会再说）。
-            let lastAutoPlay = null;
+            // 回复结束：开了自动说就分析并说；只开了自动分析就只分析。同一条只自动处理一次（工具调用续写变长了会再来）。
+            let lastAuto = null;
             ctx.events.on('generation-end', () => {
-                if (get('autoPlay') !== '1') return;
+                renderWidget();
+                if (get('autoPlay') !== '1' && get('analyzeMode') !== 'auto') return;
                 setTimeout(() => {
                     try {
                         const index = lastReplyIndex();
@@ -352,16 +530,21 @@
                         const message = history[index];
                         if (index < 0 || index !== history.length - 1 || message.responseError || ctx.app.get('isGenerating')) return;
                         const key = `${message.id ?? index}:${String(message.content || '').length}`;
-                        if (key === lastAutoPlay) return;
-                        lastAutoPlay = key;
-                        startSpeaking(index);
+                        if (key === lastAuto) return;
+                        lastAuto = key;
+                        if (get('autoPlay') === '1') speak(index).catch((error) => ctx.log('自动角色语音失败', error));
+                        else analyze(index).catch((error) => ctx.log('自动分析失败', error));
                     } catch (error) {
                         ctx.log('自动角色语音失败', error);
                     }
                 }, 800);
             });
-            ctx.app.watch(() => characterId(), () => { if (session) stop(); });
+            ctx.app.watch(() => [characterId(), ctx.app.get('currentView')], ([id], [previousId] = []) => {
+                if (session && id !== previousId) stop();
+                renderWidget();
+            });
             refreshButtons();
+            renderWidget();
 
             // ---- 挑音色：Fish 公共声音库（不用密钥，网页能直接搜），用库里的声音不占 Fish 账号的保存名额 ----
             const toVoice = (item) => ({ id: item._id, title: item.title || item._id, tags: (item.tags || []).slice(0, 5), sample: item.samples?.[0]?.audio || '' });
@@ -421,8 +604,7 @@
                     if (session) return stop();
                     const index = lastReplyIndex();
                     if (index < 0) return ctx.ui.toast('还没有 AI 回复', { kind: 'info' });
-                    unlock();
-                    startSpeaking(index);
+                    toggleSpeaking(index);
                 }
             });
 
@@ -443,9 +625,14 @@
                                 </select></label>
                                 <p class="rph-ui-muted">免费版和收费版是同一个模型，但 Fish 说免费版的请求可能会被留下来改进模型。密钥会随云同步存进你自己的存储桶。</p>
                                 <label class="rph-ui-field">分析用的模型<input class="rph-ui-input" data-k="analysisModel" autocomplete="off" placeholder="留空用 RPH 设置里的分析模型，没设就用主模型"></label>
-                                <p class="rph-ui-muted">每条回复第一次说话前多一次 AI 调用，结果会存下来，重听不再分析。</p>
+                                <label class="rph-ui-field">什么时候分析<select class="rph-ui-input" data-k="analyzeMode">
+                                    <option value="click">点「分析」或播放时才分析</option>
+                                    <option value="auto">每条回复结束后自动分析</option>
+                                </select></label>
+                                <p class="rph-ui-muted">每条回复分析一次（一次 AI 调用），结果会存下来，重听不再分析。</p>
                                 ${toggle('autoPlay', '回复结束后自动说')}
                                 ${toggle('userLines', '你扮演的角色的台词也念')}
+                                ${toggle('widget', '在聊天页显示状态悬浮窗')}
                                 <section class="rph-ui-section">
                                     <h3>配音表（只对当前角色卡）</h3>
                                     <p class="rph-ui-muted">音色从 Fish 公共声音库里挑，不占你 Fish 账号的保存名额。没挑的用 Fish 的默认声音；新出现的人物会自己加进来。</p>
@@ -457,9 +644,13 @@
                             body.querySelectorAll('[data-k]').forEach((field) => {
                                 const key = field.dataset.k;
                                 const value = () => (field.type === 'checkbox' ? (field.checked ? '1' : '0') : field.value);
+                                const save = () => {
+                                    ctx.storage.set(key, value());
+                                    renderWidget();
+                                };
                                 if (field.type === 'checkbox') field.checked = get(key) === '1'; else field.value = get(key);
-                                field.addEventListener('input', () => ctx.storage.set(key, value()));
-                                field.addEventListener('change', () => ctx.storage.set(key, value()));
+                                field.addEventListener('input', save);
+                                field.addEventListener('change', save);
                             });
 
                             // 配音表：每行一个人物，可以让 AI 挑、自己搜、试听、清掉或删除。

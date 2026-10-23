@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } from './sync-195.helpers.mjs';
 
-// 角色语音插件：配音表（AI 按资料挑、自己搜）、AI 分析每句是谁说的和语气、只念人物的台词（旁白不念，用户扮演的默认不念）、
-// 新人物自动加进配音表、边播边生成下一段、重听不再分析也不再生成、回复结束自动说、分析失败按引号当成角色卡本人、密钥错了有提示。
+// 角色语音插件：配音表（AI 按资料挑、自己搜）；状态悬浮窗（点「分析」只分析、显示谁说了几句、正在说谁、能收起和拖动并记住位置）；
+// 只念人物的台词（旁白不念，用户扮演的默认不念），带语气；边播边生成下一段；重听不再分析也不再生成；
+// 自动分析模式只分析不出声；自动说时分析失败按引号当成角色卡本人；密钥错了有提示。
 const LONG = '她把书包放在桌上，打开窗户让风吹进来，又把昨天没写完的作业拿出来，一边嘟囔着一边在草稿纸上画着奇怪的小人，直到上课铃响起来才慌慌张张地收好东西。';
 const GREETING = [
     '清晨的阳光洒进教室。',
@@ -13,6 +14,7 @@ const GREETING = [
     'image###1girl, classroom###',
     LONG
 ].join('\n\n');
+const REPLIES = ['“你来了。”他抬起头。', '“快坐下。”她小声说。'];
 const library = {
     'girl-gentle': { _id: 'girl-gentle', title: '温柔少女', tags: ['female', 'young', 'gentle', 'soft'], task_count: 100, samples: [{ audio: 'https://example.test/girl.mp3' }] },
     'girl-energetic': { _id: 'girl-energetic', title: '元气少女', tags: ['female', 'young', 'energetic'], task_count: 5000, samples: [] },
@@ -72,9 +74,11 @@ try {
     });
     const aiRequests = [];
     let analysisFails = false;
+    let replies = 0;
     await page.route('**/v1/chat/completions', (route) => {
         const body = route.request().postDataJSON();
         const system = String(body.messages?.[0]?.content || '');
+        const user = String(body.messages?.at(-1)?.content || '');
         if (system.includes('配音选角')) {
             aiRequests.push({ kind: 'pick', body });
             return route.fulfill(reply('```json\n{"gender":"female","age":"young","tags":["gentle","soft"],"keywords":["少女"],"reason":"温柔的同桌"}\n```'));
@@ -82,10 +86,11 @@ try {
         if (system.includes('配音导演')) {
             aiRequests.push({ kind: 'analyze', body });
             if (analysisFails) return route.fulfill({ status: 500, json: { error: { message: 'analysis is down' } } });
+            if (user.includes('你来了')) return route.fulfill(reply(JSON.stringify([[1, '班长', 'cold'], [2, '旁白', 'calm narration']])));
             return route.fulfill(reply(JSON.stringify([[1, '旁白', 'calm narration'], [2, '同桌', 'cheerful'], [3, '旁白', 'calm narration'],
                 [4, '同桌', 'nervous inner voice'], [5, '用户', 'shy'], [6, '班长', 'annoyed']])));
         }
-        return route.fulfill(reply('“你来了。”他抬起头。'));
+        return route.fulfill(reply(REPLIES[replies++]));
     });
     const ttsRequests = [];
     await page.route('https://api.fish.audio/compat/v1/audio/speech', (route) => {
@@ -125,15 +130,26 @@ try {
         await page.locator('[data-rph-workshop-launcher] button', { hasText: '角色语音设置' }).click();
         await panel.locator('[data-k="fishKey"]').waitFor();
     };
+    const widget = page.locator('[data-rph-voice-widget]');
+    const widgetStatus = () => widget.locator('[data-status]').textContent();
+    const statusIs = (text) => page.waitForFunction((value) => document.querySelector('[data-rph-voice-widget] [data-status]')?.textContent.startsWith(value), text, { timeout: 15000 });
     const cast = () => page.evaluate(() => JSON.parse(localStorage.getItem('rph_mod_character-voice::cast:voice-card') || '[]'));
+    const analysisCount = () => aiRequests.filter((item) => item.kind === 'analyze').length;
     const blobPlays = () => page.evaluate(() => window.__audio.plays.filter((src) => src.startsWith('blob:')).length);
     const playingBlob = () => page.waitForFunction(() => window.__audio.current?.src.startsWith('blob:'));
     const idle = (index) => page.waitForFunction((i) => document.querySelector(`[data-chat-index="${i}"] [data-rph-voice]`)?.title === '角色语音', index);
+    const send = (text) => page.evaluate(async (value) => {
+        const app = document.querySelector('#app').__vue_app__;
+        const vm = (app._instance || app._container._vnode.component).proxy;
+        vm.userInput = value;
+        await vm.sendMessage();
+    }, text);
 
     // 1. 配音表：只列人物（没有旁白）；AI 按角色卡资料给「同桌」挑，排第一的自动选上；自己加「班长」，搜「大叔」选上
     await openSettings();
     await panel.locator('[data-k="fishKey"]').fill('test-key');
     assert.equal(await panel.locator('[data-k="fishModel"]').inputValue(), 'fish-audio/s2.1-pro-free', 'the free model is the default');
+    assert.equal(await panel.locator('[data-k="analyzeMode"]').inputValue(), 'click', 'analysis waits for a click by default');
     assert.deepEqual(await panel.locator('[data-cast] [data-person]').evaluateAll((rows) => rows.map((row) => row.dataset.person)), ['同桌']);
     await panel.locator('[data-person="同桌"]').getByRole('button', { name: 'AI 挑' }).click();
     await panel.locator('[data-pick="同桌"] [data-voice-id="girl-gentle"]').waitFor();
@@ -152,36 +168,51 @@ try {
         { name: '班长', id: 'uncle-deep', title: '大叔', sample: 'https://example.test/uncle.mp3' }
     ]);
     await page.keyboard.press('Escape');
+    assert.equal(analysisCount(), 0, 'nothing is analysed until asked');
     console.log('PASS the cast lists people only; AI picks a voice from the card and the library, and a voice can be searched and chosen');
 
-    // 2. 只念人物的台词：旁白、状态栏、插图不念，用户扮演的默认不念；带语气；边播边生成下一段
+    // 2. 悬浮窗：没分析时这么写；点「分析」只分析、不出声，显示谁说了几句（用户扮演的不算）
+    await widget.waitFor();
+    assert.equal(await widgetStatus(), '最新回复还没分析');
+    await widget.locator('[data-analyze]').click();
+    await statusIs('最新回复：');
+    assert.equal(await widgetStatus(), '最新回复：同桌 2 句 · 班长 1 句');
+    assert.equal(await widget.locator('[data-analyze]').textContent(), '重新分析');
+    assert.equal(analysisCount(), 1);
+    assert.equal(ttsRequests.length, 0, 'analysing alone makes no audio');
+    const analysis = aiRequests.find((item) => item.kind === 'analyze').body.messages[1].content;
+    assert.ok(analysis.includes('已知人物：同桌、班长；用户扮演：用户') && analysis.includes('2. “早上好，今天也要加油哦。”'), analysis);
+    assert.ok(!analysis.includes('好感度') && !analysis.includes('1girl'), analysis);
+    console.log('PASS the floating window analyses on click without speaking and shows who speaks how many lines');
+
+    // 3. 播放：用存下的分析，只念人物的台词，带语气；边播边生成下一段；悬浮窗显示正在说谁
     await voiceButton(0).click();
     await playingBlob();
     for (let i = 0; i < 50 && ttsRequests.length < 2; i += 1) await page.waitForTimeout(20);
     assert.equal(ttsRequests.length, 2, 'the next line is requested while the first one plays');
     assert.deepEqual(ttsRequests[0], { model: 'fish-audio/s2.1-pro-free', input: '[cheerful] “早上好，今天也要加油哦。”', voice: 'girl-gentle', response_format: 'mp3', auth: 'Bearer test-key' });
     assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.rph-voice-speaking')].map((el) => el.textContent.trim())), ['“早上好，今天也要加油哦。”她笑着说。']);
+    assert.equal(await widgetStatus(), '正在说：同桌');
+    assert.equal(await widget.locator('[data-play]').textContent(), '停止');
     await page.evaluate(() => window.__audio.end());
     await idle(0);
-    const analysis = aiRequests.filter((item) => item.kind === 'analyze');
-    assert.equal(analysis.length, 1);
-    assert.ok(analysis[0].body.messages[1].content.includes('已知人物：同桌、班长；用户扮演：用户'), analysis[0].body.messages[1].content);
-    assert.ok(!analysis[0].body.messages[1].content.includes('好感度') && !analysis[0].body.messages[1].content.includes('1girl'));
+    assert.equal(analysisCount(), 1, 'the saved analysis is used');
     assert.deepEqual(ttsRequests.map((item) => [item.voice, item.input]), [
         ['girl-gentle', '[cheerful] “早上好，今天也要加油哦。”'],
         ['girl-gentle', '[nervous inner voice] （她心里其实有点紧张。）'],
         ['uncle-deep', `[annoyed] ${LONG}`]
     ], 'only lines spoken by people are voiced, each with its speaker and tone');
     assert.equal(await blobPlays(), 3);
+    assert.equal(await widgetStatus(), '最新回复：同桌 2 句 · 班长 1 句');
     assert.deepEqual((await cast()).map((person) => person.name), ['同桌', '班长'], 'the user is not added to the cast');
-    console.log('PASS only lines spoken by people are voiced with their own voice and tone; narration and the user are skipped');
+    console.log('PASS playing uses the saved analysis, voices only people with their own voice and tone, and shows who is speaking');
 
-    // 3. 重听：不再分析，也不再向 Fish 要语音；打开「用户的台词也念」后才念用户的那句
-    await voiceButton(0).click();
+    // 4. 重听不再生成；打开「用户的台词也念」后才念用户的那句；悬浮窗的播放按钮能停
+    await widget.locator('[data-play]').click();
     await playingBlob();
+    await widget.locator('[data-play]').click();
+    assert.equal(await widget.locator('[data-play]').textContent(), '播放');
     await page.evaluate(() => window.__audio.end());
-    await idle(0);
-    assert.equal(aiRequests.filter((item) => item.kind === 'analyze').length, 1, 'the analysis is reused');
     assert.equal(ttsRequests.length, 3, 'the audio is reused');
     await page.evaluate(() => localStorage.setItem('rph_mod_character-voice::userLines', '1'));
     await voiceButton(0).click();
@@ -189,32 +220,48 @@ try {
     await page.evaluate(() => window.__audio.end());
     await idle(0);
     assert.deepEqual(ttsRequests.slice(3).map((item) => [item.voice, item.input]), [['', '[shy] 她轻轻推了推眼镜。']]);
-    console.log('PASS replays reuse the analysis and the audio; the user lines are voiced only when turned on');
+    console.log('PASS replays reuse the audio, the play button stops, and user lines are voiced only when turned on');
 
-    // 4. 回复结束自动说；分析失败时提示，并把引号里的话当成角色卡本人说的
+    // 5. 悬浮窗能收起成小圆点、再展开；拖动后位置记在这台设备上
+    await widget.locator('[data-collapse]').click();
+    assert.ok(await widget.evaluate((el) => el.classList.contains('is-folded')));
+    await widget.locator('[data-expand]').click();
+    assert.ok(!(await widget.evaluate((el) => el.classList.contains('is-folded'))));
+    const head = await widget.locator('[data-drag]').boundingBox();
+    await page.mouse.move(head.x + 20, head.y + 8);
+    await page.mouse.down();
+    await page.mouse.move(head.x - 180, head.y - 220, { steps: 6 });
+    await page.mouse.up();
+    const position = await page.evaluate(() => JSON.parse(localStorage.getItem('rph_voice_widget')));
+    assert.ok(position.x < head.x - 100 && position.y < head.y - 100 && position.folded === false, JSON.stringify(position));
+    console.log('PASS the floating window folds into a dot, opens again, and remembers where it was dragged');
+
+    // 6. 自动分析：回复结束只分析、不出声；自动说：分析失败时提示，并把引号里的话当成角色卡本人说的
+    await page.evaluate(() => localStorage.setItem('rph_mod_character-voice::analyzeMode', 'auto'));
+    await send('你好');
+    await statusIs('最新回复：班长 1 句');
+    assert.equal(ttsRequests.length, 4, 'automatic analysis makes no audio');
     await page.evaluate(() => localStorage.setItem('rph_mod_character-voice::autoPlay', '1'));
     analysisFails = true;
-    await page.evaluate(async () => {
-        const app = document.querySelector('#app').__vue_app__;
-        const vm = (app._instance || app._container._vnode.component).proxy;
-        vm.userInput = '你好';
-        await vm.sendMessage();
-    });
+    await send('坐哪');
     await page.locator('.toast-item', { hasText: '分析说话人失败' }).waitFor({ timeout: 15000 });
     await playingBlob();
     await page.evaluate(() => window.__audio.end());
-    await idle(2);
-    assert.deepEqual(ttsRequests.slice(4).map((item) => [item.voice, item.input]), [['girl-gentle', '“你来了。”']]);
-    console.log('PASS new replies are voiced when they finish; a failed analysis falls back to quotes as the card character');
+    await idle(4);
+    assert.deepEqual(ttsRequests.slice(4).map((item) => [item.voice, item.input]), [['girl-gentle', '“快坐下。”']]);
+    await statusIs('分析失败：');
+    console.log('PASS automatic analysis stays silent; automatic speaking falls back to quotes as the card character when analysis fails');
 
-    // 5. 密钥错了：Fish 的 401 带上中文说明
+    // 7. 密钥错了：Fish 的 401 带上中文说明；悬浮窗刷新后还在拖过去的位置
     await page.evaluate(() => localStorage.setItem('rph_mod_character-voice::fishKey', 'bad-key'));
     await page.reload({ waitUntil: 'domcontentloaded' });
-    await voiceButton(2).waitFor({ timeout: 45000 });
-    await voiceButton(2).click();
+    await voiceButton(4).waitFor({ timeout: 45000 });
+    await widget.waitFor();
+    assert.deepEqual(await widget.evaluate((el) => [el.style.left, el.style.top]), [`${position.x}px`, `${position.y}px`]);
+    await voiceButton(4).click();
     await page.locator('.toast-item', { hasText: 'Fish 报错（401，密钥不对）：Invalid Token' }).waitFor();
-    await idle(2);
-    console.log('PASS a wrong key shows the Fish error with a plain hint');
+    await idle(4);
+    console.log('PASS a wrong key shows the Fish error with a plain hint, and the floating window keeps its place after a reload');
     assert.deepEqual(errors, []);
 } finally {
     await browser.close();
