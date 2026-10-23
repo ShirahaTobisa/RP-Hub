@@ -203,7 +203,7 @@ const text = await ctx.ai.complete({ messages: [
 ] });
 ```
 
-例子见 `DB/modules/tts-reader.js`（分析每句话是谁说的、用什么语气）。
+例子见 `DB/modules/character-voice.js`（分析每句话是谁说的、用什么语气）。
 
 ### `ctx.log`、版本与上游信息
 
