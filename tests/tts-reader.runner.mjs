@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } from './sync-195.helpers.mjs';
 
 // 朗读插件：读页面上显示的正文（对白、括号心理、星号动作、做成框的段落都读），跳过状态栏、折叠块、表格、代码和插图；
-// 长句切成不超过 60 字的小段；朗读中再点一下停止；设置面板的开关、声音和预览；输入框上方按钮读最新回复；回复结束自动朗读。
+// 长句切成不超过 60 字的小段；念到的段落标底色；朗读中再点一下停止；设置面板的开关、声音、按卡关掉某类框和预览；
+// 输入框上方按钮读最新回复；回复结束自动朗读。
 const LONG = '她把书包放在桌上，打开窗户让风吹进来，又把昨天没写完的作业拿出来，一边嘟囔着一边在草稿纸上画着奇怪的小人，直到上课铃响起来才慌慌张张地收好东西。';
 const GREETING = [
     '清晨的阳光洒进教室。',
@@ -87,7 +88,10 @@ try {
     await readButton.click();
     await page.waitForFunction(() => window.__tts.current);
     assert.equal(await readButton.getAttribute('title'), '停止朗读');
+    assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.rph-tts-reading')].map((el) => el.textContent.trim())), ['清晨的阳光洒进教室。'],
+        'the paragraph being read is highlighted');
     await finish();
+    assert.equal(await page.locator('.rph-tts-reading').count(), 0);
     await page.waitForFunction(() => document.querySelector('[data-chat-index="0"] [data-rph-tts]').title === '朗读');
     const first = await spoken();
     const text = first.map((item) => item.text).join('\n');
@@ -116,7 +120,7 @@ try {
     assert.equal(await readButton.getAttribute('title'), '朗读');
     console.log('PASS clicking again while reading stops it');
 
-    // 3. 设置面板：只列中文声音、换声音只存在本机、开关立即生效、预览会读什么
+    // 3. 设置面板：只列中文声音、换声音只存在本机、按卡关掉某类框、开关立即生效、预览会读什么
     const openSettings = async () => {
         await page.evaluate(() => [...document.querySelectorAll('.app-nav-trigger')].find((trigger) => trigger.offsetParent)?.click());
         await page.locator('[data-rph-workshop-manager-entry]').waitFor({ state: 'attached' });
@@ -134,10 +138,22 @@ try {
     await panel.locator('[data-preview]').click();
     const previewText = await panel.locator('[data-preview-text]').textContent();
     assert.ok(previewText.includes('清晨的阳光洒进教室。') && !previewText.includes('好感度'), previewText);
+    const boxTexts = await panel.locator('[data-boxes] label').allTextContents();
+    assert.ok(boxTexts.some((item) => item.includes('这段心理活动')), JSON.stringify(boxTexts));
+    assert.ok(!boxTexts.some((item) => item.includes('好感度')), 'status bars are skipped anyway and not listed');
+    await panel.locator('[data-boxes] label', { hasText: '这段心理活动' }).click();
+    const skippedBoxes = () => page.evaluate(() => JSON.parse(localStorage.getItem('rph_mod_tts-reader::skip:tts-card') || '[]'));
+    assert.deepEqual((await skippedBoxes()).map((box) => box.sample), ['（这段心理活动被做成了框，也要读。）']);
+    await page.keyboard.press('Escape');
+    let said = (await readAll(() => readButton.click())).join('\n');
+    assert.ok(said.includes('清晨的阳光洒进教室。') && !said.includes('这段心理活动'), said);
+    await openSettings();
+    await panel.locator('[data-boxes] label', { hasText: '这段心理活动' }).click();
+    assert.deepEqual(await skippedBoxes(), [], 'a box turned off can be turned back on');
     await panel.locator('label', { has: page.locator('[data-k="onlyQuotes"]') }).click();
     assert.equal(await page.evaluate(() => localStorage.getItem('rph_mod_tts-reader::onlyQuotes')), '1');
     await page.keyboard.press('Escape');
-    let said = await readAll(() => readButton.click());
+    said = await readAll(() => readButton.click());
     assert.deepEqual(said, ['“早上好，今天也要加油哦。”']);
     assert.equal((await spoken())[0].voice, 'Microsoft Huihui - Chinese (Simplified, PRC)');
     await openSettings();
@@ -148,7 +164,7 @@ try {
     said = (await readAll(() => readButton.click())).join('\n');
     assert.ok(said.includes('清晨的阳光洒进教室。') && said.includes('早上好'), said);
     assert.ok(!said.includes('紧张') && !said.includes('心理活动') && !said.includes('眼镜'), said);
-    console.log('PASS the settings panel lists Chinese voices, keeps the voice on this device and its switches apply at once');
+    console.log('PASS the settings panel lists Chinese voices, keeps the voice on this device, turns box kinds off per card and its switches apply at once');
 
     // 4. 输入框上方的按钮读最新回复；回复结束后自动朗读，新回复开始时停掉正在读的
     await openSettings();
