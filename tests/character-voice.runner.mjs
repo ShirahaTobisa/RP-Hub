@@ -196,6 +196,7 @@ try {
     ]);
     await page.keyboard.press('Escape');
     assert.equal(analysisCount(), 0, 'nothing is analysed until asked');
+    assert.equal(await page.locator('[data-rph-workshop-composer-button="character-voice"]').count(), 0, 'no text button above the input box; the floating window does that job');
     console.log('PASS models are picked from the site list; the cast starts empty; AI picks a voice, and the library search pages through results');
 
     // 2. 悬浮窗：没分析时这么写；点「分析」只分析、不出声，显示谁说了几句（用户扮演的不算）

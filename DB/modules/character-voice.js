@@ -64,7 +64,7 @@
 .rph-voice-widget.is-busy .rph-voice-widget__dot{box-shadow:0 0 0 3px rgba(96,165,250,.45),0 6px 18px rgba(0,0,0,.16)}`;
 
     RPHubSDK.register({
-        id: 'character-voice', name: '角色语音', version: '1.1.0', requiresApi: 7,
+        id: 'character-voice', name: '角色语音', version: '1.1.1', requiresApi: 7,
         init(ctx) {
             const player = new Audio(); // 都用这一个播放器：手机上点过一次以后，自动播放也能出声
             const preview = new Audio(); // 声音库的试听
@@ -794,17 +794,6 @@
                     { gender, age, keywords, tags: Array.isArray(want.tags) ? want.tags : [] });
                 return { voices, reason: String(want.reason || '') };
             }
-
-            ctx.ui.addComposerButton({
-                label: '让人物说出最新回复里的台词（说话中再点一下停止）',
-                text: '语音',
-                onClick() {
-                    if (session) return stop();
-                    const index = lastReplyIndex();
-                    if (index < 0) return ctx.ui.toast('还没有 AI 回复', { kind: 'info' });
-                    toggleSpeaking(index);
-                }
-            });
 
             ctx.ui.addSidebarEntry({
                 label: '角色语音设置',
