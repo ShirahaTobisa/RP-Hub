@@ -2,8 +2,8 @@
 (() => {
     'use strict';
 
-    const API_VERSION = 7;
-    const LOADER_VERSION = 'r2-workshop-7';
+    const API_VERSION = 8;
+    const LOADER_VERSION = 'r2-workshop-8';
     const LIST_KEY = 'rp_hub_workshop_modules_v1';
     const DB_NAME = 'RPHubDB';
     const DB_STORE = 'store';
@@ -48,6 +48,8 @@
         chatRequestHandlers: new Set(),
         fetchWrapped: false,
         composerButtons: [],
+        pages: new Map(),
+        pageWatch: null,
         workshopIndex: null,
         listeners: {
             ready: new Set(),
@@ -285,6 +287,88 @@
         });
         state.composerButtons.push(button);
         ensureComposerButtons();
+    }
+
+    // API 8：插件自己的整页功能（给完整的新功能用，普通插件仍用 addSidebarEntry）。导航菜单里加一个入口，点开像「设置」那样占满主区域；
+    // 页面标题栏和手机上打开导航的按钮由加载器提供，插件只管在 body 里画内容。render(body) 可以返回清理函数，离开页面时调用。
+    // 没有主区域的旧版页面退回弹窗。
+    function addPage(owner, options) {
+        if (!options || typeof options.render !== 'function') throw new TypeError('page render must be a function');
+        const label = String(options.label || '').trim();
+        if (!label) throw new TypeError('page label is required');
+        if (state.pages.has(owner)) throw new Error('每个插件只能有一个页面');
+        const iconPaths = Array.isArray(options.iconPaths) ? options.iconPaths.map(String) : [];
+        const page = { owner, label, iconPaths, view: `rph-page-${owner}`, render: options.render, root: null, cleanup: null };
+        state.pages.set(owner, page);
+        const open = () => {
+            if (!document.querySelector('#app .app-main')) return openPanel({ title: label, render: options.render });
+            appSet('currentView', page.view);
+        };
+        globalThis.RPHubNavAdapter?.registerEntry({
+            id: `page-${owner}`, label, iconPaths, attributes: { 'data-rph-workshop-page-entry': owner }, onClick: open, waitForClose: true
+        });
+        if (state.pageWatch) syncPages(appGet('currentView'));
+        else state.pageWatch = appWatch(() => appGet('currentView'), syncPages, { immediate: true });
+        return Object.freeze({ open });
+    }
+
+    function syncPages(view) {
+        for (const page of state.pages.values()) {
+            if (page.view !== view) closePage(page);
+            else if (!page.root?.isConnected) openPage(page);
+        }
+    }
+
+    function openPage(page) {
+        const main = document.querySelector('#app .app-main');
+        if (!main) return;
+        closePage(page);
+        const root = element('div', 'management-view settings-view');
+        root.dataset.rphWorkshopPage = page.owner;
+        const header = element('div', 'settings-page-header');
+        const heading = element('div', 'management-page-heading');
+        const menu = element('button', 'app-nav-trigger');
+        menu.type = 'button';
+        menu.setAttribute('aria-label', '打开导航');
+        menu.setAttribute('aria-haspopup', 'dialog');
+        menu.setAttribute('aria-controls', 'app-navigation-panel');
+        menu.innerHTML = '<svg class="w-6 h-6" fill="none" stroke="currentColor"><use href="#icon-menu"></use></svg>';
+        menu.addEventListener('click', () => appGet('toggleNavigation')?.());
+        const icon = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        icon.setAttribute('class', 'w-6 h-6 md:w-7 md:h-7 mr-2 text-primary-600');
+        icon.setAttribute('fill', 'none');
+        icon.setAttribute('stroke', 'currentColor');
+        icon.setAttribute('viewBox', '0 0 24 24');
+        for (const data of page.iconPaths) {
+            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', data);
+            path.setAttribute('stroke-width', '2');
+            path.setAttribute('stroke-linecap', 'round');
+            path.setAttribute('stroke-linejoin', 'round');
+            icon.appendChild(path);
+        }
+        const title = element('h2', 'text-xl md:text-2xl font-bold text-gray-800 flex items-center');
+        title.append(icon, page.label);
+        heading.append(menu, title);
+        header.appendChild(heading);
+        const body = element('div', 'settings-stack');
+        body.dataset.rphWorkshopPageBody = '';
+        root.append(header, body);
+        main.appendChild(root);
+        page.root = root;
+        try {
+            const cleanup = page.render(body);
+            page.cleanup = typeof cleanup === 'function' ? cleanup : null;
+        } catch (error) {
+            log(`page for ${page.owner} failed`, error);
+        }
+    }
+
+    function closePage(page) {
+        if (page.cleanup) safeCall(`page cleanup for ${page.owner}`, page.cleanup);
+        page.cleanup = null;
+        page.root?.remove();
+        page.root = null;
     }
 
     // 插件入口集中在「模块管理」面板顶部，不逐个放进导航菜单；装多少插件，导航菜单都不会变长。
@@ -944,6 +1028,7 @@
                 toast: showToast,
                 addSidebarEntry: (options) => addSidebarEntry(id, options),
                 addComposerButton: (options) => addComposerButton(id, options),
+                addPage: (options) => addPage(id, options),
                 openPanel
             },
             events: {

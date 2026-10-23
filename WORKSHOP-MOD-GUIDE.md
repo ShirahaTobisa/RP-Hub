@@ -50,7 +50,7 @@ Mod 是由用户在“模块管理”面板通过 URL 或文件导入安装的 J
 | `id` | 必填字符串，必须匹配 `^[a-z0-9-]{3,32}$`；也是存储隔离和卸载清理的身份。 |
 | `name` | 必填、非空字符串；显示在模块管理面板。 |
 | `version` | 必填、非空字符串；loader 不解释版本格式，只负责显示。 |
-| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `7`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`，使用 `ctx.image` 的模块声明 `5`；离不开 `beforeMount` 的模块声明 `6`（可有可无的不用改，旧外壳会忽略它）；离不开 `ctx.ai` 的模块声明 `7`（可有可无的可以先判断 `ctx.ai` 在不在）。 |
+| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `8`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`，使用 `ctx.image` 的模块声明 `5`；离不开 `beforeMount` 的模块声明 `6`（可有可无的不用改，旧外壳会忽略它）；离不开 `ctx.ai` 的模块声明 `7`（可有可无的可以先判断 `ctx.ai` 在不在）；离不开 `ctx.ui.addPage` 的模块声明 `8`（可以先判断它在不在，旧外壳退回 `addSidebarEntry`）。 |
 | `init(ctx)` | 必填函数；应用启动落定后调用。抛错会隔离为 `init-error`。 |
 | `beforeMount({ options, root })` | 可选函数（API 6）；官方页面挂载前调用一次，见下文。 |
 
@@ -103,10 +103,14 @@ await ctx.persistence.track('import', async () => {
 - `openPanel({ title, render(bodyEl) })` 打开弹窗。外观、进出场动画和深色模式都和页面原生弹窗一致；标题栏和关闭按钮由 loader 提供，点遮罩或按 Esc 也会关闭。同一时间只开一个插件面板。
 - `addComposerButton({ label, text, onClick })`（API 4）在输入框上方那排按钮（“快捷面板”所在行）加一个圆形按钮，
   `text` 取前两个字显示，`label` 作为提示文字。页面重新渲染丢掉按钮时 loader 会补回。
+- `addPage({ label, iconPaths, render })`（API 8）给完整的新功能用：导航菜单里多一个入口，点开像「设置」那样占满主区域；
+  页面标题栏和手机上打开导航的按钮由加载器提供，插件在 `render(body)` 里画内容，可以返回一个清理函数，离开页面时调用。
+  返回 `{ open() }`，可以用代码打开这个页面。每个插件只能有一个页面；普通插件仍用 `addSidebarEntry`，别让导航菜单变长。
+  例子见 `DB/modules/character-voice.js`（角色语音设置页）。
 
 #### 面板样式
 
-面板内容不需要自己写颜色。给元素加下面的类名，就会跟随页面主题和深色模式（1.9.x 和 2.0 都适用）：
+面板和 `addPage` 页面里的内容都不需要自己写颜色。给元素加下面的类名，就会跟随页面主题和深色模式（1.9.x 和 2.0 都适用）：
 
 | 类名 | 用途 |
 | --- | --- |
@@ -208,7 +212,7 @@ const text = await ctx.ai.complete({ messages: [
 ### `ctx.log`、版本与上游信息
 
 `ctx.log(...)` 会以 `[RPH-mod:<id>]` 前缀写入控制台。`ctx.version` 是
-`{ api: 7, loader: 'r2-workshop-7' }`。`ctx.upstream.updateInfo` 是页面提供的
+`{ api: 8, loader: 'r2-workshop-8' }`。`ctx.upstream.updateInfo` 是页面提供的
 `RPH_R2_UPDATE_INFO` 原值，也可能是 `null`；请判空读取。
 
 ## 5. 生命周期与状态徽记

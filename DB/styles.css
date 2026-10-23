@@ -306,7 +306,7 @@
     background: var(--overlay, rgba(0, 0, 0, 0.5));
     backdrop-filter: blur(6px) saturate(120%);
 }
-:is(.rph-ui-overlay, .rp-sync-modal) {
+:is(.rph-ui-overlay, .rp-sync-modal, [data-rph-workshop-page]) {
     --rk-text: var(--c-text, #111827);
     --rk-muted: var(--c-text-3, #6b7280);
     --rk-border: var(--c-border-soft, #e5e7eb);
@@ -317,7 +317,7 @@
     --rk-accent: var(--c-accent-text, #2563eb);
     --rk-danger: var(--c-danger, #dc2626);
 }
-:root[data-app-theme="dark"] :is(.rph-ui-overlay, .rp-sync-modal) {
+:root[data-app-theme="dark"] :is(.rph-ui-overlay, .rp-sync-modal, [data-rph-workshop-page]) {
     --rk-text: var(--c-text, var(--night-text));
     --rk-muted: var(--c-text-3, var(--night-muted));
     --rk-border: var(--c-border-soft, var(--night-border));

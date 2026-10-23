@@ -65,6 +65,8 @@
             // ⑪ ctx.image：生图前看一眼（或修改）参数；注册生图接口见 DB/modules/nai2api-web.js
             ctx.image.onParams((params) => record(`新图参数：${params.steps} 步 · ${params.sampler}`));
 
+            // ⑭ ctx.ui.addPage（API 8）：给完整的新功能用的整页（导航菜单里单独一项），这里不用，免得示范插件占导航；
+            //    写法见 DB/modules/character-voice.js。普通插件像下面这样放进「模块管理」就行。
             // ⑨ ctx.ui.addSidebarEntry + openPanel + toast，⑩ ctx.appDb 只读查询
             ctx.ui.addSidebarEntry({
                 label: '接口示范',

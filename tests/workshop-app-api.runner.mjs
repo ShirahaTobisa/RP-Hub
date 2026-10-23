@@ -20,6 +20,7 @@ const probeSource = `RPHubSDK.register({ id:'api3-probe', name:'Probe', version:
     ctx.requests.onChat(body => { body.messages.push({ role: 'user', content: '坏插件的改动' }); throw new Error('fixture handler failure'); });
     ctx.requests.onChat(() => { probe.handled++; });
     probe.ai = ctx.ai;
+    probe.addPage = (options) => ctx.ui.addPage(options);
 } });`;
 
 try {
@@ -231,6 +232,32 @@ try {
     await openManager();
     assert.equal(await marketAction('market-demo').textContent(), '已安装');
     console.log('PASS workshop update replaces the installed file in place, says a reload is needed, and keeps one installation');
+
+    // API 8：ctx.ui.addPage 在导航菜单里加一项，点开占满主区域、带原生标题栏；离开页面时收掉并调用清理函数，也能用代码打开。
+    await page.evaluate(() => {
+        api3Probe.closed = 0;
+        api3Probe.page = api3Probe.addPage({ label: '探针页', iconPaths: ['M4 6h16M4 12h16'], render(body) {
+            body.appendChild(Object.assign(document.createElement('p'), { textContent: '探针页面内容' }));
+            return () => { api3Probe.closed += 1; };
+        } });
+    });
+    await page.evaluate(() => [...document.querySelectorAll('.app-nav-trigger')].find((trigger) => trigger.offsetParent)?.click());
+    await page.locator('#app-navigation-panel [data-rph-workshop-page-entry="api3-probe"]').waitFor({ state: 'attached' });
+    await page.evaluate(() => document.querySelector('[data-rph-workshop-page-entry="api3-probe"]').click());
+    const probePage = page.locator('[data-rph-workshop-page="api3-probe"]');
+    await probePage.waitFor();
+    assert.equal((await probePage.locator('.settings-page-header h2').textContent()).trim(), '探针页');
+    assert.equal(await probePage.locator('[data-rph-workshop-page-body]').textContent(), '探针页面内容');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.chat-view-root')).display), 'none');
+    await page.evaluate(() => {
+        const app = document.querySelector('#app').__vue_app__;
+        (app._instance || app._container._vnode.component).proxy.currentView = 'chat';
+    });
+    await probePage.waitFor({ state: 'detached' });
+    assert.equal(await page.evaluate(() => api3Probe.closed), 1, 'the cleanup runs when the page is left');
+    await page.evaluate(() => api3Probe.page.open());
+    await probePage.waitFor();
+    console.log('PASS ctx.ui.addPage adds a navigation entry and a full page with the native header that cleans up when left');
     assert.deepEqual(errors, []);
 } finally {
     await context.close();
