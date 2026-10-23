@@ -14,6 +14,7 @@ const GREETING = [
     'image###1girl, classroom###',
     LONG
 ].join('\n\n');
+const LONG_TEXT = LONG;
 const REPLIES = ['“你来了。”他抬起头。', '“快坐下。”她小声说。'];
 const library = {
     'girl-gentle': { _id: 'girl-gentle', title: '温柔少女', tags: ['female', 'young', 'gentle', 'soft'], task_count: 100, samples: [{ audio: 'https://example.test/girl.mp3' }] },
@@ -46,19 +47,21 @@ try {
     page.on('pageerror', (error) => errors.push(error.message));
     // 播放换成假的：记下播了什么，由测试控制播完。
     await page.addInitScript(() => {
-        const audio = window.__audio = { plays: [], pauses: 0, current: null };
+        const audio = window.__audio = { plays: [], times: [], ended: [], pauses: 0, current: null };
         HTMLMediaElement.prototype.play = function play() {
             audio.plays.push(this.src);
+            if (this.src.startsWith('blob:')) audio.times.push(performance.now());
             audio.current = this;
             return Promise.resolve();
         };
         HTMLMediaElement.prototype.pause = function pause() { audio.pauses += 1; };
         audio.end = async () => {
-            for (let idle = 0; idle < 15;) {
+            for (let idle = 0; idle < 60;) {
                 const element = audio.current;
                 if (element?.src.startsWith('blob:')) {
                     audio.current = null;
                     idle = 0;
+                    audio.ended.push(performance.now());
                     element.dispatchEvent(new Event('ended'));
                 } else {
                     idle += 1;
@@ -93,9 +96,9 @@ try {
         if (system.includes('配音导演')) {
             aiRequests.push({ kind: 'analyze', body });
             if (analysisFails) return route.fulfill({ status: 500, json: { error: { message: 'analysis is down' } } });
-            if (user.includes('你来了')) return route.fulfill(reply(JSON.stringify([[1, '班长', 'cold'], [2, '旁白', 'calm narration']])));
-            return route.fulfill(reply(JSON.stringify([[1, '旁白', 'calm narration'], [2, '同桌', 'cheerful'], [3, '旁白', 'calm narration'],
-                [4, '同桌', 'nervous inner voice'], [5, '用户', 'shy'], [6, '班长', 'annoyed']])));
+            if (user.includes('你来了')) return route.fulfill(reply(JSON.stringify([[1, '班长', 'cold', 0.3], [2, '旁白', 'calm narration', 0]])));
+            return route.fulfill(reply(JSON.stringify([[1, '旁白', 'calm narration', 0], [2, '同桌', 'cheerful', 0.2], [3, '旁白', 'calm narration', 0],
+                [4, '同桌', 'nervous inner voice', 0.4], [5, '用户', 'shy', 0.2], [6, '班长', 'annoyed', 0]])));
         }
         return route.fulfill(reply(REPLIES[replies++]));
     });
@@ -155,6 +158,7 @@ try {
     // 1. 配音表：只列人物（没有旁白）；AI 按角色卡资料给「同桌」挑，排第一的自动选上；自己加「班长」，搜「大叔」选上
     await openSettings();
     await panel.locator('[data-k="fishKey"]').fill('test-key');
+    assert.equal(await panel.locator('input[type="password"]').count(), 0, 'no password field, so the browser does not offer to save the key as the site password');
     assert.equal(await panel.locator('[data-k="fishModel"]').inputValue(), 'fish-audio/s2.1-pro-free', 'the free model is the default');
     assert.equal(await panel.locator('[data-k="analyzeMode"]').inputValue(), 'click', 'analysis waits for a click by default');
     await panel.locator('[data-models-note]', { hasText: '共 2 个模型' }).waitFor();
@@ -207,6 +211,8 @@ try {
     const analysis = aiRequests.find((item) => item.kind === 'analyze').body.messages[1].content;
     assert.ok(analysis.includes('已知人物：同桌、班长；用户扮演：用户') && analysis.includes('2. “早上好，今天也要加油哦。”'), analysis);
     assert.ok(!analysis.includes('好感度') && !analysis.includes('1girl'), analysis);
+    assert.deepEqual(await page.evaluate(() => [...CSS.highlights.get('rph-voice-line')].map((range) => range.toString())),
+        ['“早上好，今天也要加油哦。”', '（她心里其实有点紧张。）', LONG_TEXT], 'the lines spoken by people are underlined');
     console.log('PASS the floating window analyses on click without speaking and shows who speaks how many lines');
 
     // 3. 播放：用存下的分析，只念人物的台词，带语气；边播边生成下一段；悬浮窗显示正在说谁
@@ -215,7 +221,8 @@ try {
     for (let i = 0; i < 50 && ttsRequests.length < 2; i += 1) await page.waitForTimeout(20);
     assert.equal(ttsRequests.length, 2, 'the next line is requested while the first one plays');
     assert.deepEqual(ttsRequests[0], { model: 'fish-audio/s2.1-pro-free', input: '[cheerful] “早上好，今天也要加油哦。”', voice: 'girl-gentle', response_format: 'mp3', auth: 'Bearer test-key' });
-    assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.rph-voice-speaking')].map((el) => el.textContent.trim())), ['“早上好，今天也要加油哦。”她笑着说。']);
+    assert.deepEqual(await page.evaluate(() => [...CSS.highlights.get('rph-voice-now')].map((range) => range.toString())), ['“早上好，今天也要加油哦。”'],
+        'only the line being spoken is highlighted');
     assert.equal(await widgetStatus(), '正在说：同桌');
     assert.equal(await widget.locator('[data-play]').textContent(), '停止');
     await page.evaluate(() => window.__audio.end());
@@ -227,9 +234,44 @@ try {
         ['uncle-deep', `[annoyed] ${LONG}`]
     ], 'only lines spoken by people are voiced, each with its speaker and tone');
     assert.equal(await blobPlays(), 3);
+    const timing = await page.evaluate(() => ({ times: window.__audio.times.slice(-3), ended: window.__audio.ended.slice(-3) }));
+    assert.ok(timing.times[1] - timing.ended[0] >= 180, `pause after the first line: ${timing.times[1] - timing.ended[0]}ms`);
+    assert.ok(timing.times[2] - timing.ended[1] >= 380, `pause after the second line: ${timing.times[2] - timing.ended[1]}ms`);
     assert.equal(await widgetStatus(), '最新回复：同桌 2 句 · 班长 1 句');
     assert.deepEqual((await cast()).map((person) => person.name), ['同桌', '班长'], 'the user is not added to the cast');
-    console.log('PASS playing uses the saved analysis, voices only people with their own voice and tone, and shows who is speaking');
+    console.log('PASS playing uses the saved analysis, voices only people with their own voice and tone, pauses as the AI paced it, and shows who is speaking');
+
+    // 3b. 点一句台词：小卡片写着谁说的、AI 分析的语气；「播放这句」只播这一句，「从这句开始」播到最后
+    const clickLine = async (n) => {
+        const point = await page.evaluate((i) => {
+            const range = [...CSS.highlights.get('rph-voice-line')][i];
+            range.startContainer.parentElement.scrollIntoView({ block: 'center' });
+            const rect = range.getClientRects()[0];
+            return { x: rect.left + 6, y: rect.top + rect.height / 2 };
+        }, n);
+        await page.mouse.click(point.x, point.y);
+        await page.locator('[data-rph-voice-pop]').waitFor();
+    };
+    await clickLine(0);
+    assert.equal(await page.locator('[data-rph-voice-pop] strong').textContent(), '同桌');
+    assert.equal(await page.locator('[data-rph-voice-pop] .rph-voice-pop__tone').textContent(), 'AI 分析的语气：cheerful');
+    let before = await blobPlays();
+    await page.locator('[data-rph-voice-pop] [data-one]').click();
+    await playingBlob();
+    await page.evaluate(() => window.__audio.end());
+    await idle(0);
+    assert.equal(await blobPlays(), before + 1, 'only this line is played');
+    await clickLine(1);
+    before = await blobPlays();
+    await page.locator('[data-rph-voice-pop] [data-from]').click();
+    await playingBlob();
+    await page.evaluate(() => window.__audio.end());
+    await idle(0);
+    assert.equal(await blobPlays(), before + 2, 'this line and the ones after it are played');
+    assert.equal(ttsRequests.length, 3, 'the audio made before is reused');
+    await page.mouse.click(5, 5);
+    assert.equal(await page.locator('[data-rph-voice-pop]').count(), 0, 'clicking elsewhere closes the card');
+    console.log('PASS a clicked line shows its speaker and AI tone, and can be played alone or from there on');
 
     // 4. 重听不再生成；打开「用户的台词也念」后才念用户的那句；悬浮窗的播放按钮能停
     await widget.locator('[data-play]').click();
