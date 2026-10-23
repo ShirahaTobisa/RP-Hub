@@ -126,14 +126,16 @@ try {
         await page.locator('[data-rph-workshop-manager-entry]').waitFor({ state: 'attached' });
         await page.evaluate(() => document.querySelector('[data-rph-workshop-manager-entry]').click());
         await page.locator('[data-rph-workshop-launcher] button', { hasText: '朗读设置' }).click();
-        await page.locator('[data-rph-workshop-panel] [data-voice]').waitFor();
+        await page.locator('[data-rph-workshop-panel] [data-voice] + div button[aria-haspopup="listbox"]').waitFor();
     };
     const panel = page.locator('[data-rph-workshop-panel]');
     await openSettings();
     assert.deepEqual(await panel.locator('[data-voice] option').evaluateAll((items) => items.map((item) => item.value)),
         ['Microsoft Huihui - Chinese (Simplified, PRC)', 'Microsoft Xiaoxiao Online (Natural) - Chinese (Mainland)']);
     assert.equal(await panel.locator('[data-voice]').inputValue(), 'Microsoft Xiaoxiao Online (Natural) - Chinese (Mainland)');
-    await panel.locator('[data-voice]').selectOption('Microsoft Huihui - Chinese (Simplified, PRC)');
+    assert.equal(await panel.locator('select:visible').count(), 0, 'the voice dropdown is the RPH dropdown, not the browser one');
+    await panel.locator('[data-voice] + div button[aria-haspopup="listbox"]').click();
+    await page.getByRole('option', { name: 'Microsoft Huihui - Chinese (Simplified, PRC)（zh-CN）', exact: true }).click();
     assert.equal(await page.evaluate(() => localStorage.getItem('rph_tts_voice')), 'Microsoft Huihui - Chinese (Simplified, PRC)');
     await panel.locator('[data-preview]').click();
     const previewText = await panel.locator('[data-preview-text]').textContent();

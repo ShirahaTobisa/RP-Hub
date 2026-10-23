@@ -70,7 +70,7 @@
 .rph-voice-widget.is-busy .rph-voice-widget__dot{box-shadow:0 0 0 3px rgba(96,165,250,.45),0 6px 18px rgba(0,0,0,.16)}`;
 
     RPHubSDK.register({
-        id: 'character-voice', name: '角色语音', version: '1.2.0', requiresApi: 7,
+        id: 'character-voice', name: '角色语音', version: '1.2.1', requiresApi: 7,
         init(ctx) {
             const player = new Audio(); // 都用这一个播放器：手机上点过一次以后，自动播放也能出声
             const preview = new Audio(); // 声音库的试听
@@ -796,10 +796,48 @@
                 return { voices, reason: String(want.reason || '') };
             }
 
+            // 把原生下拉框换成 RPH 自己的下拉框（展开的列表、深色模式都和原生设置页一样）。值还在隐藏的 <select> 里，
+            // 别的代码照旧读写 .value、监听 change；选项或选中项变了会自己跟上。页面没有这个组件（旧版 RPH）时保持原生下拉框。
+            function styledSelect(select) {
+                const Component = window.RPHubCustomSelect;
+                const Vue = globalThis.Vue;
+                if (!select || !Component || !Vue?.createApp) return { unmount() {} };
+                const view = Vue.reactive({ value: '', options: [] });
+                const sync = () => Object.assign(view, {
+                    value: select.value,
+                    options: [...select.options].map((option) => ({ value: option.value, label: option.textContent, disabled: option.disabled }))
+                });
+                const host = document.createElement('div');
+                const app = Vue.createApp({
+                    render: () => Vue.h(Component, {
+                        modelValue: view.value, options: view.options, buttonClass: 'rph-ui-input', menuClass: 'text-sm',
+                        'onUpdate:modelValue': (value) => {
+                            select.value = value;
+                            sync();
+                            select.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    })
+                });
+                app.mount(host);
+                select.hidden = true;
+                select.after(host);
+                const observer = new MutationObserver(sync);
+                observer.observe(select, { childList: true, subtree: true, attributes: true });
+                sync();
+                return {
+                    unmount() {
+                        observer.disconnect();
+                        app.unmount();
+                    }
+                };
+            }
+
             // 设置页：插件接口 8 起在导航菜单里单独一项，点开占满主区域；旧外壳没有页面接口时退回「模块管理」里的弹窗。
             // 切换角色卡时重画（配音表按卡记）。
             function renderSettings(body) {
+                let selects = [];
                 const paint = () => {
+                    selects.forEach((item) => item.unmount());
                     // 样式类名见 WORKSHOP-MOD-GUIDE.md「面板样式」，跟随页面主题和深色模式。
                     // 密钥框不用 type=password：浏览器会把它当成网站登录密码，配音表一重画就弹「要更新密码吗」，点了还会把站点密码换成 Fish 密钥。
                     const toggle = (key, label) => `<div class="rph-ui-field"><label class="rph-ui-check" style="white-space:normal"><input type="checkbox" class="settings-toggle-input sr-only" data-k="${key}"><span class="settings-toggle" style="flex-shrink:0"></span><span>${label}</span></label></div>`;
@@ -809,17 +847,17 @@
                         <div class="settings-card__body">
                         <p class="rph-ui-muted">让回复里的人物开口说话：AI 分析每句是谁说的、用什么语气，人物的台词按下面的配音表用 Fish Audio 的声音念。旁白和叙述不念。</p>
                         <label class="rph-ui-field">Fish Audio 密钥<input class="rph-ui-input" type="text" data-k="fishKey" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" style="-webkit-text-security:disc" placeholder="在 fish.audio 的开发者页面申请"></label>
-                        <label class="rph-ui-field">模型<select class="rph-ui-input" data-k="fishModel">
+                        <div class="rph-ui-field"><span>模型</span><select class="rph-ui-input" data-k="fishModel">
                             <option value="fish-audio/s2.1-pro-free">S2.1 Pro 免费版</option>
                             <option value="fish-audio/s2.1-pro">S2.1 Pro（按字数收费）</option>
-                        </select></label>
+                        </select></div>
                         <p class="rph-ui-muted">免费版和收费版是同一个模型，但 Fish 说免费版的请求可能会被留下来改进模型。密钥会随云同步存进你自己的存储桶。</p>
-                        <label class="rph-ui-field">分析用的模型<select class="rph-ui-input" data-k="analysisModel"></select></label>
+                        <div class="rph-ui-field"><span>分析用的模型</span><select class="rph-ui-input" data-k="analysisModel"></select></div>
                         <div class="rph-ui-actions" style="justify-content:space-between;align-items:center;margin:-0.25rem 0 0.75rem"><span class="rph-ui-muted" data-models-note></span><button type="button" class="modal-secondary-button rph-ui-button" data-refresh-models>刷新模型列表</button></div>
-                        <label class="rph-ui-field">什么时候分析<select class="rph-ui-input" data-k="analyzeMode">
+                        <div class="rph-ui-field"><span>什么时候分析</span><select class="rph-ui-input" data-k="analyzeMode">
                             <option value="click">点「分析」或播放时才分析</option>
                             <option value="auto">每条回复结束后自动分析</option>
-                        </select></label>
+                        </select></div>
                         <p class="rph-ui-muted">每条回复分析一次（一次 AI 调用），结果会存下来，重听不再分析。</p>
                         ${toggle('autoPlay', '回复结束后自动说')}
                         ${toggle('userLines', '你扮演的角色的台词也念')}
@@ -872,6 +910,7 @@
                         field.addEventListener('input', save);
                         field.addEventListener('change', save);
                     });
+                    selects = ['fishModel', 'analysisModel', 'analyzeMode'].map((key) => styledSelect(body.querySelector(`[data-k="${key}"]`)));
 
                     // 配音表：每行一个人物，可以让 AI 挑、自己搜、试听、清掉或删除。
                     const castBox = body.querySelector('[data-cast]');
@@ -991,7 +1030,10 @@
                 paint();
                 let stopWatch = null;
                 stopWatch = ctx.app.watch(() => characterId(), () => (body.isConnected ? paint() : stopWatch?.()));
-                return stopWatch;
+                return () => {
+                    stopWatch?.();
+                    selects.forEach((item) => item.unmount());
+                };
             }
             const page = typeof ctx.ui.addPage === 'function' ? ctx.ui.addPage({ label: '角色语音', iconPaths: [TALK_PATH], render: renderSettings }) : null;
             if (!page) ctx.ui.addSidebarEntry({ label: '角色语音设置', onClick: () => ctx.ui.openPanel({ title: '角色语音', render: renderSettings }) });

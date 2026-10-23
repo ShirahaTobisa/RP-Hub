@@ -166,12 +166,17 @@ try {
     assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.chat-view-root')).display), 'none', 'the page takes the main area');
     await panel.locator('[data-k="fishKey"]').fill('test-key');
     assert.equal(await panel.locator('input[type="password"]').count(), 0, 'no password field, so the browser does not offer to save the key as the site password');
+    assert.equal(await panel.locator('select:visible').count(), 0, 'every dropdown is the RPH dropdown, not the browser one');
+    const dropdown = (key) => panel.locator(`[data-k="${key}"] + div button[aria-haspopup="listbox"]`);
+    assert.equal((await dropdown('fishModel').textContent()).trim(), 'S2.1 Pro 免费版');
     assert.equal(await panel.locator('[data-k="fishModel"]').inputValue(), 'fish-audio/s2.1-pro-free', 'the free model is the default');
     assert.equal(await panel.locator('[data-k="analyzeMode"]').inputValue(), 'click', 'analysis waits for a click by default');
     await panel.locator('[data-models-note]', { hasText: '共 2 个模型' }).waitFor();
     assert.deepEqual(await panel.locator('[data-k="analysisModel"] option').evaluateAll((items) => items.map((item) => item.value)), ['', 'fixture-model', 'analysis-model'],
         'models come from the site AI, without embedding models');
-    await panel.locator('[data-k="analysisModel"]').selectOption('analysis-model');
+    await dropdown('analysisModel').click();
+    await page.getByRole('option', { name: 'analysis-model', exact: true }).click();
+    assert.equal((await dropdown('analysisModel').textContent()).trim(), 'analysis-model');
     assert.equal(await page.evaluate(() => localStorage.getItem('rph_mod_character-voice::analysisModel')), 'analysis-model');
     assert.equal(await panel.locator('[data-cast] [data-person]').count(), 0, 'the card name is not put into the cast');
     assert.equal(await panel.locator('[data-cast]').textContent(), '还没有人物。');

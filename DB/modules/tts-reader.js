@@ -14,7 +14,7 @@
     const RANGE_CLASS = 'compact-range w-full h-1.5 bg-primary-100 rounded-lg appearance-none cursor-pointer accent-primary-500';
 
     RPHubSDK.register({
-        id: 'tts-reader', name: '朗读', version: '1.0.0', requiresApi: 4,
+        id: 'tts-reader', name: '朗读', version: '1.0.1', requiresApi: 4,
         init(ctx) {
             const synth = window.speechSynthesis;
             if (!synth || typeof window.SpeechSynthesisUtterance !== 'function') {
@@ -247,6 +247,34 @@
                 }
             });
 
+            // 把原生下拉框换成 RPH 自己的下拉框（展开的列表、深色模式都和原生设置页一样）。值还在隐藏的 <select> 里，
+            // 别的代码照旧读写 .value、监听 change；选项或选中项变了会自己跟上。页面没有这个组件（旧版 RPH）时保持原生下拉框。
+            function styledSelect(select) {
+                const Component = window.RPHubCustomSelect;
+                const Vue = globalThis.Vue;
+                if (!select || !Component || !Vue?.createApp) return;
+                const view = Vue.reactive({ value: '', options: [] });
+                const sync = () => Object.assign(view, {
+                    value: select.value,
+                    options: [...select.options].map((option) => ({ value: option.value, label: option.textContent, disabled: option.disabled }))
+                });
+                const host = document.createElement('div');
+                Vue.createApp({
+                    render: () => Vue.h(Component, {
+                        modelValue: view.value, options: view.options, buttonClass: 'rph-ui-input', menuClass: 'text-sm',
+                        'onUpdate:modelValue': (value) => {
+                            select.value = value;
+                            sync();
+                            select.dispatchEvent(new Event('change', { bubbles: true }));
+                        }
+                    })
+                }).mount(host);
+                select.hidden = true;
+                select.after(host);
+                new MutationObserver(sync).observe(select, { childList: true, subtree: true, attributes: true });
+                sync();
+            }
+
             ctx.ui.addSidebarEntry({
                 label: '朗读设置',
                 onClick() {
@@ -257,7 +285,7 @@
                             const toggle = (attrs, label) => `<div class="rph-ui-field"><label class="rph-ui-check" style="white-space:normal"><input type="checkbox" class="settings-toggle-input sr-only" ${attrs}><span class="settings-toggle"></span><span>${label}</span></label></div>`;
                             const range = (key, label) => `<label class="rph-ui-field"><span>${label} <span data-show="${key}"></span></span><input type="range" min="0.5" max="2" step="0.1" class="${RANGE_CLASS}" data-k="${key}"></label>`;
                             body.innerHTML = `
-                                <label class="rph-ui-field">声音<select class="rph-ui-input" data-voice></select></label>
+                                <div class="rph-ui-field"><span>声音</span><select class="rph-ui-input" data-voice></select></div>
                                 <p class="rph-ui-muted">声音来自浏览器和系统，每台设备不一样，只存在这台设备上。电脑上用 Edge 浏览器能用到微软的自然人声。</p>
                                 ${range('rate', '语速')}
                                 ${range('pitch', '音调')}
@@ -288,6 +316,7 @@
                             };
                             fillVoices();
                             synth.addEventListener?.('voiceschanged', fillVoices);
+                            styledSelect(select);
                             select.onchange = () => {
                                 try { localStorage.setItem(VOICE_KEY, select.value); } catch (_) { /* storage blocked */ }
                             };
