@@ -3,7 +3,7 @@ import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } fr
 
 // 角色语音插件：配音表（AI 按资料挑、自己搜）；状态悬浮窗（点「分析」只分析、显示谁说了几句、正在说谁、能收起和拖动并记住位置）；
 // 只念人物的台词（旁白不念，用户扮演的默认不念），带语气；边播边生成下一段；重听不再分析也不再生成；
-// 自动分析模式只分析不出声；自动说时分析失败按引号当成角色卡本人；密钥错了有提示。
+// 自动分析模式只分析不出声；自动说时分析失败，引号里的话用默认声音；密钥错了有提示。分析用的模型从站点的模型列表里选，配音表不放卡名。
 const LONG = '她把书包放在桌上，打开窗户让风吹进来，又把昨天没写完的作业拿出来，一边嘟囔着一边在草稿纸上画着奇怪的小人，直到上课铃响起来才慌慌张张地收好东西。';
 const GREETING = [
     '清晨的阳光洒进教室。',
@@ -68,10 +68,17 @@ try {
         };
     });
     await page.route('https://api.fish.audio/model?**', (route) => {
-        const title = new URL(route.request().url()).searchParams.get('title') || '';
+        const url = new URL(route.request().url());
+        const title = url.searchParams.get('title') || '';
+        if (title === '少年') {
+            const page = Number(url.searchParams.get('page_number'));
+            const items = Array.from({ length: page === 1 ? 20 : 5 }, (_, i) => ({ _id: `boy-${page}-${i}`, title: `少年${page}-${i}`, tags: ['male', 'young'], samples: [] }));
+            return route.fulfill({ headers: cors, json: { total: 25, items } });
+        }
         const ids = title === '少女' ? ['girl-energetic', 'girl-gentle'] : title === '大叔' ? ['uncle-deep'] : title ? [] : ['woman-calm', 'girl-energetic'];
         return route.fulfill({ headers: cors, json: { total: ids.length, items: ids.map((id) => library[id]) } });
     });
+    await page.route('**/v1/models', (route) => route.fulfill({ json: { data: [{ id: 'fixture-model' }, { id: 'analysis-model' }, { id: 'text-embedding-3-small' }] } }));
     const aiRequests = [];
     let analysisFails = false;
     let replies = 0;
@@ -150,16 +157,32 @@ try {
     await panel.locator('[data-k="fishKey"]').fill('test-key');
     assert.equal(await panel.locator('[data-k="fishModel"]').inputValue(), 'fish-audio/s2.1-pro-free', 'the free model is the default');
     assert.equal(await panel.locator('[data-k="analyzeMode"]').inputValue(), 'click', 'analysis waits for a click by default');
-    assert.deepEqual(await panel.locator('[data-cast] [data-person]').evaluateAll((rows) => rows.map((row) => row.dataset.person)), ['同桌']);
+    await panel.locator('[data-models-note]', { hasText: '共 2 个模型' }).waitFor();
+    assert.deepEqual(await panel.locator('[data-k="analysisModel"] option').evaluateAll((items) => items.map((item) => item.value)), ['', 'fixture-model', 'analysis-model'],
+        'models come from the site AI, without embedding models');
+    await panel.locator('[data-k="analysisModel"]').selectOption('analysis-model');
+    assert.equal(await page.evaluate(() => localStorage.getItem('rph_mod_character-voice::analysisModel')), 'analysis-model');
+    assert.equal(await panel.locator('[data-cast] [data-person]').count(), 0, 'the card name is not put into the cast');
+    assert.equal(await panel.locator('[data-cast]').textContent(), '还没有人物。');
+    await panel.locator('[data-new-person]').fill('同桌');
+    await panel.locator('[data-add-person]').click();
     await panel.locator('[data-person="同桌"]').getByRole('button', { name: 'AI 挑' }).click();
     await panel.locator('[data-pick="同桌"] [data-voice-id="girl-gentle"]').waitFor();
     assert.deepEqual(await panel.locator('[data-pick="同桌"] [data-voice-id]').evaluateAll((rows) => rows.map((row) => row.dataset.voiceId)),
         ['girl-gentle', 'girl-energetic', 'woman-calm']);
     const pick = aiRequests.find((item) => item.kind === 'pick').body;
     assert.ok(pick.messages[1].content.includes('人物：同桌') && pick.messages[1].content.includes('安静的同桌女生'), pick.messages[1].content);
+    assert.equal(pick.model, 'analysis-model', 'the chosen model is used');
     await panel.locator('[data-new-person]').fill('班长');
     await panel.locator('[data-add-person]').click();
     await panel.locator('[data-person="班长"]').getByRole('button', { name: '搜索' }).click();
+    await panel.locator('[data-pick="班长"] input').fill('少年');
+    await panel.locator('[data-pick="班长"] input').press('Enter');
+    await panel.locator('[data-pick="班长"]', { hasText: '一共 25 个声音' }).waitFor();
+    assert.equal(await panel.locator('[data-pick="班长"] [data-voice-id]').count(), 20);
+    await panel.locator('[data-pick="班长"]').getByRole('button', { name: '加载更多' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('[data-pick="班长"] [data-voice-id]').length === 25);
+    assert.equal(await panel.locator('[data-pick="班长"]').getByRole('button', { name: '加载更多' }).count(), 0);
     await panel.locator('[data-pick="班长"] input').fill('大叔');
     await panel.locator('[data-pick="班长"] input').press('Enter');
     await panel.locator('[data-pick="班长"] [data-voice-id="uncle-deep"]').getByRole('button', { name: '用这个' }).click();
@@ -169,7 +192,7 @@ try {
     ]);
     await page.keyboard.press('Escape');
     assert.equal(analysisCount(), 0, 'nothing is analysed until asked');
-    console.log('PASS the cast lists people only; AI picks a voice from the card and the library, and a voice can be searched and chosen');
+    console.log('PASS models are picked from the site list; the cast starts empty; AI picks a voice, and the library search pages through results');
 
     // 2. 悬浮窗：没分析时这么写；点「分析」只分析、不出声，显示谁说了几句（用户扮演的不算）
     await widget.waitFor();
@@ -180,6 +203,7 @@ try {
     assert.equal(await widget.locator('[data-analyze]').textContent(), '重新分析');
     assert.equal(analysisCount(), 1);
     assert.equal(ttsRequests.length, 0, 'analysing alone makes no audio');
+    assert.equal(aiRequests.find((item) => item.kind === 'analyze').body.model, 'analysis-model');
     const analysis = aiRequests.find((item) => item.kind === 'analyze').body.messages[1].content;
     assert.ok(analysis.includes('已知人物：同桌、班长；用户扮演：用户') && analysis.includes('2. “早上好，今天也要加油哦。”'), analysis);
     assert.ok(!analysis.includes('好感度') && !analysis.includes('1girl'), analysis);
@@ -248,9 +272,9 @@ try {
     await playingBlob();
     await page.evaluate(() => window.__audio.end());
     await idle(4);
-    assert.deepEqual(ttsRequests.slice(4).map((item) => [item.voice, item.input]), [['girl-gentle', '“快坐下。”']]);
+    assert.deepEqual(ttsRequests.slice(4).map((item) => [item.voice, item.input]), [['', '“快坐下。”']], 'quotes use the Fish default voice when nobody is known');
     await statusIs('分析失败：');
-    console.log('PASS automatic analysis stays silent; automatic speaking falls back to quotes as the card character when analysis fails');
+    console.log('PASS automatic analysis stays silent; automatic speaking falls back to quotes in the default voice when analysis fails');
 
     // 7. 密钥错了：Fish 的 401 带上中文说明；悬浮窗刷新后还在拖过去的位置
     await page.evaluate(() => localStorage.setItem('rph_mod_character-voice::fishKey', 'bad-key'));
