@@ -132,14 +132,18 @@ try {
     await page.goto(harness.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     const voiceButton = (index) => page.locator(`[data-chat-index="${index}"] [data-rph-voice]`);
     await voiceButton(0).waitFor({ timeout: 45000 });
-    const panel = page.locator('[data-rph-workshop-panel]');
+    // 设置是导航菜单里单独的「角色语音」页面（插件接口 8），不在「模块管理」里。
+    const panel = page.locator('[data-rph-workshop-page="character-voice"]');
     const openSettings = async () => {
         await page.evaluate(() => [...document.querySelectorAll('.app-nav-trigger')].find((trigger) => trigger.offsetParent)?.click());
-        await page.locator('[data-rph-workshop-manager-entry]').waitFor({ state: 'attached' });
-        await page.evaluate(() => document.querySelector('[data-rph-workshop-manager-entry]').click());
-        await page.locator('[data-rph-workshop-launcher] button', { hasText: '角色语音设置' }).click();
+        await page.locator('#app-navigation-panel [data-rph-workshop-page-entry="character-voice"]').waitFor({ state: 'attached' });
+        await page.evaluate(() => document.querySelector('[data-rph-workshop-page-entry="character-voice"]').click());
         await panel.locator('[data-k="fishKey"]').waitFor();
     };
+    const backToChat = () => page.evaluate(() => {
+        const app = document.querySelector('#app').__vue_app__;
+        (app._instance || app._container._vnode.component).proxy.currentView = 'chat';
+    });
     const widget = page.locator('[data-rph-voice-widget]');
     const widgetStatus = () => widget.locator('[data-status]').textContent();
     const statusIs = (text) => page.waitForFunction((value) => document.querySelector('[data-rph-voice-widget] [data-status]')?.textContent.startsWith(value), text, { timeout: 15000 });
@@ -157,6 +161,9 @@ try {
 
     // 1. 配音表：只列人物（没有旁白）；AI 按角色卡资料给「同桌」挑，排第一的自动选上；自己加「班长」，搜「大叔」选上
     await openSettings();
+    assert.equal((await panel.locator('.settings-page-header h2').textContent()).trim(), '角色语音');
+    assert.equal(await panel.locator('[data-card-name]').textContent(), '当前角色卡：同桌');
+    assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.chat-view-root')).display), 'none', 'the page takes the main area');
     await panel.locator('[data-k="fishKey"]').fill('test-key');
     assert.equal(await panel.locator('input[type="password"]').count(), 0, 'no password field, so the browser does not offer to save the key as the site password');
     assert.equal(await panel.locator('[data-k="fishModel"]').inputValue(), 'fish-audio/s2.1-pro-free', 'the free model is the default');
@@ -194,7 +201,8 @@ try {
         { name: '同桌', id: 'girl-gentle', title: '温柔少女', sample: 'https://example.test/girl.mp3' },
         { name: '班长', id: 'uncle-deep', title: '大叔', sample: 'https://example.test/uncle.mp3' }
     ]);
-    await page.keyboard.press('Escape');
+    await backToChat();
+    await panel.waitFor({ state: 'detached' });
     assert.equal(analysisCount(), 0, 'nothing is analysed until asked');
     assert.equal(await page.locator('[data-rph-workshop-composer-button="character-voice"]').count(), 0, 'no text button above the input box; the floating window does that job');
     console.log('PASS models are picked from the site list; the cast starts empty; AI picks a voice, and the library search pages through results');
@@ -312,7 +320,11 @@ try {
     await page.mouse.up();
     const position = await page.evaluate(() => JSON.parse(localStorage.getItem('rph_voice_widget')));
     assert.ok(position.x < head.x - 100 && position.y < head.y - 100 && position.folded === false, JSON.stringify(position));
-    console.log('PASS the floating window folds into a dot, opens again, and remembers where it was dragged');
+    await widget.locator('[data-settings]').click();
+    await panel.locator('[data-k="fishKey"]').waitFor();
+    await backToChat();
+    await panel.waitFor({ state: 'detached' });
+    console.log('PASS the floating window folds into a dot, opens again, remembers where it was dragged, and its gear opens the settings page');
 
     // 6. 自动分析：回复结束只分析、不出声；自动说：分析失败时提示，并把引号里的话当成角色卡本人说的
     await page.evaluate(() => localStorage.setItem('rph_mod_character-voice::analyzeMode', 'auto'));

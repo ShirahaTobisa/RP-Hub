@@ -39,13 +39,18 @@
         '只输出 JSON：{"gender":"male|female|unknown","age":"young|middle-aged|old|unknown","tags":[2～4 个英文标签],"keywords":[1～2 个中文搜索词，比如 少女、御姐、少年、大叔、老人、萝莉、正太、公子、温柔男声],"reason":"一句中文理由"}',
         `英文标签只能从这里选：${VOICE_TAGS}`
     ].join('\n');
-    const ICON_TALK = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path>';
+    const TALK_PATH = 'M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z';
+    const GEAR_PATHS = ['M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z', 'M15 12a3 3 0 11-6 0 3 3 0 016 0z'];
+    const PEOPLE_PATH = 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z';
+    const icon = (paths, className) => `<svg class="${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24">${paths.map((d) => `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${d}"></path>`).join('')}</svg>`;
+    const ICON_TALK = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${TALK_PATH}"></path>`;
     const ICON_STOP = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path>';
     // 台词的虚线、正在说的那句的底色、点开的小卡片和悬浮窗。颜色用 RPH 自己的主题变量，深色模式跟着变。
     // 虚线和底色用浏览器的文字高亮画，不改正文的网页结构；不支持文字高亮的浏览器退回给整段标底色。
     const STYLE = `.${SPEAKING}{background:rgba(96,165,250,.18);border-radius:6px;box-shadow:0 0 0 3px rgba(96,165,250,.18)}
 ::highlight(rph-voice-line){text-decoration:underline dotted rgba(96,165,250,.85);text-decoration-thickness:1.5px}
 ::highlight(rph-voice-now){background-color:rgba(96,165,250,.28)}
+[data-rph-workshop-page] .settings-card__body>p.rph-ui-muted{margin:0 0 .75rem}
 .rph-voice-pop{position:fixed;z-index:60;max-width:min(300px,calc(100vw - 16px));padding:10px 12px;border-radius:12px;background:var(--c-elevated,#fff);color:var(--c-text,#111827);border:1px solid var(--c-border-soft,#e5e7eb);box-shadow:0 8px 24px rgba(0,0,0,.16);font-size:13px}
 .rph-voice-pop__tone{margin:2px 0 8px;color:var(--c-text-3,#6b7280);font-size:12px;overflow-wrap:anywhere}
 .rph-voice-pop__actions{display:flex;gap:6px}
@@ -54,7 +59,8 @@
 .rph-voice-widget[hidden]{display:none}
 .rph-voice-widget__card{width:220px;padding:10px 12px;border-radius:14px;background:var(--c-elevated,#fff);border:1px solid var(--c-border-soft,#e5e7eb);box-shadow:0 8px 24px rgba(0,0,0,.14)}
 .rph-voice-widget__head{display:flex;align-items:center;justify-content:space-between;margin-bottom:4px;cursor:move;user-select:none;touch-action:none}
-.rph-voice-widget__fold{border:0;background:none;color:var(--c-text-3,#6b7280);cursor:pointer;padding:0 4px;font-size:16px;line-height:1}
+.rph-voice-widget__tools{display:flex;align-items:center;gap:2px}
+.rph-voice-widget__fold{display:inline-flex;align-items:center;border:0;background:none;color:var(--c-text-3,#6b7280);cursor:pointer;padding:0 4px;font-size:16px;line-height:1}
 .rph-voice-widget__status{margin:0 0 8px;color:var(--c-text-3,#6b7280);font-size:12px;line-height:1.5;overflow-wrap:anywhere}
 .rph-voice-widget__actions{display:flex;gap:6px}
 .rph-voice-widget__actions>button{flex:1;min-width:0;padding:4px 8px;font-size:12px}
@@ -64,7 +70,7 @@
 .rph-voice-widget.is-busy .rph-voice-widget__dot{box-shadow:0 0 0 3px rgba(96,165,250,.45),0 6px 18px rgba(0,0,0,.16)}`;
 
     RPHubSDK.register({
-        id: 'character-voice', name: '角色语音', version: '1.1.1', requiresApi: 7,
+        id: 'character-voice', name: '角色语音', version: '1.2.0', requiresApi: 7,
         init(ctx) {
             const player = new Audio(); // 都用这一个播放器：手机上点过一次以后，自动播放也能出声
             const preview = new Audio(); // 声音库的试听
@@ -73,6 +79,7 @@
             document.head.appendChild(style);
 
             const get = (key) => ctx.storage.get(key) ?? DEFAULTS[key];
+            let openSettings = () => {};
             const character = () => ctx.app.get('currentCharacter') || {};
             const characterId = () => character().uuid || '';
             const userName = () => ctx.app.get('user')?.name || '';
@@ -411,7 +418,7 @@
             // from 是从第几句开始，only 为 true 时只说这一句（点台词时用）。
             async function speak(index, { from = 0, only = false } = {}) {
                 stop();
-                if (!get('fishKey').trim()) return ctx.ui.toast('先在「角色语音设置」里填好 Fish Audio 的密钥', { kind: 'warning' });
+                if (!get('fishKey').trim()) return ctx.ui.toast('先在「角色语音」设置里填好 Fish Audio 的密钥', { kind: 'warning' });
                 const current = session = { index, stopped: false, abort: new AbortController(), speaker: '' };
                 refreshButtons();
                 renderWidget();
@@ -569,7 +576,7 @@
             // 按住拖动；没怎么动就算点击。
             function draggable(handle, onClick) {
                 handle.addEventListener('pointerdown', (event) => {
-                    if (event.button !== 0 || event.target.closest('[data-collapse]')) return;
+                    if (event.button !== 0 || event.target.closest('[data-collapse], [data-settings]')) return;
                     const rect = widget.getBoundingClientRect();
                     const start = { x: event.clientX, y: event.clientY };
                     let moved = false;
@@ -607,7 +614,7 @@
                 widget.innerHTML = `
                     <button type="button" class="rph-voice-widget__dot" data-expand title="角色语音" aria-label="展开角色语音"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">${ICON_TALK}</svg></button>
                     <div class="rph-voice-widget__card">
-                        <div class="rph-voice-widget__head" data-drag><strong>角色语音</strong><button type="button" class="rph-voice-widget__fold" data-collapse title="收起" aria-label="收起">－</button></div>
+                        <div class="rph-voice-widget__head" data-drag><strong>角色语音</strong><span class="rph-voice-widget__tools"><button type="button" class="rph-voice-widget__fold" data-settings title="角色语音设置" aria-label="角色语音设置">${icon(GEAR_PATHS, 'w-4 h-4')}</button><button type="button" class="rph-voice-widget__fold" data-collapse title="收起" aria-label="收起">－</button></span></div>
                         <p class="rph-voice-widget__status" data-status></p>
                         <div class="rph-voice-widget__actions">
                             <button type="button" class="modal-secondary-button rph-ui-button" data-analyze>分析</button>
@@ -622,6 +629,7 @@
                 draggable(widget.querySelector('[data-drag]'));
                 draggable(widget.querySelector('[data-expand]'), () => setFolded(false));
                 widget.querySelector('[data-collapse]').onclick = () => setFolded(true);
+                widget.querySelector('[data-settings]').onclick = () => openSettings();
                 widget.querySelector('[data-analyze]').onclick = () => {
                     const index = lastReplyIndex();
                     if (index >= 0) analyze(index, true).catch((error) => ctx.log('分析失败', error));
@@ -788,195 +796,206 @@
                 return { voices, reason: String(want.reason || '') };
             }
 
-            ctx.ui.addSidebarEntry({
-                label: '角色语音设置',
-                onClick() {
-                    ctx.ui.openPanel({
-                        title: '角色语音',
-                        render(body) {
-                            // 样式类名见 WORKSHOP-MOD-GUIDE.md「面板样式」，跟随页面主题和深色模式。
-                            // 密钥框不用 type=password：浏览器会把它当成网站登录密码，配音表一重画就弹「要更新密码吗」，点了还会把站点密码换成 Fish 密钥。
-                            const toggle = (key, label) => `<div class="rph-ui-field"><label class="rph-ui-check" style="white-space:normal"><input type="checkbox" class="settings-toggle-input sr-only" data-k="${key}"><span class="settings-toggle" style="flex-shrink:0"></span><span>${label}</span></label></div>`;
-                            body.innerHTML = `
-                                <p class="rph-ui-muted">让回复里的人物开口说话：AI 分析每句是谁说的、用什么语气，人物的台词按下面的配音表用 Fish Audio 的声音念。旁白和叙述不念。</p>
-                                <label class="rph-ui-field">Fish Audio 密钥<input class="rph-ui-input" type="text" data-k="fishKey" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" style="-webkit-text-security:disc" placeholder="在 fish.audio 的开发者页面申请"></label>
-                                <label class="rph-ui-field">模型<select class="rph-ui-input" data-k="fishModel">
-                                    <option value="fish-audio/s2.1-pro-free">S2.1 Pro 免费版</option>
-                                    <option value="fish-audio/s2.1-pro">S2.1 Pro（按字数收费）</option>
-                                </select></label>
-                                <p class="rph-ui-muted">免费版和收费版是同一个模型，但 Fish 说免费版的请求可能会被留下来改进模型。密钥会随云同步存进你自己的存储桶。</p>
-                                <label class="rph-ui-field">分析用的模型<select class="rph-ui-input" data-k="analysisModel"></select></label>
-                                <div class="rph-ui-actions" style="justify-content:space-between;align-items:center;margin:-0.25rem 0 0.75rem"><span class="rph-ui-muted" data-models-note></span><button type="button" class="modal-secondary-button rph-ui-button" data-refresh-models>刷新模型列表</button></div>
-                                <label class="rph-ui-field">什么时候分析<select class="rph-ui-input" data-k="analyzeMode">
-                                    <option value="click">点「分析」或播放时才分析</option>
-                                    <option value="auto">每条回复结束后自动分析</option>
-                                </select></label>
-                                <p class="rph-ui-muted">每条回复分析一次（一次 AI 调用），结果会存下来，重听不再分析。</p>
-                                ${toggle('autoPlay', '回复结束后自动说')}
-                                ${toggle('userLines', '你扮演的角色的台词也念')}
-                                ${toggle('widget', '在聊天页显示状态悬浮窗')}
-                                <section class="rph-ui-section">
-                                    <h3>配音表（只对当前角色卡）</h3>
-                                    <p class="rph-ui-muted">点悬浮窗的「分析」后，回复里说话的人物会自己加进来；也可以在下面手动添加。音色从 Fish 公共声音库里挑，不占你 Fish 账号的保存名额，没挑的用 Fish 的默认声音。</p>
-                                    <div data-cast></div>
-                                    <div class="rph-ui-actions" style="margin-top:0.75rem"><input class="rph-ui-input" data-new-person placeholder="人物名字" style="flex:1;min-width:0"><button type="button" class="modal-secondary-button rph-ui-button" data-add-person>添加人物</button></div>
-                                </section>`;
+            // 设置页：插件接口 8 起在导航菜单里单独一项，点开占满主区域；旧外壳没有页面接口时退回「模块管理」里的弹窗。
+            // 切换角色卡时重画（配音表按卡记）。
+            function renderSettings(body) {
+                const paint = () => {
+                    // 样式类名见 WORKSHOP-MOD-GUIDE.md「面板样式」，跟随页面主题和深色模式。
+                    // 密钥框不用 type=password：浏览器会把它当成网站登录密码，配音表一重画就弹「要更新密码吗」，点了还会把站点密码换成 Fish 密钥。
+                    const toggle = (key, label) => `<div class="rph-ui-field"><label class="rph-ui-check" style="white-space:normal"><input type="checkbox" class="settings-toggle-input sr-only" data-k="${key}"><span class="settings-toggle" style="flex-shrink:0"></span><span>${label}</span></label></div>`;
+                    body.innerHTML = `
+                        <div class="settings-card">
+                        <div class="settings-card__header"><div class="settings-card__title">${icon(GEAR_PATHS, 'w-5 h-5 mr-2')}基本设置</div></div>
+                        <div class="settings-card__body">
+                        <p class="rph-ui-muted">让回复里的人物开口说话：AI 分析每句是谁说的、用什么语气，人物的台词按下面的配音表用 Fish Audio 的声音念。旁白和叙述不念。</p>
+                        <label class="rph-ui-field">Fish Audio 密钥<input class="rph-ui-input" type="text" data-k="fishKey" autocomplete="off" spellcheck="false" data-1p-ignore data-lpignore="true" style="-webkit-text-security:disc" placeholder="在 fish.audio 的开发者页面申请"></label>
+                        <label class="rph-ui-field">模型<select class="rph-ui-input" data-k="fishModel">
+                            <option value="fish-audio/s2.1-pro-free">S2.1 Pro 免费版</option>
+                            <option value="fish-audio/s2.1-pro">S2.1 Pro（按字数收费）</option>
+                        </select></label>
+                        <p class="rph-ui-muted">免费版和收费版是同一个模型，但 Fish 说免费版的请求可能会被留下来改进模型。密钥会随云同步存进你自己的存储桶。</p>
+                        <label class="rph-ui-field">分析用的模型<select class="rph-ui-input" data-k="analysisModel"></select></label>
+                        <div class="rph-ui-actions" style="justify-content:space-between;align-items:center;margin:-0.25rem 0 0.75rem"><span class="rph-ui-muted" data-models-note></span><button type="button" class="modal-secondary-button rph-ui-button" data-refresh-models>刷新模型列表</button></div>
+                        <label class="rph-ui-field">什么时候分析<select class="rph-ui-input" data-k="analyzeMode">
+                            <option value="click">点「分析」或播放时才分析</option>
+                            <option value="auto">每条回复结束后自动分析</option>
+                        </select></label>
+                        <p class="rph-ui-muted">每条回复分析一次（一次 AI 调用），结果会存下来，重听不再分析。</p>
+                        ${toggle('autoPlay', '回复结束后自动说')}
+                        ${toggle('userLines', '你扮演的角色的台词也念')}
+                        ${toggle('widget', '在聊天页显示状态悬浮窗')}
+                        </div>
+                        </div>
+                        <div class="settings-card">
+                        <div class="settings-card__header"><div class="settings-card__title">${icon([PEOPLE_PATH], 'w-5 h-5 mr-2')}配音表<span class="rph-ui-muted" style="margin-left:0.5rem;font-weight:400" data-card-name></span></div></div>
+                        <div class="settings-card__body">
+                            <p class="rph-ui-muted">点悬浮窗的「分析」后，回复里说话的人物会自己加进来；也可以在下面手动添加。音色从 Fish 公共声音库里挑，不占你 Fish 账号的保存名额，没挑的用 Fish 的默认声音。</p>
+                            <div data-cast></div>
+                            <div class="rph-ui-actions" style="margin-top:0.75rem"><input class="rph-ui-input" data-new-person placeholder="人物名字" style="flex:1;min-width:0"><button type="button" class="modal-secondary-button rph-ui-button" data-add-person>添加人物</button></div>
+                        </div>
+                        </div>`;
+                    body.querySelector('[data-card-name]').textContent = character().name ? `当前角色卡：${character().name}` : '先打开一张角色卡';
 
-                            // 分析用的模型：从站点的 AI 接口取模型列表（和 RPH 自己获取模型一样，去掉嵌入模型），这次打开页面只取一次。
-                            const modelSelect = body.querySelector('[data-k="analysisModel"]');
-                            const modelsNote = body.querySelector('[data-models-note]');
-                            const fillModels = () => {
-                                const saved = get('analysisModel');
-                                const list = models || [];
-                                modelSelect.replaceChildren(new Option('跟随 RPH 的分析模型（没设就用主模型）', ''), ...list.map((id) => new Option(id, id)));
-                                if (saved && !list.includes(saved)) modelSelect.appendChild(new Option(`${saved}（不在列表里）`, saved));
-                                modelSelect.value = saved;
-                            };
-                            const loadModels = async () => {
-                                modelsNote.textContent = '正在获取模型列表……';
-                                try {
-                                    models = await listModels();
-                                    modelsNote.textContent = `共 ${models.length} 个模型`;
-                                } catch (error) {
-                                    modelsNote.textContent = `获取模型列表失败：${error?.message || error}`;
-                                }
-                                fillModels();
-                            };
-                            fillModels();
-                            if (models) modelsNote.textContent = `共 ${models.length} 个模型`; else loadModels();
-                            body.querySelector('[data-refresh-models]').onclick = loadModels;
-
-                            // 设置项改了立即保存。
-                            body.querySelectorAll('[data-k]').forEach((field) => {
-                                const key = field.dataset.k;
-                                const value = () => (field.type === 'checkbox' ? (field.checked ? '1' : '0') : field.value);
-                                const save = () => {
-                                    ctx.storage.set(key, value());
-                                    renderWidget();
-                                };
-                                if (field.type === 'checkbox') field.checked = get(key) === '1'; else field.value = get(key);
-                                field.addEventListener('input', save);
-                                field.addEventListener('change', save);
-                            });
-
-                            // 配音表：每行一个人物，可以让 AI 挑、自己搜、试听、清掉或删除。
-                            const castBox = body.querySelector('[data-cast]');
-                            const element = (tag, className = '', text = '') => Object.assign(document.createElement(tag), { className, textContent: text });
-                            const smallButton = (label, onClick) => {
-                                const item = element('button', 'modal-secondary-button rph-ui-button', label);
-                                item.type = 'button';
-                                item.onclick = onClick;
-                                return item;
-                            };
-                            const playSample = (url) => {
-                                if (!url) return ctx.ui.toast('这个声音没有试听', { kind: 'info' });
-                                preview.src = url;
-                                preview.play().catch((error) => ctx.ui.toast(`试听放不出来：${error?.message || error}`));
-                            };
-                            const assign = (name, voice) => {
-                                saveCast(readCast().map((person) => (person.name === name ? { name, id: voice.id, title: voice.title, sample: voice.sample } : person)));
-                                renderCast();
-                            };
-                            // 一个候选声音：能试听、选用。
-                            const voiceRow = (name, voice) => {
-                                const row = element('div', 'rph-ui-row');
-                                row.dataset.voiceId = voice.id;
-                                const main = element('div', 'rph-ui-row-main');
-                                main.append(element('strong', '', voice.title), element('div', 'rph-ui-muted', voice.tags.join(' · ')));
-                                const actions = element('div', 'rph-ui-row-actions');
-                                actions.append(smallButton('试听', () => playSample(voice.sample)), smallButton('用这个', () => assign(name, voice)));
-                                row.append(main, actions);
-                                return row;
-                            };
-                            const showVoices = (area, name, voices, note = '') => {
-                                area.replaceChildren();
-                                if (note) area.appendChild(element('p', 'rph-ui-muted', note));
-                                if (!voices.length) area.appendChild(element('p', 'rph-ui-muted', '没找到合适的声音，换个词搜搜。'));
-                                voices.forEach((voice) => area.appendChild(voiceRow(name, voice)));
-                            };
-                            // 自己搜：每页 20 个，写出一共多少个，底下「加载更多」往后翻。
-                            const searchBox = (area, name) => {
-                                area.replaceChildren();
-                                const form = element('div', 'rph-ui-actions');
-                                form.style.marginTop = '0.5rem';
-                                const input = element('input', 'rph-ui-input');
-                                input.placeholder = '搜声音，比如 少女、御姐、大叔';
-                                input.style.cssText = 'flex:1;min-width:0';
-                                const results = element('div');
-                                let page = 0;
-                                const more = smallButton('加载更多', () => load(false));
-                                more.style.marginTop = '0.5rem';
-                                const load = async (fresh) => {
-                                    if (fresh) {
-                                        page = 0;
-                                        results.replaceChildren(element('p', 'rph-ui-muted', '正在搜……'));
-                                    }
-                                    more.disabled = true;
-                                    try {
-                                        const { voices, total } = await searchPage(input.value.trim(), page + 1);
-                                        page += 1;
-                                        if (fresh) results.replaceChildren(element('p', 'rph-ui-muted', total ? `一共 ${total} 个声音` : '没找到声音，换个词搜搜。'));
-                                        more.remove();
-                                        voices.forEach((voice) => results.appendChild(voiceRow(name, voice)));
-                                        if (page * PAGE_SIZE < total) results.appendChild(more);
-                                    } catch (error) {
-                                        results.replaceChildren(element('p', 'rph-ui-muted', error?.message || String(error)));
-                                    } finally {
-                                        more.disabled = false;
-                                    }
-                                };
-                                input.onkeydown = (event) => { if (event.key === 'Enter') load(true); };
-                                form.append(input, smallButton('搜索', () => load(true)));
-                                area.append(form, results);
-                                input.focus();
-                            };
-                            function renderCast() {
-                                castBox.replaceChildren();
-                                const people = readCast();
-                                if (!people.length) castBox.appendChild(element('p', 'rph-ui-muted', '还没有人物。'));
-                                people.forEach((person) => {
-                                    const row = element('div', 'rph-ui-row');
-                                    row.dataset.person = person.name;
-                                    const main = element('div', 'rph-ui-row-main');
-                                    main.append(element('strong', '', person.name), element('div', 'rph-ui-muted', person.id ? person.title || person.id : 'Fish 默认声音'));
-                                    const actions = element('div', 'rph-ui-row-actions');
-                                    const area = element('div');
-                                    area.dataset.pick = person.name;
-                                    area.style.marginBottom = '0.5rem';
-                                    actions.append(smallButton('AI 挑', async () => {
-                                        area.replaceChildren(element('p', 'rph-ui-muted', '正在按世界书找声音……'));
-                                        try {
-                                            const { voices, reason } = await aiPick(person.name);
-                                            if (voices[0]) assign(person.name, voices[0]);
-                                            const fresh = castBox.querySelector(`[data-pick="${CSS.escape(person.name)}"]`);
-                                            showVoices(fresh, person.name, voices, voices[0] ? `已选「${voices[0].title}」。${reason}` : reason);
-                                        } catch (error) {
-                                            area.replaceChildren(element('p', 'rph-ui-muted', `没挑成：${error?.message || error}`));
-                                        }
-                                    }), smallButton('搜索', () => searchBox(area, person.name)));
-                                    if (person.id) actions.append(smallButton('试听', () => playSample(person.sample)));
-                                    actions.append(smallButton('删除', () => {
-                                        saveCast(readCast().filter((item) => item.name !== person.name));
-                                        renderCast();
-                                    }));
-                                    row.append(main, actions);
-                                    castBox.append(row, area);
-                                });
-                            }
-                            renderCast();
-                            const newPerson = body.querySelector('[data-new-person]');
-                            body.querySelector('[data-add-person]').onclick = () => {
-                                const name = newPerson.value.trim();
-                                const people = readCast();
-                                if (!name || name === NARRATOR || people.some((person) => person.name === name)) return;
-                                saveCast([...people, { name }]);
-                                newPerson.value = '';
-                                renderCast();
-                            };
+                    // 分析用的模型：从站点的 AI 接口取模型列表（和 RPH 自己获取模型一样，去掉嵌入模型），这次打开页面只取一次。
+                    const modelSelect = body.querySelector('[data-k="analysisModel"]');
+                    const modelsNote = body.querySelector('[data-models-note]');
+                    const fillModels = () => {
+                        const saved = get('analysisModel');
+                        const list = models || [];
+                        modelSelect.replaceChildren(new Option('跟随 RPH 的分析模型（没设就用主模型）', ''), ...list.map((id) => new Option(id, id)));
+                        if (saved && !list.includes(saved)) modelSelect.appendChild(new Option(`${saved}（不在列表里）`, saved));
+                        modelSelect.value = saved;
+                    };
+                    const loadModels = async () => {
+                        modelsNote.textContent = '正在获取模型列表……';
+                        try {
+                            models = await listModels();
+                            modelsNote.textContent = `共 ${models.length} 个模型`;
+                        } catch (error) {
+                            modelsNote.textContent = `获取模型列表失败：${error?.message || error}`;
                         }
+                        fillModels();
+                    };
+                    fillModels();
+                    if (models) modelsNote.textContent = `共 ${models.length} 个模型`; else loadModels();
+                    body.querySelector('[data-refresh-models]').onclick = loadModels;
+
+                    // 设置项改了立即保存。
+                    body.querySelectorAll('[data-k]').forEach((field) => {
+                        const key = field.dataset.k;
+                        const value = () => (field.type === 'checkbox' ? (field.checked ? '1' : '0') : field.value);
+                        const save = () => {
+                            ctx.storage.set(key, value());
+                            renderWidget();
+                        };
+                        if (field.type === 'checkbox') field.checked = get(key) === '1'; else field.value = get(key);
+                        field.addEventListener('input', save);
+                        field.addEventListener('change', save);
                     });
-                }
-            });
+
+                    // 配音表：每行一个人物，可以让 AI 挑、自己搜、试听、清掉或删除。
+                    const castBox = body.querySelector('[data-cast]');
+                    const element = (tag, className = '', text = '') => Object.assign(document.createElement(tag), { className, textContent: text });
+                    const smallButton = (label, onClick) => {
+                        const item = element('button', 'modal-secondary-button rph-ui-button', label);
+                        item.type = 'button';
+                        item.onclick = onClick;
+                        return item;
+                    };
+                    const playSample = (url) => {
+                        if (!url) return ctx.ui.toast('这个声音没有试听', { kind: 'info' });
+                        preview.src = url;
+                        preview.play().catch((error) => ctx.ui.toast(`试听放不出来：${error?.message || error}`));
+                    };
+                    const assign = (name, voice) => {
+                        saveCast(readCast().map((person) => (person.name === name ? { name, id: voice.id, title: voice.title, sample: voice.sample } : person)));
+                        renderCast();
+                    };
+                    // 一个候选声音：能试听、选用。
+                    const voiceRow = (name, voice) => {
+                        const row = element('div', 'rph-ui-row');
+                        row.dataset.voiceId = voice.id;
+                        const main = element('div', 'rph-ui-row-main');
+                        main.append(element('strong', '', voice.title), element('div', 'rph-ui-muted', voice.tags.join(' · ')));
+                        const actions = element('div', 'rph-ui-row-actions');
+                        actions.append(smallButton('试听', () => playSample(voice.sample)), smallButton('用这个', () => assign(name, voice)));
+                        row.append(main, actions);
+                        return row;
+                    };
+                    const showVoices = (area, name, voices, note = '') => {
+                        area.replaceChildren();
+                        if (note) area.appendChild(element('p', 'rph-ui-muted', note));
+                        if (!voices.length) area.appendChild(element('p', 'rph-ui-muted', '没找到合适的声音，换个词搜搜。'));
+                        voices.forEach((voice) => area.appendChild(voiceRow(name, voice)));
+                    };
+                    // 自己搜：每页 20 个，写出一共多少个，底下「加载更多」往后翻。
+                    const searchBox = (area, name) => {
+                        area.replaceChildren();
+                        const form = element('div', 'rph-ui-actions');
+                        form.style.marginTop = '0.5rem';
+                        const input = element('input', 'rph-ui-input');
+                        input.placeholder = '搜声音，比如 少女、御姐、大叔';
+                        input.style.cssText = 'flex:1;min-width:0';
+                        const results = element('div');
+                        let page = 0;
+                        const more = smallButton('加载更多', () => load(false));
+                        more.style.marginTop = '0.5rem';
+                        const load = async (fresh) => {
+                            if (fresh) {
+                                page = 0;
+                                results.replaceChildren(element('p', 'rph-ui-muted', '正在搜……'));
+                            }
+                            more.disabled = true;
+                            try {
+                                const { voices, total } = await searchPage(input.value.trim(), page + 1);
+                                page += 1;
+                                if (fresh) results.replaceChildren(element('p', 'rph-ui-muted', total ? `一共 ${total} 个声音` : '没找到声音，换个词搜搜。'));
+                                more.remove();
+                                voices.forEach((voice) => results.appendChild(voiceRow(name, voice)));
+                                if (page * PAGE_SIZE < total) results.appendChild(more);
+                            } catch (error) {
+                                results.replaceChildren(element('p', 'rph-ui-muted', error?.message || String(error)));
+                            } finally {
+                                more.disabled = false;
+                            }
+                        };
+                        input.onkeydown = (event) => { if (event.key === 'Enter') load(true); };
+                        form.append(input, smallButton('搜索', () => load(true)));
+                        area.append(form, results);
+                        input.focus();
+                    };
+                    function renderCast() {
+                        castBox.replaceChildren();
+                        const people = readCast();
+                        if (!people.length) castBox.appendChild(element('p', 'rph-ui-muted', '还没有人物。'));
+                        people.forEach((person) => {
+                            const row = element('div', 'rph-ui-row');
+                            row.dataset.person = person.name;
+                            const main = element('div', 'rph-ui-row-main');
+                            main.append(element('strong', '', person.name), element('div', 'rph-ui-muted', person.id ? person.title || person.id : 'Fish 默认声音'));
+                            const actions = element('div', 'rph-ui-row-actions');
+                            const area = element('div');
+                            area.dataset.pick = person.name;
+                            area.style.marginBottom = '0.5rem';
+                            actions.append(smallButton('AI 挑', async () => {
+                                area.replaceChildren(element('p', 'rph-ui-muted', '正在按世界书找声音……'));
+                                try {
+                                    const { voices, reason } = await aiPick(person.name);
+                                    if (voices[0]) assign(person.name, voices[0]);
+                                    const fresh = castBox.querySelector(`[data-pick="${CSS.escape(person.name)}"]`);
+                                    showVoices(fresh, person.name, voices, voices[0] ? `已选「${voices[0].title}」。${reason}` : reason);
+                                } catch (error) {
+                                    area.replaceChildren(element('p', 'rph-ui-muted', `没挑成：${error?.message || error}`));
+                                }
+                            }), smallButton('搜索', () => searchBox(area, person.name)));
+                            if (person.id) actions.append(smallButton('试听', () => playSample(person.sample)));
+                            actions.append(smallButton('删除', () => {
+                                saveCast(readCast().filter((item) => item.name !== person.name));
+                                renderCast();
+                            }));
+                            row.append(main, actions);
+                            castBox.append(row, area);
+                        });
+                    }
+                    renderCast();
+                    const newPerson = body.querySelector('[data-new-person]');
+                    body.querySelector('[data-add-person]').onclick = () => {
+                        const name = newPerson.value.trim();
+                        const people = readCast();
+                        if (!name || name === NARRATOR || people.some((person) => person.name === name)) return;
+                        saveCast([...people, { name }]);
+                        newPerson.value = '';
+                        renderCast();
+                    };
+                };
+                paint();
+                let stopWatch = null;
+                stopWatch = ctx.app.watch(() => characterId(), () => (body.isConnected ? paint() : stopWatch?.()));
+                return stopWatch;
+            }
+            const page = typeof ctx.ui.addPage === 'function' ? ctx.ui.addPage({ label: '角色语音', iconPaths: [TALK_PATH], render: renderSettings }) : null;
+            if (!page) ctx.ui.addSidebarEntry({ label: '角色语音设置', onClick: () => ctx.ui.openPanel({ title: '角色语音', render: renderSettings }) });
+            openSettings = () => (page ? page.open() : ctx.ui.openPanel({ title: '角色语音', render: renderSettings }));
         }
     });
 })();
