@@ -8,7 +8,8 @@ import { chromium, chrome, root, instrument, initializeFixture } from './sync-19
 
 // 快速上传（端到端，真实后端 + 浏览器）：第一次只能完整上传并记下分片布局；之后改几条记录（改、加、删，含一条跨好几个分片的大聊天和本机设置），
 // 「快速上传」只重做改过的分片、只传这些分片，云端内容和完整扫描一模一样，别的设备拉下来和本机一样；
-// 没改动时直接说已是同一份；改动太多或没有布局时自动改成完整上传。需要全局安装的 wrangler。
+// 再逐个试边界：只改本机设置、超过单片硬上限的超大单条记录、散落各处的新增和删除（含别的库、数字键、整表清空）、连着几次快速上传；
+// 没改动时直接说已是同一份；拉取过、改动太多或没有布局时自动改成完整上传。需要全局安装的 wrangler。
 const PASSWORD = 'fast-upload-password';
 const dist = process.env.RPH_PACKAGE_ROOT || path.join(root, 'dist');
 const wrangler = path.join(process.env.APPDATA, 'npm/node_modules/wrangler/bin/wrangler.js');
@@ -47,6 +48,9 @@ for (let i = 0; i < 40; i += 1) {
 }
 // 一条比较大的聊天：序列化后 1MB 多，跨好几个分片（分片目标在测试里调成了 256KB）
 records.push(['rp_hub_chat_role-big', Array.from({ length: 1000 }, (_, m) => message(m, 60))]);
+// 一条超过单片硬上限（8MB）的记录：一整行被切成几块
+const giant = (size) => ({ uuid: 'giant', name: '大卡', avatar: 'x'.repeat(size) });
+records.push(['rp_hub_character_giant', giant(9 * 1024 * 1024)]);
 
 const dumpDevice = (page) => page.evaluate(async () => {
     const read = (name, store) => new Promise((resolve, reject) => {
@@ -63,28 +67,43 @@ const dumpDevice = (page) => page.evaluate(async () => {
         };
     });
     const local = Object.fromEntries(['rp_hub_theme_mode', 'rphub_notes_v1'].map((key) => [key, localStorage.getItem(key)]));
-    return { records: await read('RPHubDB', 'store'), characters: await read('AICharGen', 'characters'), local };
+    return { records: await read('RPHubDB', 'store'), characters: await read('AICharGen', 'characters'), data: await read('RPHubWorkshop', 'data'), local };
 });
-const sortEntries = (entries) => [...entries].sort(([a], [b]) => (a < b ? -1 : 1));
+const sortEntries = (entries) => [...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
 const pullManifest = (page) => page.evaluate(async () => (await fetch('/api/rp-sync', {
     method: 'POST', headers: { 'content-type': 'application/json', 'x-rp-sync-password': localStorage.getItem('rp_hub_sync_password_v1') },
     body: JSON.stringify({ action: 'pull-manifest' })
 })).json());
 // 页面里直接写库：和官方代码、插件写库走的是同一条路，记账挂在 IndexedDB 原型上，一样记得到。
-const write = (page, entries, removals = []) => page.evaluate(([entries, removals]) => new Promise((resolve, reject) => {
-    const request = indexedDB.open('RPHubDB');
-    request.onerror = () => reject(request.error);
-    request.onsuccess = () => {
-        const db = request.result;
-        const tx = db.transaction('store', 'readwrite');
-        for (const [key, value] of entries) tx.objectStore('store').put(value, key);
-        for (const key of removals) tx.objectStore('store').delete(key);
-        tx.oncomplete = () => { db.close(); resolve(); };
+const writeTo = (page, dbName, storeName, entries, removals = [], clear = false) => page.evaluate(async ([dbName, storeName, entries, removals, clear]) => {
+    const db = await fixture.db(dbName, storeName);
+    await new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        if (clear) store.clear();
+        for (const [key, value] of entries) store.put(value, key);
+        for (const key of removals) store.delete(key);
+        tx.oncomplete = resolve;
         tx.onabort = () => reject(tx.error);
-    };
-}), [entries, removals]);
+    });
+    db.close();
+}, [dbName, storeName, entries, removals, clear]);
+const write = (page, entries, removals = []) => writeTo(page, 'RPHubDB', 'store', entries, removals);
 const push = (page, mode) => page.evaluate((value) => api.pushToServer(value).then(() => api.state.statusText), mode);
 const dirtyState = (page) => page.evaluate(() => api.readDirty());
+const fastResult = (status) => {
+    const [, rebuilt, total] = status.match(/^快速上传成功：重做了 (\d+) 个分片，共 (\d+) 个。$/) || [];
+    assert.ok(rebuilt, status);
+    return { rebuilt: Number(rebuilt), total: Number(total) };
+};
+// 云端现在的清单和本地完整扫描一遍的结果比：记录数、总字节数必须一样（分片切法偶尔可以不同）
+const matchesFullScan = async (page) => {
+    const remote = (await pullManifest(page)).remote;
+    const fresh = await page.evaluate(() => api.scanStreamSnapshot('cdc'));
+    assert.equal(fresh.recordCount, remote.recordCount, 'the cloud has exactly as many records as a full scan');
+    assert.equal(fresh.totalBytes, remote.totalBytes, 'the cloud stream is byte-for-byte the size of a full scan');
+    return fresh.checksum === remote.checksum ? 'identical to a full scan' : 'same bytes, cut differently';
+};
 
 let browser;
 try {
@@ -113,62 +132,142 @@ try {
         await page.route('**/api/rp-sync?action=upload-part*', (route) => { parts.count += 1; return route.continue(); });
         await page.goto(origin);
         await initializeFixture(page);
-        // 分片目标调小，几 MB 的测试数据也能分成几十块，看得出只重做了一部分
+        // 分片目标调小，十几 MB 的测试数据也能分成几十块，看得出只重做了一部分
         await page.evaluate(() => { api.CONFIG.chunkSize = 256 * 1024; });
         return page;
     };
+    const pullInto = async (page) => {
+        await Promise.all([page.waitForEvent('load', { timeout: 60_000 }), page.evaluate(() => api.pullFromServer())]);
+        await initializeFixture(page);
+    };
+
+    // 0. 区域边界的算法：相邻区域合并；起点是上一块结束的地方之后（上一块最后那条记录整条都在上一块里就整条跳过），终点是下一块开始的地方。
+    const pageA = await openDevice();
+    const bounds = await pageA.evaluate(() => {
+        const rec = (key) => ({ k: 'rec', d: 'RPHubDB', s: 'store', key });
+        const chunks = [
+            { from: { k: 'ls' }, fromLine: 0, to: rec('a') },
+            { from: rec('c'), fromLine: 0, to: rec('c') },
+            { from: rec('c'), fromLine: 5, to: rec('e') },
+            { from: rec('g'), fromLine: 0, to: { k: 'end' } }
+        ];
+        return api.mergeRegions(chunks, [{ start: 1, end: 1 }, { start: 2, end: 2 }]).map((region) => [region.start, region.end, region.bounds]);
+    });
+    assert.deepEqual(bounds, [[1, 2, {
+        start: { ref: { k: 'rec', d: 'RPHubDB', s: 'store', key: 'a' }, line: Infinity },
+        stop: { ref: { k: 'rec', d: 'RPHubDB', s: 'store', key: 'g' }, line: 0 }
+    }]]);
+    console.log('PASS region edges come from the neighbouring chunks');
 
     // 1. 第一次上传：没有上次的布局，快速上传自动完整扫描；之后布局存在本机，改过的键清空。
-    const pageA = await openDevice();
     await write(pageA, records);
+    await writeTo(pageA, 'AICharGen', 'characters', [[1, { id: 1, name: '生成器角色一' }], [2, { id: 2, name: '生成器角色二' }]]);
+    await writeTo(pageA, 'RPHubWorkshop', 'data', [['demo::note', { text: '插件数据' }]]);
     await pageA.evaluate(() => { localStorage.setItem('rp_hub_theme_mode', 'dark'); localStorage.setItem('rphub_notes_v1', '便签'); });
     assert.ok((await dirtyState(pageA)).tokens.length >= records.length, 'every write is noted before the first upload');
+    // 直接调生成器：起点正好是某个表的结尾（整条都在上一块里），这个表的记录一条都不能再生成；终点是某条记录的第 0 行，那条记录不生成
+    const edgeUnits = await pageA.evaluate(async () => {
+        const run = async (bounds) => {
+            const refs = [];
+            const stats = { recordCount: 0, totalBytes: 0 };
+            for await (const chunk of api.iterateSnapshotChunks(stats, 'cdc', { ...bounds, recordCount: () => 0 })) refs.push(chunk.from, chunk.to);
+            return { refs, records: stats.recordCount };
+        };
+        return {
+            afterStore: await run({ start: { ref: { k: 'se', d: 'RPHubDB', s: 'store' }, line: Infinity } }),
+            beforeSecond: await run({ start: { ref: { k: 'ls' }, line: Infinity }, stop: { ref: { k: 'rec', d: 'RPHubDB', s: 'store', key: 'rp_hub_character_1' }, line: 0 } })
+        };
+    });
+    assert.ok(!edgeUnits.afterStore.refs.some((ref) => ref.d === 'RPHubDB' && ref.k !== 'de'), JSON.stringify(edgeUnits.afterStore.refs));
+    assert.equal(edgeUnits.afterStore.records, 3, 'only the AICharGen and workshop records come after the store end');
+    assert.deepEqual(edgeUnits.beforeSecond.refs.map((ref) => ref.key || ref.k), ['db', 'rp_hub_character_0'], JSON.stringify(edgeUnits.beforeSecond.refs));
+    assert.equal(edgeUnits.beforeSecond.records, 1, 'between the local settings and the second character there is exactly one record');
+    console.log('PASS the generator respects store-end starts and record stops');
     assert.equal(await push(pageA, 'fast'), '上传成功。');
     const fullParts = parts.count;
     const layout = await pageA.evaluate(() => api.loadSyncLayout());
-    assert.ok(layout && layout.chunks.length >= 3, `the layout has ${layout?.chunks.length} chunks`);
+    assert.ok(layout && layout.chunks.length >= 10, `the layout has ${layout?.chunks.length} chunks`);
     assert.equal(layout.chunks.reduce((sum, chunk) => sum + chunk.r, 0), (await pullManifest(pageA)).remote.recordCount, 'per-chunk record counts add up');
-    assert.ok(layout.chunks.some((chunk) => chunk.fl > 0) && !layout.chunks.some((chunk) => chunk.sl), 'chunk edges fall inside chat records, no giant lines');
+    assert.ok(layout.chunks.some((chunk) => chunk.fl > 0), 'some chunk starts inside a chat record');
+    assert.equal(layout.chunks.filter((chunk) => chunk.sl).length, 1, 'the giant record is one line cut into pieces');
     assert.deepEqual(await dirtyState(pageA), { full: false, tokens: [] });
     console.log(`PASS the first upload scans everything and keeps the layout (${layout.chunks.length} chunks, ${fullParts} parts sent)`);
 
     // 2. 改一点：改一条小聊天、加一个角色、删一个角色、往大聊天末尾追加、改一个本机设置。快速上传只重做这些分片。
     const bigChat = records.find(([key]) => key === 'rp_hub_chat_role-big')[1];
     const index = records.find(([key]) => key === 'rp_hub_character_index')[1];
-    const changes = [
-        ['rp_hub_chat_role-7', [...records.find(([key]) => key === 'rp_hub_chat_role-7')[1], message(60, 20)]],
+    await write(pageA, [
+        ['rp_hub_chat_role-7', [...records.find(([key]) => key === 'rp_hub_chat_role-7')[1], message(300, 20)]],
         ['rp_hub_character_new', { uuid: 'role-new', name: '新角色', description: '后来加的' }],
         ['rp_hub_chat_role-new', [message(0, 5)]],
         ['rp_hub_chat_role-big', [...bigChat, message(1000, 60)]],
         ['rp_hub_character_index', { order: [...index.order.filter((id) => id !== 'role-3'), 'role-new'] }]
-    ];
-    await write(pageA, changes, ['rp_hub_character_3', 'rp_hub_chat_role-3']);
+    ], ['rp_hub_character_3', 'rp_hub_chat_role-3']);
     await pageA.evaluate(() => localStorage.setItem('rp_hub_theme_mode', 'light'));
     assert.equal((await dirtyState(pageA)).tokens.length, 7);
     parts.count = 0;
-    const fast = await push(pageA, 'fast');
-    const [, rebuilt, total] = fast.match(/^快速上传成功：重做了 (\d+) 个分片，共 (\d+) 个。$/) || [];
-    assert.ok(rebuilt, fast);
-    assert.ok(Number(rebuilt) < Number(total), `only some chunks are rebuilt: ${rebuilt}/${total}`);
+    const edited = fastResult(await push(pageA, 'fast'));
+    assert.ok(edited.rebuilt < edited.total, `only some chunks are rebuilt: ${edited.rebuilt}/${edited.total}`);
     assert.ok(parts.count > 0 && parts.count < fullParts, `fewer parts than the full upload: ${parts.count} < ${fullParts}`);
     assert.deepEqual(await dirtyState(pageA), { full: false, tokens: [] });
-    const remote = (await pullManifest(pageA)).remote;
-    const fresh = await pageA.evaluate(() => api.scanStreamSnapshot('cdc'));
-    assert.equal(fresh.recordCount, remote.recordCount, 'the cloud has exactly as many records as a full scan');
-    assert.equal(fresh.totalBytes, remote.totalBytes, 'the cloud stream is byte-for-byte the size of a full scan');
-    console.log(`PASS a fast upload rebuilds ${rebuilt} of ${total} chunks and sends ${parts.count} parts${fresh.checksum === remote.checksum ? ', identical to a full scan' : ' (same bytes, cut differently)'}`);
+    console.log(`PASS a fast upload rebuilds ${edited.rebuilt} of ${edited.total} chunks and sends ${parts.count} parts, ${await matchesFullScan(pageA)}`);
 
     // 3. 别的设备拉下来，和本机一模一样。
     const pageB = await openDevice();
-    await Promise.all([pageB.waitForEvent('load', { timeout: 60_000 }), pageB.evaluate(() => api.pullFromServer())]);
-    await initializeFixture(pageB);
+    await pullInto(pageB);
     const [a, b] = await Promise.all([dumpDevice(pageA), dumpDevice(pageB)]);
     assert.deepEqual(sortEntries(b.records), sortEntries(a.records));
+    assert.deepEqual(sortEntries(b.characters), sortEntries(a.characters));
     assert.deepEqual(b.local, a.local);
     assert.ok(!a.records.some(([key]) => key === 'rp_hub_character_3') && a.records.some(([key]) => key === 'rp_hub_character_new'));
     console.log('PASS another device pulls the fast-uploaded data and matches');
 
-    // 4. 没改动：快速上传直接说已是同一份；拉取过的设备下次上传完整扫描；改动太多也完整扫描。
+    // 4. 只改本机设置：只重做头尾那两块。
+    await pageA.evaluate(() => localStorage.setItem('rphub_notes_v1', '新便签'));
+    const localOnly = fastResult(await push(pageA, 'fast'));
+    assert.ok(localOnly.rebuilt <= 2, `only the first and last chunks: ${localOnly.rebuilt}`);
+    console.log(`PASS a local-settings-only change rebuilds ${localOnly.rebuilt} chunks, ${await matchesFullScan(pageA)}`);
+
+    // 5. 超大单条记录：改它旁边的键、改它本身，被切开的那几块都处理对。
+    await write(pageA, [['rp_hub_character_giant2', { uuid: 'giant2', name: '大卡后面' }], ['rp_hub_character_gia', { uuid: 'gia', name: '大卡前面' }]]);
+    const beside = fastResult(await push(pageA, 'fast'));
+    assert.ok(beside.rebuilt < beside.total);
+    console.log(`PASS keys beside the giant record: ${beside.rebuilt}/${beside.total} chunks, ${await matchesFullScan(pageA)}`);
+    await write(pageA, [['rp_hub_character_giant', giant(9 * 1024 * 1024 + 7)]]);
+    const grown = fastResult(await push(pageA, 'fast'));
+    assert.ok(grown.rebuilt < grown.total);
+    console.log(`PASS the giant record itself: ${grown.rebuilt}/${grown.total} chunks, ${await matchesFullScan(pageA)}`);
+
+    // 6. 散落各处的改动：30 个随机新键、10 个删除、别的库的数字键、插件数据，然后整表清空后重填。
+    const scattered = Array.from({ length: 30 }, (_, i) => [`rp_hub_chat_role-${String(Math.floor(i * 1.37) % 40).padStart(2, '0')}x${i}`, [message(i, 3)]]);
+    const removed = Array.from({ length: 10 }, (_, i) => `rp_hub_chat_role-${i * 3 + 1}`);
+    await write(pageA, scattered, removed);
+    await writeTo(pageA, 'AICharGen', 'characters', [[2, { id: 2, name: '生成器角色二改' }], [3, { id: 3, name: '生成器角色三' }]], [1]);
+    await writeTo(pageA, 'RPHubWorkshop', 'data', [['demo::note', { text: '插件数据改' }], ['demo::list', [1, 2, 3]]]);
+    const spread = fastResult(await push(pageA, 'fast'));
+    assert.ok(spread.rebuilt < spread.total);
+    console.log(`PASS scattered edits across stores: ${spread.rebuilt}/${spread.total} chunks, ${await matchesFullScan(pageA)}`);
+    await writeTo(pageA, 'AICharGen', 'characters', [[10, { id: 10, name: '重填' }]], [], true);
+    const cleared = fastResult(await push(pageA, 'fast'));
+    console.log(`PASS a cleared store: ${cleared.rebuilt}/${cleared.total} chunks, ${await matchesFullScan(pageA)}`);
+
+    // 7. 连着快速上传：布局来自上一次快速上传，照样只重做改过的。
+    for (const round of [1, 2]) {
+        await write(pageA, [[`rp_hub_chat_role-${round}`, [message(round, 9)]], [`rp_hub_character_round${round}`, { uuid: `round${round}` }]]);
+        const again = fastResult(await push(pageA, 'fast'));
+        assert.ok(again.rebuilt < again.total);
+        console.log(`PASS fast upload after a fast upload (round ${round}): ${again.rebuilt}/${again.total} chunks, ${await matchesFullScan(pageA)}`);
+    }
+    const pageC = await openDevice();
+    await pullInto(pageC);
+    const [a2, c] = await Promise.all([dumpDevice(pageA), dumpDevice(pageC)]);
+    assert.deepEqual(sortEntries(c.records), sortEntries(a2.records));
+    assert.deepEqual(sortEntries(c.characters), sortEntries(a2.characters));
+    assert.deepEqual(sortEntries(c.data), sortEntries(a2.data));
+    assert.deepEqual(c.local, a2.local);
+    console.log('PASS a third device pulls everything after the chain of fast uploads and matches');
+
+    // 8. 没改动：快速上传直接说已是同一份；拉取过的设备下次上传完整扫描；改动太多、布局丢了也完整扫描。
     assert.equal(await push(pageA, 'fast'), '服务器已是同一份数据，无需重复上传。');
     assert.equal((await dirtyState(pageB)).full, true, 'a pull marks everything as changed');
     await write(pageB, [['rp_hub_settings', { theme: 'light' }]]);
@@ -178,15 +277,11 @@ try {
     await pageA.evaluate(() => localStorage.setItem('rp_hub_sync_dirty_v1:*', '1'));
     assert.equal(await push(pageA, 'fast'), '上传成功。');
     await write(pageA, [['rp_hub_settings', { theme: 'red' }]]);
-    await pageA.evaluate(() => localStorage.removeItem('rp_hub_sync_layout_v1'));
+    await pageA.evaluate(() => api.discardSyncLayout());
     assert.equal(await push(pageA, 'fast'), '上传成功。');
     assert.ok(await pageA.evaluate(() => api.loadSyncLayout()), 'a full upload records the layout again');
     await write(pageA, [['rp_hub_settings', { theme: 'green' }]]);
     assert.match(await push(pageA, 'fast'), /^快速上传成功/);
-    const pageC = await openDevice();
-    await Promise.all([pageC.waitForEvent('load', { timeout: 60_000 }), pageC.evaluate(() => api.pullFromServer())]);
-    await initializeFixture(pageC);
-    assert.deepEqual(sortEntries((await dumpDevice(pageC)).records), sortEntries((await dumpDevice(pageA)).records));
     console.log('PASS unchanged data is not re-uploaded; pulls, too many changes and a missing layout fall back to a full upload');
     assert.deepEqual(pageErrors, []);
 } finally {

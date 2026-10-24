@@ -11,7 +11,7 @@ export const chrome = process.env.CHROME_PATH || chromium.executablePath();
 // 页面测试默认用分发端收录的最新上游（scripts/prepare-test-fixtures.mjs 自动准备）；RPH_UPSTREAM_DIR 可指向其他版本的上游源码目录。
 export const defaultUpstream = path.resolve(process.env.RPH_UPSTREAM_DIR || path.join(root, 'evidence/sync-195/upstream/latest'));
 export const baseline = process.env.RPH_BASELINE_DIR || path.join(root, 'evidence/sync-195/baseline');
-const exposed = ['CONFIG', 'state', 'iterateSnapshotChunks', 'SnapshotChunkWriter',
+const exposed = ['CONFIG', 'state', 'iterateSnapshotLines', 'iterateSnapshotChunks', 'SnapshotChunkWriter',
     'serializeSnapshotLine', 'serializeStreamRecord', 'checkStreamRecordSize', 'scanStreamSnapshot',
     'buildStreamSnapshotChecksumSource', 'sha256', 'sha256Bytes', 'readObjectStoreRecordBatch',
     'openDownloadStagingDb', 'clearDownloadStagingStore', 'writeDownloadStagingChunks', 'readDownloadStagingChunk',
@@ -19,7 +19,7 @@ const exposed = ['CONFIG', 'state', 'iterateSnapshotChunks', 'SnapshotChunkWrite
     'restoreStreamSnapshot', 'StreamSnapshotValidator', 'StreamSnapshotRestorer', 'validateStreamSnapshotManifest',
     'buildDownloadRanges', 'chunkCacheKey', 'retainedChunkKeys', 'pruneDownloadCache', 'runSyncLocked',
     'pullFromServer', 'pushToServer', 'uploadMissingStreamChunks', 'updateButtonState', 'exportForkSnapshot',
-    'buildSnapshotPlan', 'loadSyncLayout', 'readDirty', 'compareUnits', 'iterateSnapshotUnits', 'mergeRegions'];
+    'buildSnapshotPlan', 'loadSyncLayout', 'discardSyncLayout', 'readDirty', 'compareUnits', 'iterateSnapshotUnits', 'mergeRegions'];
 
 export function instrument(source, metrics = false) {
     const exports = exposed.filter((name) => new RegExp(`\\b(?:function\\*?|class|const)\\s+${name}\\b`).test(source));

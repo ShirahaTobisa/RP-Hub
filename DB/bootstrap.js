@@ -68,7 +68,7 @@
     const DIRTY_PREFIX = 'rp_hub_sync_dirty_v1:';
     const DIRTY_FULL = `${DIRTY_PREFIX}*`;
     const DIRTY_LIMIT = 3000;
-    const LAYOUT_KEY = 'rp_hub_sync_layout_v1';
+    const LAYOUT_DB = 'RPHubSyncState'; // 上次上传的分片布局存在这个单独的小库里（不进同步，写它也不记账）
     const dirtyMarked = new Set();
 
     function markDirty(dbName, storeName, key) {
@@ -81,14 +81,13 @@
             if (dirtyMarked.size > DIRTY_LIMIT) localStorage.setItem(DIRTY_FULL, '1');
             else localStorage.setItem(DIRTY_PREFIX + token, '1');
         } catch (_) {
-            // 记不下来就作废上次的布局，下次上传完整扫描
-            try { localStorage.removeItem(LAYOUT_KEY); } catch (__) { /* storage blocked */ }
+            discardSyncLayout(); // 记不下来就作废上次的布局，下次上传完整扫描
         }
     }
 
     function markDirtyAll() {
         dirtyMarked.clear();
-        try { localStorage.setItem(DIRTY_FULL, '1'); } catch (_) { try { localStorage.removeItem(LAYOUT_KEY); } catch (__) { /* storage blocked */ } }
+        try { localStorage.setItem(DIRTY_FULL, '1'); } catch (_) { discardSyncLayout(); }
     }
 
     function readDirty() {
@@ -487,11 +486,11 @@
         });
     }
 
-    // lower（含）到 upper 之间的记录；upperOpen 为 false 时含 upper
-    async function* iterateObjectStoreRecords(db, storeName, lower, upper, upperOpen = true) {
+    // lower 到 upper 之间的记录；lowerOpen / upperOpen 为 true 时不含那一端
+    async function* iterateObjectStoreRecords(db, storeName, lower, upper, upperOpen = true, lowerOpen = false) {
         let hasAfterKey = lower !== undefined;
         let afterKey = lower;
-        let afterOpen = false;
+        let afterOpen = lowerOpen;
 
         while (true) {
             if (hasAfterKey && upper !== undefined) {
@@ -903,11 +902,13 @@
 
                 for (const storeDef of stores) {
                     const storeName = storeDef.name;
-                    if (!behind({ k: 'se', d: dbName, s: storeName }) && !beyond({ k: 'ss', d: dbName, s: storeName })) {
+                    // 记录不逐条判断位置，整表看：表尾不晚于起点，记录都在起点之前；表头不早于终点，记录都在终点之后
+                    if (!(start && compareUnits({ k: 'se', d: dbName, s: storeName }, start.ref) <= 0) && !beyond({ k: 'ss', d: dbName, s: storeName })) {
                         const sameStore = (ref) => ref?.k === 'rec' && ref.d === dbName && ref.s === storeName;
                         const lower = sameStore(start?.ref) ? start.ref.key : undefined;
                         const upper = sameStore(stop?.ref) ? stop.ref.key : undefined;
-                        for await (const record of iterateObjectStoreRecords(db, storeName, lower, upper, !(stop?.line > 0))) {
+                        // 起点那条记录整条都在上一块里时不用再读它
+                        for await (const record of iterateObjectStoreRecords(db, storeName, lower, upper, !(stop?.line > 0), start?.line === Infinity)) {
                             yield unit({ k: 'rec', d: dbName, s: storeName, key: record.key }, recordLines(dbName, storeName, record), 1);
                         }
                     }
@@ -925,6 +926,14 @@
 
         const endRef = { k: 'end' };
         if (inRange(endRef)) yield unit(endRef, [serializeSnapshotLine({ type: 'snapshotEnd', recordCount: bounds.recordCount() })]);
+    }
+
+    // 整个快照一行一行地给（测试用）
+    async function* iterateSnapshotLines(stats) {
+        for await (const unit of iterateSnapshotUnits({ recordCount: () => stats.recordCount })) {
+            stats.recordCount += unit.records;
+            yield* unit.lines;
+        }
     }
 
     function fnv1a32(bytes) {
@@ -1113,12 +1122,28 @@
         return chunks;
     }
 
-    // ---- 上次上传的分片布局（本机 localStorage，不进同步）：每块的校验码、长度、记录数、起止单元 ----
+    // ---- 上次上传的分片布局：每块的校验码、长度、从它开始的记录数、起止单元（和行号）。数据几 GB 时有一两 MB，放 localStorage 会挤占官方页面的额度，所以存 IndexedDB ----
     const layoutSignature = () => JSON.stringify(CONFIG.knownDatabases.map((dbDef) => [dbDef.name, dbDef.stores]));
 
-    function loadSyncLayout() {
+    function layoutStore(mode, operation) {
+        return new Promise((resolve, reject) => {
+            const request = indexedDB.open(LAYOUT_DB, 1);
+            request.onupgradeneeded = () => request.result.createObjectStore('state');
+            request.onerror = () => reject(request.error);
+            request.onblocked = () => reject(new Error('RPHubSyncState blocked'));
+            request.onsuccess = () => {
+                const db = request.result;
+                const tx = db.transaction('state', mode);
+                const result = operation(tx.objectStore('state'));
+                tx.oncomplete = () => { db.close(); resolve(result?.result); };
+                tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
+            };
+        });
+    }
+
+    async function loadSyncLayout() {
         try {
-            const layout = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null');
+            const layout = await layoutStore('readonly', (store) => store.get('layout'));
             if (layout?.v !== 1 || layout.format !== SNAPSHOT_FORMAT || layout.schema !== SNAPSHOT_SCHEMA_VERSION
                 || layout.chunkSize !== CONFIG.chunkSize || layout.dbs !== layoutSignature()
                 || !Array.isArray(layout.chunks) || !layout.chunks.length
@@ -1132,18 +1157,19 @@
         }
     }
 
-    function saveSyncLayout(plan) {
+    function discardSyncLayout() {
+        return layoutStore('readwrite', (store) => store.delete('layout')).catch(() => {});
+    }
+
+    async function saveSyncLayout(plan) {
+        if (plan.profile !== 'cdc') return discardSyncLayout();
         try {
-            if (plan.profile !== 'cdc') {
-                localStorage.removeItem(LAYOUT_KEY);
-                return;
-            }
-            localStorage.setItem(LAYOUT_KEY, JSON.stringify({
+            await layoutStore('readwrite', (store) => store.put({
                 v: 1, format: SNAPSHOT_FORMAT, schema: SNAPSHOT_SCHEMA_VERSION, chunkSize: CONFIG.chunkSize, dbs: layoutSignature(),
                 chunks: plan.chunks.map((chunk) => ({ c: chunk.checksum, l: chunk.length, r: chunk.records, f: chunk.from, fl: chunk.fromLine, t: chunk.to, ...(chunk.splitLine ? { sl: 1 } : {}) }))
-            }));
+            }, 'layout'));
         } catch (_) {
-            try { localStorage.removeItem(LAYOUT_KEY); } catch (__) { /* storage blocked */ }
+            await discardSyncLayout();
         }
     }
 
@@ -1162,12 +1188,17 @@
             if (last && region.start <= last.end + 1) last.end = Math.max(last.end, region.end);
             else merged.push({ start: region.start, end: region.end });
         }
-        const edge = (chunk) => ({ ref: chunk.from, line: chunk.fromLine });
+        // 起点：上一块结束的地方之后——上一块的最后一个单元，跳过它已经写进上一块的那些行（整条都在上一块里就整条跳过），
+        // 这样两块之间新加的键也在区域里。终点：下一块开始的地方——下一块的第一个单元，只到它进下一块之前的那些行。
+        const after = (index) => {
+            const previous = chunks[index - 1];
+            return { ref: previous.to, line: sameUnit(previous.to, chunks[index].from) ? chunks[index].fromLine : Infinity };
+        };
         return merged.map((region) => ({
             ...region,
             bounds: {
-                start: region.start > 0 ? edge(chunks[region.start]) : undefined,
-                stop: region.end < chunks.length - 1 ? edge(chunks[region.end + 1]) : undefined
+                start: region.start > 0 ? after(region.start) : undefined,
+                stop: region.end < chunks.length - 1 ? { ref: chunks[region.end + 1].from, line: chunks[region.end + 1].fromLine } : undefined
             }
         }));
     }
@@ -1228,7 +1259,7 @@
         const dirtyState = readDirty();
         // 本机设置只读这一次，两遍生成共用：页面（比如生图模块）在上传中途写个设置项，不会让两遍对不上
         const localEntries = readLocalStorageSnapshot();
-        const layout = mode === 'fast' ? loadSyncLayout() : null;
+        const layout = mode === 'fast' ? await loadSyncLayout() : null;
         let profile = 'cdc';
         let chunks = null;
         let rebuilt = null;
@@ -3676,8 +3707,8 @@
         const plan = await buildSnapshotPlan(mode);
         const { snapshot } = plan;
         // 云端和本地一致了：记下这次的布局，改过的键清掉
-        const finishPlan = () => {
-            saveSyncLayout(plan);
+        const finishPlan = async () => {
+            await saveSyncLayout(plan);
             clearDirty(plan.consumed, !plan.fast);
         };
 
@@ -3686,7 +3717,7 @@
         if (remoteStatus?.remote?.snapshotFormat === SNAPSHOT_FORMAT
             && Number(remoteStatus.remote.schemaVersion) === SNAPSHOT_SCHEMA_VERSION
             && remoteStatus.remote.checksum === snapshot.checksum) {
-            finishPlan();
+            await finishPlan();
             return '服务器已是同一份数据，无需重复上传。';
         }
         // 云端还是魔改版的数据：这台设备不一定是最新的，先问一句（魔改版的根清单会另存，不会丢）。
@@ -3713,7 +3744,7 @@
                 chunkManifest: snapshot.chunkManifest
             });
             if (uploadSession.alreadyUpToDate) {
-                finishPlan();
+                await finishPlan();
                 return '服务器已是同一份数据，无需重复上传。';
             }
             const missingIndices = Array.isArray(uploadSession.missingIndices)
@@ -3756,7 +3787,7 @@
                 await wait(CONFIG.retryDelayMs);
                 continue;
             }
-            finishPlan();
+            await finishPlan();
             const rebuilt = plan.rebuilt.reduce((sum, region) => sum + region.end - region.start + 1, 0);
             return plan.fast ? `快速上传成功：重做了 ${rebuilt} 个分片，共 ${snapshot.chunkManifest.length} 个。` : '上传成功。';
         }

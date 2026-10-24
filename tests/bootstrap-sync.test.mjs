@@ -60,7 +60,7 @@ assert.match(source, /scanAllChunks\('fixed', localEntries\)/);
 // 快速上传：写库的记账挂在 IndexedDB 原型上，布局和改过的键都只存本机、不进同步
 assert.match(source, /IDBObjectStore\.prototype, 'put'/);
 assert.match(source, /const DIRTY_PREFIX = 'rp_hub_sync_dirty_v1:'/);
-assert.match(source, /const LAYOUT_KEY = 'rp_hub_sync_layout_v1'/);
+assert.match(source, /const LAYOUT_DB = 'RPHubSyncState'/);
 assert.match(source, /!key\.startsWith\('rp_hub_sync_'\)/);
 assert.match(source, /buildStreamSnapshotChecksumSource\(snapshot\)/);
 assert.match(source, /chunkManifest\.map\(\(chunk\) => \[String\(chunk\.checksum\)\.toLowerCase\(\), Number\(chunk\.length\)\]\)/);
