@@ -45,18 +45,23 @@ assert.match(source, /data-action="app-update-check"/);
 assert.match(source, /data-action="app-update-apply"/);
 assert.match(source, /data-action="app-update-rollback"/);
 
-const pullBody = source.slice(source.indexOf('async function performPullSync()'), source.indexOf('async function performPushSync()'));
+const pullBody = source.slice(source.indexOf('async function performPullSync()'), source.indexOf('async function performPushSync('));
 assert.doesNotMatch(pullBody, /flushAppState|RPH_R2_FLUSH_PERSISTENCE|assertPushAllowed/);
 assert.match(pullBody, /location\.reload\(\)/);
 
-const pushBody = source.slice(source.indexOf('async function performPushSync()'), source.indexOf('function attachEvents()'));
+const pushBody = source.slice(source.indexOf('async function performPushSync('), source.indexOf('function attachEvents()'));
 assert.ok(pushBody.indexOf('RPHubCharStore.assertPushAllowed()') < pushBody.indexOf('flushAppState()'),
     'push must reject an unpatched app before flushing it');
-assert.match(source, /async function\* iterateSnapshotLines\(stats\)/);
+assert.match(source, /async function\* iterateSnapshotUnits\(bounds = \{\}\)/);
 assert.match(source, /class SnapshotChunkWriter/);
-assert.match(source, /async function\* iterateSnapshotChunks\(stats, profile = 'cdc'\)/);
-assert.match(source, /async function buildStreamSnapshotManifest\(\)/);
-assert.match(source, /scanStreamSnapshot\('fixed'\)/);
+assert.match(source, /async function\* iterateSnapshotChunks\(stats, profile = 'cdc', bounds = \{\}\)/);
+assert.match(source, /async function buildSnapshotPlan\(mode = 'full'\)/);
+assert.match(source, /scanAllChunks\('fixed', localEntries\)/);
+// 快速上传：写库的记账挂在 IndexedDB 原型上，布局和改过的键都只存本机、不进同步
+assert.match(source, /IDBObjectStore\.prototype, 'put'/);
+assert.match(source, /const DIRTY_PREFIX = 'rp_hub_sync_dirty_v1:'/);
+assert.match(source, /const LAYOUT_KEY = 'rp_hub_sync_layout_v1'/);
+assert.match(source, /!key\.startsWith\('rp_hub_sync_'\)/);
 assert.match(source, /buildStreamSnapshotChecksumSource\(snapshot\)/);
 assert.match(source, /chunkManifest\.map\(\(chunk\) => \[String\(chunk\.checksum\)\.toLowerCase\(\), Number\(chunk\.length\)\]\)/);
 assert.match(source, /action: 'upload-create'/);

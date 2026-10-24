@@ -61,6 +61,90 @@
     const FNV1A_PRIME = 0x01000193;
     const UINT32_RANGE = 0x100000000;
 
+    // ---- 快速上传的记账：哪些键改过了 ----
+    // 写库的地方太多（官方代码、插件、生图模块都写），所以挂在 IndexedDB 的原型上记，谁写都记得到。
+    // 每个改过的键在本机 localStorage 里占一个 rp_hub_sync_dirty_v1: 开头的条目（这个前缀不进同步），上传成功后删掉。
+    // 改过的键太多（比如整站恢复）就记一个「全部」标记，快速上传不比完整扫描省，直接完整扫描。
+    const DIRTY_PREFIX = 'rp_hub_sync_dirty_v1:';
+    const DIRTY_FULL = `${DIRTY_PREFIX}*`;
+    const DIRTY_LIMIT = 3000;
+    const LAYOUT_KEY = 'rp_hub_sync_layout_v1';
+    const dirtyMarked = new Set();
+
+    function markDirty(dbName, storeName, key) {
+        if (!CONFIG.knownDatabases.some((dbDef) => dbDef.name === dbName && dbDef.stores.includes(storeName))) return;
+        const token = JSON.stringify([dbName, storeName, key === undefined ? null : key]);
+        if (dirtyMarked.has(token)) return;
+        dirtyMarked.add(token);
+        try {
+            if (localStorage.getItem(DIRTY_FULL)) return;
+            if (dirtyMarked.size > DIRTY_LIMIT) localStorage.setItem(DIRTY_FULL, '1');
+            else localStorage.setItem(DIRTY_PREFIX + token, '1');
+        } catch (_) {
+            // 记不下来就作废上次的布局，下次上传完整扫描
+            try { localStorage.removeItem(LAYOUT_KEY); } catch (__) { /* storage blocked */ }
+        }
+    }
+
+    function markDirtyAll() {
+        dirtyMarked.clear();
+        try { localStorage.setItem(DIRTY_FULL, '1'); } catch (_) { try { localStorage.removeItem(LAYOUT_KEY); } catch (__) { /* storage blocked */ } }
+    }
+
+    function readDirty() {
+        const tokens = [];
+        let full = false;
+        for (let index = 0; index < localStorage.length; index += 1) {
+            const key = localStorage.key(index);
+            if (!key || !key.startsWith(DIRTY_PREFIX)) continue;
+            if (key === DIRTY_FULL) full = true;
+            else tokens.push(key.slice(DIRTY_PREFIX.length));
+        }
+        return { full: full || tokens.length > DIRTY_LIMIT, tokens };
+    }
+
+    function clearDirty(tokens, full) {
+        for (const token of tokens) {
+            dirtyMarked.delete(token);
+            try { localStorage.removeItem(DIRTY_PREFIX + token); } catch (_) { /* storage blocked */ }
+        }
+        if (full) {
+            dirtyMarked.clear();
+            try { localStorage.removeItem(DIRTY_FULL); } catch (_) { /* storage blocked */ }
+        }
+    }
+
+    (function hookIndexedDbWrites() {
+        if (typeof IDBObjectStore === 'undefined' || typeof IDBCursor === 'undefined' || IDBObjectStore.prototype.put.rphDirtyHooked) return;
+        // 只认字符串和数字键，别的键当成整个表都改过
+        const simpleKey = (key) => (typeof key === 'string' || typeof key === 'number' ? key : undefined);
+        const keyOf = (store, value, key) => {
+            if (key !== undefined) return simpleKey(key);
+            const path = store.keyPath;
+            if (typeof path === 'string' && value && typeof value === 'object') return simpleKey(path.split('.').reduce((node, part) => node?.[part], value));
+            return undefined;
+        };
+        const storeOf = (source) => (typeof IDBIndex !== 'undefined' && source instanceof IDBIndex ? source.objectStore : source);
+        const hook = (proto, name, describe) => {
+            const native = proto[name];
+            const wrapped = function (...args) {
+                try {
+                    const { store, key } = describe(this, args);
+                    markDirty(store.transaction.db.name, store.name, key);
+                } catch (_) { /* 记账出错不影响写入本身 */ }
+                return native.apply(this, args);
+            };
+            wrapped.rphDirtyHooked = true;
+            proto[name] = wrapped;
+        };
+        hook(IDBObjectStore.prototype, 'put', (store, [value, key]) => ({ store, key: keyOf(store, value, key) }));
+        hook(IDBObjectStore.prototype, 'add', (store, [value, key]) => ({ store, key: keyOf(store, value, key) }));
+        hook(IDBObjectStore.prototype, 'delete', (store, [key]) => ({ store, key: simpleKey(key) }));
+        hook(IDBObjectStore.prototype, 'clear', (store) => ({ store, key: undefined }));
+        hook(IDBCursor.prototype, 'update', (cursor) => ({ store: storeOf(cursor.source), key: simpleKey(cursor.primaryKey) }));
+        hook(IDBCursor.prototype, 'delete', (cursor) => ({ store: storeOf(cursor.source), key: simpleKey(cursor.primaryKey) }));
+    })();
+
     const state = {
         syncing: false,
         syncLockHeld: false,
@@ -199,6 +283,7 @@
     let modalProgressValue = null;
     let pullButton = null;
     let pushButton = null;
+    let pushFullButton = null;
     let appUpdateCheckButton = null;
     let appUpdateApplyButton = null;
     let appUpdateRollbackButton = null;
@@ -373,11 +458,14 @@
         return knownNames;
     }
 
-    function readObjectStoreRecordBatch(db, storeName, afterKey, hasAfterKey) {
+    // afterKey 到 upper 之间的记录，按键的顺序；afterOpen / upperOpen 为 true 时不含那一端
+    function readObjectStoreRecordBatch(db, storeName, afterKey, hasAfterKey, afterOpen, upper, upperOpen) {
         return new Promise((resolve, reject) => {
             const tx = db.transaction([storeName], 'readonly');
             const store = tx.objectStore(storeName);
-            const range = hasAfterKey ? IDBKeyRange.lowerBound(afterKey, true) : null;
+            const range = hasAfterKey
+                ? (upper === undefined ? IDBKeyRange.lowerBound(afterKey, afterOpen) : IDBKeyRange.bound(afterKey, upper, afterOpen, upperOpen))
+                : (upper === undefined ? null : IDBKeyRange.upperBound(upper, upperOpen));
             const records = [];
             const request = store.openCursor(range);
 
@@ -399,15 +487,22 @@
         });
     }
 
-    async function* iterateObjectStoreRecords(db, storeName) {
-        let hasAfterKey = false;
-        let afterKey;
+    // lower（含）到 upper 之间的记录；upperOpen 为 false 时含 upper
+    async function* iterateObjectStoreRecords(db, storeName, lower, upper, upperOpen = true) {
+        let hasAfterKey = lower !== undefined;
+        let afterKey = lower;
+        let afterOpen = false;
 
         while (true) {
-            const batch = await readObjectStoreRecordBatch(db, storeName, afterKey, hasAfterKey);
+            if (hasAfterKey && upper !== undefined) {
+                const order = indexedDB.cmp(afterKey, upper);
+                if (order > 0 || (order === 0 && (afterOpen || upperOpen))) return;
+            }
+            const batch = await readObjectStoreRecordBatch(db, storeName, afterKey, hasAfterKey, afterOpen, upper, upperOpen);
             for (const record of batch.records) yield record;
             if (batch.done) return;
             hasAfterKey = true;
+            afterOpen = true;
             afterKey = batch.lastKey;
             await wait(0);
         }
@@ -730,24 +825,72 @@
         }
     }
 
-    async function* iterateSnapshotLines(stats) {
-        yield serializeSnapshotLine({
-            type: 'snapshot',
-            format: SNAPSHOT_FORMAT,
-            schemaVersion: SNAPSHOT_SCHEMA_VERSION,
-            workshopVersion: 1
-        });
+    // ---- 快照流按「单元」生成 ----
+    // 单元：本机设置一段（ls）、每个库的开头（db）、每条记录（rec）、每个表的结尾（se）、每个库的结尾（de）、整个快照的结尾（end）。
+    // 单元在流里的先后顺序固定：本机设置最前，然后按 CONFIG.knownDatabases 的顺序每个库，库里按表、表里按键的顺序。
+    // 快速上传只重新生成改过的单元附近，所以要能按位置比较单元，也要能只生成两个位置之间的单元。
+    function unitOrder(ref) {
+        if (ref.k === 'ls') return [-1, 0, 0];
+        if (ref.k === 'end') return [Infinity, 0, 0];
+        const dbIndex = CONFIG.knownDatabases.findIndex((dbDef) => dbDef.name === ref.d);
+        if (ref.k === 'db') return [dbIndex, -1, 0];
+        if (ref.k === 'de') return [dbIndex, Infinity, 0];
+        const storeIndex = CONFIG.knownDatabases[dbIndex]?.stores.indexOf(ref.s) ?? -1;
+        // 表里：ss（表的开头，只用来比较）< 记录 < se（表的结尾）
+        if (ref.k === 'ss') return [dbIndex, storeIndex, -1];
+        if (ref.k === 'se') return [dbIndex, storeIndex, 1];
+        return [dbIndex, storeIndex, 0, ref.key];
+    }
 
-        for (const entry of readLocalStorageSnapshot()) {
-            stats.recordCount += 1;
-            yield serializeSnapshotLine({ type: 'localStorage', key: entry.key, value: entry.value });
+    function compareUnits(a, b) {
+        const x = unitOrder(a);
+        const y = unitOrder(b);
+        for (let index = 0; index < 3; index += 1) {
+            if (x[index] !== y[index]) return x[index] < y[index] ? -1 : 1;
         }
-        yield serializeSnapshotLine({ type: 'localStorageEnd' });
+        return x.length === 4 && y.length === 4 ? indexedDB.cmp(x[3], y[3]) : 0;
+    }
 
-        const dbNames = await listIndexedDbNames();
-        for (const dbName of dbNames) {
+    function recordLines(dbName, storeName, record) {
+        if (!Array.isArray(record.value)) {
+            return [serializeStreamRecord({ type: 'record', database: dbName, store: storeName, key: record.key }, record.key, record.value)];
+        }
+        const lines = [serializeSnapshotLine({ type: 'recordArrayStart', database: dbName, store: storeName, key: record.key, length: record.value.length })];
+        for (let index = 0; index < record.value.length; index += 1) {
+            const value = Object.prototype.hasOwnProperty.call(record.value, index) ? record.value[index] : null;
+            lines.push(serializeStreamRecord({ type: 'recordArrayItem', database: dbName, store: storeName, index }, `${String(record.key)}[${index}]`, value));
+        }
+        lines.push(serializeSnapshotLine({ type: 'recordArrayEnd', database: dbName, store: storeName }));
+        return lines;
+    }
+
+    // 生成 start（含，可以从这个单元的第 line 行起）到 stop（不含；stop.line > 0 时含 stop 单元的前几行）之间的单元；都不传就是整个快照。
+    // 结尾那行要写记录总数，由 recordCount() 给。只取了一部分行的单元，firstLine 记它从整个单元的第几行起。
+    async function* iterateSnapshotUnits(bounds = {}) {
+        const { start, stop } = bounds;
+        const behind = (ref) => Boolean(start) && compareUnits(ref, start.ref) < 0;
+        const beyond = (ref) => Boolean(stop) && (compareUnits(ref, stop.ref) > 0 || (stop.line === 0 && compareUnits(ref, stop.ref) === 0));
+        const inRange = (ref) => !behind(ref) && !beyond(ref);
+        const unit = (ref, lines, records = 0) => {
+            const firstLine = start && compareUnits(ref, start.ref) === 0 ? start.line : 0;
+            const lastLine = stop && compareUnits(ref, stop.ref) === 0 ? stop.line : lines.length;
+            // 记录数算在它第一行所在的那一块上：从中间开始的单元这里不算
+            return { ref, firstLine, lines: lines.slice(firstLine, lastLine), records: firstLine > 0 ? 0 : records };
+        };
+
+        const localRef = { k: 'ls' };
+        if (inRange(localRef)) {
+            const entries = bounds.localEntries || readLocalStorageSnapshot();
+            yield unit(localRef, [
+                serializeSnapshotLine({ type: 'snapshot', format: SNAPSHOT_FORMAT, schemaVersion: SNAPSHOT_SCHEMA_VERSION, workshopVersion: 1 }),
+                ...entries.map((entry) => serializeSnapshotLine({ type: 'localStorage', key: entry.key, value: entry.value })),
+                serializeSnapshotLine({ type: 'localStorageEnd' })
+            ], entries.length);
+        }
+
+        for (const dbName of await listIndexedDbNames()) {
             const knownDb = CONFIG.knownDatabases.find((dbDef) => dbDef.name === dbName);
-            if (!knownDb) continue;
+            if (!knownDb || behind({ k: 'de', d: dbName }) || beyond({ k: 'db', d: dbName })) continue;
 
             let db = null;
             try {
@@ -755,47 +898,24 @@
                 const storeNames = knownDb.stores.filter((name) => db.objectStoreNames.contains(name));
                 if (storeNames.length === 0) continue;
                 const stores = readStoreDefinitions(db, storeNames);
-                yield serializeSnapshotLine({ type: 'database', name: dbName, version: db.version, stores });
+                const dbRef = { k: 'db', d: dbName };
+                if (inRange(dbRef)) yield unit(dbRef, [serializeSnapshotLine({ type: 'database', name: dbName, version: db.version, stores })]);
 
                 for (const storeDef of stores) {
-                    for await (const record of iterateObjectStoreRecords(db, storeDef.name)) {
-                        stats.recordCount += 1;
-                        if (Array.isArray(record.value)) {
-                            yield serializeSnapshotLine({
-                                type: 'recordArrayStart',
-                                database: dbName,
-                                store: storeDef.name,
-                                key: record.key,
-                                length: record.value.length
-                            });
-                            for (let index = 0; index < record.value.length; index += 1) {
-                                const value = Object.prototype.hasOwnProperty.call(record.value, index)
-                                    ? record.value[index]
-                                    : null;
-                                yield serializeStreamRecord({
-                                    type: 'recordArrayItem',
-                                    database: dbName,
-                                    store: storeDef.name,
-                                    index
-                                }, `${String(record.key)}[${index}]`, value);
-                            }
-                            yield serializeSnapshotLine({
-                                type: 'recordArrayEnd',
-                                database: dbName,
-                                store: storeDef.name
-                            });
-                        } else {
-                            yield serializeStreamRecord({
-                                type: 'record',
-                                database: dbName,
-                                store: storeDef.name,
-                                key: record.key
-                            }, record.key, record.value);
+                    const storeName = storeDef.name;
+                    if (!behind({ k: 'se', d: dbName, s: storeName }) && !beyond({ k: 'ss', d: dbName, s: storeName })) {
+                        const sameStore = (ref) => ref?.k === 'rec' && ref.d === dbName && ref.s === storeName;
+                        const lower = sameStore(start?.ref) ? start.ref.key : undefined;
+                        const upper = sameStore(stop?.ref) ? stop.ref.key : undefined;
+                        for await (const record of iterateObjectStoreRecords(db, storeName, lower, upper, !(stop?.line > 0))) {
+                            yield unit({ k: 'rec', d: dbName, s: storeName, key: record.key }, recordLines(dbName, storeName, record), 1);
                         }
                     }
-                    yield serializeSnapshotLine({ type: 'storeEnd', database: dbName, store: storeDef.name });
+                    const storeEndRef = { k: 'se', d: dbName, s: storeName };
+                    if (inRange(storeEndRef)) yield unit(storeEndRef, [serializeSnapshotLine({ type: 'storeEnd', database: dbName, store: storeName })]);
                 }
-                yield serializeSnapshotLine({ type: 'databaseEnd', name: dbName });
+                const dbEndRef = { k: 'de', d: dbName };
+                if (inRange(dbEndRef)) yield unit(dbEndRef, [serializeSnapshotLine({ type: 'databaseEnd', name: dbName })]);
             } catch (error) {
                 throw new Error(`读取本地数据库 ${dbName} 失败，已取消上传以避免云端数据缺失。`, { cause: error });
             } finally {
@@ -803,7 +923,8 @@
             }
         }
 
-        yield serializeSnapshotLine({ type: 'snapshotEnd', recordCount: stats.recordCount });
+        const endRef = { k: 'end' };
+        if (inRange(endRef)) yield unit(endRef, [serializeSnapshotLine({ type: 'snapshotEnd', recordCount: bounds.recordCount() })]);
     }
 
     function fnv1a32(bytes) {
@@ -906,39 +1027,63 @@
         }
     }
 
-    async function* iterateSnapshotChunks(stats, profile = 'cdc') {
+    // 把单元切成分片。每一块记下它从哪个单元开始（from）、到哪个单元结束（to）、有多少条记录从它开始（records）：
+    // 快速上传沿用没改的块时，靠这些找改过的键在哪一块、把没改的块的记录数加进总数。bounds 见 iterateSnapshotUnits。
+    async function* iterateSnapshotChunks(stats, profile = 'cdc', bounds = {}) {
         const hardMaxBytes = profile === 'fixed' ? LEGACY_FIXED_CHUNK_BYTES : CDC_HARD_MAX_BYTES;
         const writer = new SnapshotChunkWriter(profile, CONFIG.chunkSize, hardMaxBytes);
         let index = 0;
+        let chunkStart = 0;
+        let from = null; // 当前缓冲区第一条线所属的单元和它在单元里的行号
+        let lastRef = null;
+        const starts = []; // 还没归到哪一块的记录起点：[字节位置, 记录数]
+        const emit = (bytes, ref, lineStart, lineIndex) => {
+            if (bytes.byteLength <= 0 || bytes.byteLength > hardMaxBytes) throw new CdcChunkingError('CDC 生成了越界块。');
+            const chunkEnd = chunkStart + bytes.byteLength;
+            let records = 0;
+            while (starts.length && starts[0][0] < chunkEnd) records += starts.shift()[1];
+            const chunk = {
+                index, bytes, length: bytes.byteLength, records,
+                from: from ? from.ref : ref, fromLine: from ? from.line : lineIndex,
+                to: chunkEnd <= lineStart ? lastRef : ref,
+                splitLine: chunkEnd > lineStart && chunkEnd < writer.totalBytes // 一条超大的线被切开了，后面的块接着这条线
+            };
+            chunkStart = chunkEnd;
+            from = chunkEnd < writer.totalBytes ? { ref, line: lineIndex } : null; // 这条线还有字节没进块，下一块从它开始
+            index += 1;
+            if (index > 10_000) throw new CdcChunkingError('CDC 块数量超过10000。');
+            return chunk;
+        };
 
-        for await (const line of iterateSnapshotLines(stats)) {
-            let completed;
-            try {
-                completed = writer.appendLine(line);
-            } catch (error) {
-                if (profile === 'cdc') {
-                    if (error instanceof CdcChunkingError) throw error;
-                    throw new CdcChunkingError('CDC 切块内部异常。', { cause: error });
+        for await (const unit of iterateSnapshotUnits({ ...bounds, recordCount: bounds.recordCount || (() => stats.recordCount) })) {
+            if (unit.records) starts.push([writer.totalBytes, unit.records]);
+            stats.recordCount += unit.records;
+            for (const [offset, line] of unit.lines.entries()) {
+                const lineIndex = unit.firstLine + offset;
+                const lineStart = writer.totalBytes;
+                if (from === null) from = { ref: unit.ref, line: lineIndex };
+                let completed;
+                try {
+                    completed = writer.appendLine(line);
+                } catch (error) {
+                    if (profile === 'cdc' && !(error instanceof CdcChunkingError)) throw new CdcChunkingError('CDC 切块内部异常。', { cause: error });
+                    throw error;
                 }
-                throw error;
-            }
-            for (const bytes of completed) {
-                if (bytes.byteLength <= 0 || bytes.byteLength > hardMaxBytes) {
-                    throw new CdcChunkingError('CDC 生成了越界块。');
+                for (const bytes of completed) {
+                    const chunk = emit(bytes, unit.ref, lineStart, lineIndex);
+                    yield { ...chunk, checksum: await sha256Bytes(bytes) };
+                    await wait(0);
                 }
-                yield { index, bytes, checksum: await sha256Bytes(bytes), length: bytes.byteLength };
-                index += 1;
-                if (index > 10_000) throw new CdcChunkingError('CDC 块数量超过10000。');
-                await wait(0);
+                lastRef = unit.ref;
             }
         }
 
         for (const bytes of writer.finish()) {
-            yield { index, bytes, checksum: await sha256Bytes(bytes), length: bytes.byteLength };
-            index += 1;
+            const chunk = emit(bytes, lastRef, writer.totalBytes, 0);
+            yield { ...chunk, checksum: await sha256Bytes(bytes) };
         }
         stats.totalBytes = writer.totalBytes;
-        if (index === 0) throw new CdcChunkingError('本地快照没有生成有效分片。');
+        if (index === 0 && bounds.start === undefined && bounds.stop === undefined) throw new CdcChunkingError('本地快照没有生成有效分片。');
     }
 
     function buildStreamSnapshotChecksumSource(snapshot) {
@@ -951,37 +1096,193 @@
         ]);
     }
 
-    async function scanStreamSnapshot(profile = 'cdc') {
+    function describeChunk(chunk) {
+        return { checksum: chunk.checksum, length: chunk.length, records: chunk.records, from: chunk.from, fromLine: chunk.fromLine, to: chunk.to, splitLine: chunk.splitLine };
+    }
+
+    async function scanAllChunks(profile, localEntries) {
         const stats = { recordCount: 0, totalBytes: 0 };
-        const chunkManifest = [];
-        for await (const chunk of iterateSnapshotChunks(stats, profile)) {
-            chunkManifest.push({ index: chunk.index, checksum: chunk.checksum, length: chunk.length });
-            updateProgress(16, `正在扫描本地数据，已处理 ${chunkManifest.length} 个分片...`);
+        const chunks = [];
+        for await (const chunk of iterateSnapshotChunks(stats, profile, { localEntries })) {
+            chunks.push(describeChunk(chunk));
+            updateProgress(16, `正在扫描本地数据，已处理 ${chunks.length} 个分片...`);
         }
-        const totalBytes = chunkManifest.reduce((sum, chunk) => sum + chunk.length, 0);
-        if (totalBytes !== stats.totalBytes || chunkManifest.length > 10_000) {
+        if (chunks.reduce((sum, chunk) => sum + chunk.length, 0) !== stats.totalBytes || chunks.length > 10_000) {
             throw new CdcChunkingError('CDC 块集合无法无损重组。');
+        }
+        return chunks;
+    }
+
+    // ---- 上次上传的分片布局（本机 localStorage，不进同步）：每块的校验码、长度、记录数、起止单元 ----
+    const layoutSignature = () => JSON.stringify(CONFIG.knownDatabases.map((dbDef) => [dbDef.name, dbDef.stores]));
+
+    function loadSyncLayout() {
+        try {
+            const layout = JSON.parse(localStorage.getItem(LAYOUT_KEY) || 'null');
+            if (layout?.v !== 1 || layout.format !== SNAPSHOT_FORMAT || layout.schema !== SNAPSHOT_SCHEMA_VERSION
+                || layout.chunkSize !== CONFIG.chunkSize || layout.dbs !== layoutSignature()
+                || !Array.isArray(layout.chunks) || !layout.chunks.length
+                || layout.chunks.some((chunk) => typeof chunk.c !== 'string' || !Number.isInteger(chunk.l) || !Number.isInteger(chunk.r)
+                    || !chunk.f?.k || !Number.isInteger(chunk.fl) || !chunk.t?.k)) {
+                return null;
+            }
+            return layout;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function saveSyncLayout(plan) {
+        try {
+            if (plan.profile !== 'cdc') {
+                localStorage.removeItem(LAYOUT_KEY);
+                return;
+            }
+            localStorage.setItem(LAYOUT_KEY, JSON.stringify({
+                v: 1, format: SNAPSHOT_FORMAT, schema: SNAPSHOT_SCHEMA_VERSION, chunkSize: CONFIG.chunkSize, dbs: layoutSignature(),
+                chunks: plan.chunks.map((chunk) => ({ c: chunk.checksum, l: chunk.length, r: chunk.records, f: chunk.from, fl: chunk.fromLine, t: chunk.to, ...(chunk.splitLine ? { sl: 1 } : {}) }))
+            }));
+        } catch (_) {
+            try { localStorage.removeItem(LAYOUT_KEY); } catch (__) { /* storage blocked */ }
+        }
+    }
+
+    // 要重做的块连成区域，相邻的合并。区域的边界是两头那两块没改的块的起点（单元 + 行号）：没改的记录跨块时只重做落在区域里的那几行，
+    // 不牵连邻居；改过的记录跨了几块就整条重做；一条超大的线被切成几块的，整条重做。
+    function mergeRegions(chunks, list, isDirty = () => false) {
+        const sameUnit = (a, b) => Boolean(a && b) && a.k === b.k && compareUnits(a, b) === 0;
+        const extended = list.map(({ start, end }) => {
+            while (start > 0 && (chunks[start - 1].splitLine || (sameUnit(chunks[start - 1].to, chunks[start].from) && isDirty(chunks[start].from)))) start -= 1;
+            while (end < chunks.length - 1 && (chunks[end].splitLine || (sameUnit(chunks[end].to, chunks[end + 1].from) && isDirty(chunks[end].to)))) end += 1;
+            return { start, end };
+        }).sort((a, b) => a.start - b.start);
+        const merged = [];
+        for (const region of extended) {
+            const last = merged[merged.length - 1];
+            if (last && region.start <= last.end + 1) last.end = Math.max(last.end, region.end);
+            else merged.push({ start: region.start, end: region.end });
+        }
+        const edge = (chunk) => ({ ref: chunk.from, line: chunk.fromLine });
+        return merged.map((region) => ({
+            ...region,
+            bounds: {
+                start: region.start > 0 ? edge(chunks[region.start]) : undefined,
+                stop: region.end < chunks.length - 1 ? edge(chunks[region.end + 1]) : undefined
+            }
+        }));
+    }
+
+    // 快速上传：按上次的布局找出改过的键在哪些块，只重新生成这些区域；其他块沿用上次的校验码。
+    // 本机设置所在的第一块和写着记录总数的最后一块每次都重做。
+    async function rebuildDirtyRegions(layout, tokens, localEntries) {
+        const old = layout.chunks.map((chunk) => ({ checksum: chunk.c, length: chunk.l, records: chunk.r, from: chunk.f, fromLine: chunk.fl, to: chunk.t, splitLine: chunk.sl === 1 }));
+        const marked = new Set([0, old.length - 1]);
+        const dirtyStores = new Set();
+        for (const token of tokens) {
+            let parsed;
+            try { parsed = JSON.parse(token); } catch (_) { continue; }
+            const [dbName, storeName, key] = Array.isArray(parsed) ? parsed : [];
+            if (typeof dbName !== 'string' || typeof storeName !== 'string') continue;
+            if (key === null || key === undefined) {
+                dirtyStores.add(`${dbName}\n${storeName}`);
+                const start = { k: 'ss', d: dbName, s: storeName };
+                const end = { k: 'se', d: dbName, s: storeName };
+                old.forEach((chunk, index) => { if (compareUnits(chunk.to, start) >= 0 && compareUnits(chunk.from, end) <= 0) marked.add(index); });
+            } else {
+                const ref = { k: 'rec', d: dbName, s: storeName, key };
+                const index = old.findIndex((chunk) => compareUnits(chunk.to, ref) >= 0);
+                marked.add(index === -1 ? old.length - 1 : index);
+            }
+        }
+        const dirtyTokens = new Set(tokens);
+        const isDirty = (ref) => ref.k === 'ls'
+            || (ref.k === 'rec' && (dirtyStores.has(`${ref.d}\n${ref.s}`) || dirtyTokens.has(JSON.stringify([ref.d, ref.s, ref.key]))));
+        const regions = mergeRegions(old, [...marked].map((index) => ({ start: index, end: index })), isDirty);
+        const inRegion = (index) => regions.some((region) => index >= region.start && index <= region.end);
+        const cleanRecords = old.reduce((sum, chunk, index) => sum + (inRegion(index) ? 0 : chunk.records), 0);
+        const chunks = [];
+        const rebuilt = [];
+        let generated = 0;
+        let cursor = 0;
+        for (const region of regions) {
+            while (cursor < region.start) chunks.push(old[cursor++]);
+            const stats = { recordCount: 0, totalBytes: 0 };
+            const start = chunks.length;
+            const bounds = { ...region.bounds, localEntries, recordCount: () => cleanRecords + generated + stats.recordCount };
+            for await (const chunk of iterateSnapshotChunks(stats, 'cdc', bounds)) {
+                chunks.push(describeChunk(chunk));
+                updateProgress(16, `正在重做改过的分片，已处理 ${chunks.length - start} 个...`);
+            }
+            generated += stats.recordCount;
+            if (chunks.length > start) rebuilt.push({ start, end: chunks.length - 1 });
+            cursor = region.end + 1;
+        }
+        while (cursor < old.length) chunks.push(old[cursor++]);
+        if (chunks.length > 10_000) throw new CdcChunkingError('CDC 块数量超过10000。');
+        return { chunks, rebuilt };
+    }
+
+    // 整理出这次要上传的东西：清单、每块的描述、要生成的区域。mode 是 fast（只重做改过的）或 full（全部重新扫描）。
+    // 没有上次的布局、改动太多或快速路径出错时自动改成 full。
+    async function buildSnapshotPlan(mode = 'full') {
+        const dirtyState = readDirty();
+        // 本机设置只读这一次，两遍生成共用：页面（比如生图模块）在上传中途写个设置项，不会让两遍对不上
+        const localEntries = readLocalStorageSnapshot();
+        const layout = mode === 'fast' ? loadSyncLayout() : null;
+        let profile = 'cdc';
+        let chunks = null;
+        let rebuilt = null;
+        let reason = '';
+        if (mode === 'fast') {
+            if (!layout) reason = '还没有上次上传的记录，这次完整扫描一遍。';
+            else if (dirtyState.full) reason = '改动太多，这次完整扫描一遍。';
+            else {
+                try {
+                    ({ chunks, rebuilt } = await rebuildDirtyRegions(layout, dirtyState.tokens, localEntries));
+                } catch (error) {
+                    if (!(error instanceof CdcChunkingError)) throw error;
+                    console.warn('[RP Sync] 快速上传切块失败，改为完整扫描。', error);
+                    reason = '快速上传出了岔子，这次完整扫描一遍。';
+                }
+            }
+            if (reason) updateProgress(16, reason);
+        }
+        if (!chunks) {
+            try {
+                chunks = await scanAllChunks('cdc', localEntries);
+            } catch (error) {
+                if (!(error instanceof CdcChunkingError)) throw error;
+                console.warn('[RP Sync] CDC 切块失败，回退旧定长切块。', error);
+                profile = 'fixed';
+                chunks = await scanAllChunks('fixed', localEntries);
+            }
+            rebuilt = [{ start: 0, end: chunks.length - 1 }];
         }
         const snapshot = {
             snapshotFormat: SNAPSHOT_FORMAT,
             schemaVersion: SNAPSHOT_SCHEMA_VERSION,
             chunkerProfile: profile === 'cdc' ? CHUNKER_PROFILE : undefined,
-            recordCount: stats.recordCount,
-            totalBytes: stats.totalBytes,
-            chunkManifest
+            recordCount: chunks.reduce((sum, chunk) => sum + chunk.records, 0),
+            totalBytes: chunks.reduce((sum, chunk) => sum + chunk.length, 0),
+            chunkManifest: chunks.map((chunk, index) => ({ index, checksum: chunk.checksum, length: chunk.length }))
+        };
+        snapshot.checksum = await sha256(buildStreamSnapshotChecksumSource(snapshot));
+        // consumed：这次扫描之前记下的改过的键，上传成功后清掉（上传期间新写的留到下次）
+        return { snapshot, chunks, rebuilt, profile, localEntries, fast: Boolean(layout) && !reason, consumed: dirtyState.tokens };
+    }
+
+    async function scanStreamSnapshot(profile = 'cdc') {
+        const chunks = await scanAllChunks(profile);
+        const snapshot = {
+            snapshotFormat: SNAPSHOT_FORMAT,
+            schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+            chunkerProfile: profile === 'cdc' ? CHUNKER_PROFILE : undefined,
+            recordCount: chunks.reduce((sum, chunk) => sum + chunk.records, 0),
+            totalBytes: chunks.reduce((sum, chunk) => sum + chunk.length, 0),
+            chunkManifest: chunks.map((chunk, index) => ({ index, checksum: chunk.checksum, length: chunk.length }))
         };
         snapshot.checksum = await sha256(buildStreamSnapshotChecksumSource(snapshot));
         return snapshot;
-    }
-
-    async function buildStreamSnapshotManifest() {
-        try {
-            return await scanStreamSnapshot('cdc');
-        } catch (error) {
-            if (!(error instanceof CdcChunkingError)) throw error;
-            console.warn('[RP Sync] CDC 切块失败，回退旧定长切块。', error);
-            return scanStreamSnapshot('fixed');
-        }
     }
 
     function assertChunkMatchesManifest(chunk, expected) {
@@ -993,13 +1294,15 @@
         }
     }
 
-    async function uploadMissingStreamChunks(snapshot, missingIndices) {
+    // 第二遍：只重新生成要传的块所在的区域（快速上传就是改过的区域，加上服务器碰巧没有的沿用块），边生成边上传；生成出来的必须和第一遍一样。
+    async function uploadMissingStreamChunks(plan, missingIndices) {
         const missing = new Set(missingIndices);
-        const stats = { recordCount: 0, totalBytes: 0 };
-        const profile = snapshot.chunkerProfile === CHUNKER_PROFILE ? 'cdc' : 'fixed';
+        const { snapshot } = plan;
+        const extra = [...missing].filter((index) => !plan.rebuilt.some((region) => index >= region.start && index <= region.end))
+            .map((index) => ({ start: index, end: index }));
+        const regions = mergeRegions(plan.chunks, [...plan.rebuilt, ...extra]);
         let pendingUploads = [];
         let completedUploads = 0;
-        let scannedChunks = 0;
 
         const flushUploads = async () => {
             if (pendingUploads.length === 0) return;
@@ -1007,24 +1310,25 @@
             pendingUploads = [];
         };
 
-        for await (const chunk of iterateSnapshotChunks(stats, profile)) {
-            assertChunkMatchesManifest(chunk, snapshot.chunkManifest[chunk.index]);
-            scannedChunks += 1;
-            if (!missing.has(chunk.index)) continue;
-            pendingUploads.push(postUploadPart(chunk, snapshot.schemaVersion === GZIP_SCHEMA_VERSION).then(() => {
-                completedUploads += 1;
-                const percent = missing.size === 0 ? 100 : Math.round((completedUploads / missing.size) * 100);
-                updateProgress(36 + Math.round(percent * 0.52), `正在上传服务器数据 ${percent}%...`);
-            }));
-            if (pendingUploads.length >= CONFIG.uploadPartConcurrency) await flushUploads();
+        for (const region of regions) {
+            if (![...missing].some((index) => index >= region.start && index <= region.end)) continue;
+            const stats = { recordCount: 0, totalBytes: 0 };
+            let index = region.start;
+            for await (const chunk of iterateSnapshotChunks(stats, plan.profile, { ...region.bounds, localEntries: plan.localEntries, recordCount: () => snapshot.recordCount })) {
+                assertChunkMatchesManifest({ index, length: chunk.length, checksum: chunk.checksum }, snapshot.chunkManifest[index]);
+                if (missing.has(index)) {
+                    pendingUploads.push(postUploadPart({ ...chunk, index }, snapshot.schemaVersion === GZIP_SCHEMA_VERSION).then(() => {
+                        completedUploads += 1;
+                        const percent = missing.size === 0 ? 100 : Math.round((completedUploads / missing.size) * 100);
+                        updateProgress(36 + Math.round(percent * 0.52), `正在上传服务器数据 ${percent}%...`);
+                    }));
+                    if (pendingUploads.length >= CONFIG.uploadPartConcurrency) await flushUploads();
+                }
+                index += 1;
+            }
+            if (index !== region.end + 1) throw new Error('两次扫描结果不一致，本地数据可能仍在变化，已取消提交。');
         }
         await flushUploads();
-
-        if (scannedChunks !== snapshot.chunkManifest.length
-            || stats.recordCount !== snapshot.recordCount
-            || stats.totalBytes !== snapshot.totalBytes) {
-            throw new Error('两次扫描结果不一致，本地数据可能仍在变化，已取消提交。');
-        }
     }
 
     async function downloadLegacyRemoteSnapshot(remote, allowVersionRetry = true) {
@@ -2655,6 +2959,7 @@
     function setActionButtonsDisabled(disabled) {
         if (pullButton) pullButton.disabled = disabled;
         if (pushButton) pushButton.disabled = disabled;
+        if (pushFullButton) pushFullButton.disabled = disabled;
         if (appUpdateCheckButton) appUpdateCheckButton.disabled = disabled;
         if (appUpdateApplyButton) appUpdateApplyButton.disabled = disabled;
         if (appUpdateRollbackButton) appUpdateRollbackButton.disabled = disabled;
@@ -3028,7 +3333,8 @@
                 </div>
                 <div class="rp-sync-main-actions">
                     <button type="button" class="rp-sync-action-button" data-action="pull">拉取</button>
-                    <button type="button" class="rp-sync-action-button is-primary" data-action="push">上传</button>
+                    <button type="button" class="rp-sync-action-button is-primary" data-action="push">快速上传</button>
+                    <button type="button" class="rp-sync-action-button" data-action="push-full">完整上传</button>
                 </div>
                 <p class="rp-sync-modal__status">选择同步</p>
                 <div class="rp-sync-progress">
@@ -3085,6 +3391,7 @@
         modalProgressValue = modalRoot.querySelector('.rp-sync-progress__value');
         pullButton = modalRoot.querySelector('[data-action="pull"]');
         pushButton = modalRoot.querySelector('[data-action="push"]');
+        pushFullButton = modalRoot.querySelector('[data-action="push-full"]');
         appUpdateCheckButton = modalRoot.querySelector('[data-action="app-update-check"]');
         appUpdateApplyButton = modalRoot.querySelector('[data-action="app-update-apply"]');
         appUpdateRollbackButton = modalRoot.querySelector('[data-action="app-update-rollback"]');
@@ -3102,7 +3409,8 @@
             if (!state.syncing) closeModal();
         });
         pullButton.addEventListener('click', () => pullFromServer().catch(() => { }));
-        pushButton.addEventListener('click', () => pushToServer().catch(() => { }));
+        pushButton.addEventListener('click', () => pushToServer('fast').catch(() => { }));
+        pushFullButton.addEventListener('click', () => pushToServer('full').catch(() => { }));
         appUpdateCheckButton.addEventListener('click', () => checkAppUpdate().catch(() => { }));
         appUpdateApplyButton.addEventListener('click', () => applyAppUpdate().catch(() => { }));
         appUpdateRollbackButton.addEventListener('click', () => rollbackAppUpdate().catch(() => { }));
@@ -3332,6 +3640,7 @@
             }
 
             restoreSucceeded = true;
+            markDirtyAll(); // 本地数据整个换过了，下次上传完整扫描
             state.reloadPending = true;
             updateProgress(100, '服务器数据已写入本地，页面即将刷新...');
             setTimeout(() => {
@@ -3361,9 +3670,103 @@
         }
     }
 
-    function pushToServer() { return runSyncLocked(performPushSync); }
+    // 扫描本地（或只重做改过的）、和云端比对、传缺的分片、提交；返回给用户看的结果。
+    async function uploadLocalSnapshot(mode) {
+        updateProgress(16, mode === 'fast' ? '正在找改过的数据...' : '正在流式扫描本地浏览器数据...');
+        const plan = await buildSnapshotPlan(mode);
+        const { snapshot } = plan;
+        // 云端和本地一致了：记下这次的布局，改过的键清掉
+        const finishPlan = () => {
+            saveSyncLayout(plan);
+            clearDirty(plan.consumed, !plan.fast);
+        };
 
-    async function performPushSync() {
+        updateProgress(24, '正在检查服务器数据...');
+        const remoteStatus = await postSync({ action: 'pull-manifest' });
+        if (remoteStatus?.remote?.snapshotFormat === SNAPSHOT_FORMAT
+            && Number(remoteStatus.remote.schemaVersion) === SNAPSHOT_SCHEMA_VERSION
+            && remoteStatus.remote.checksum === snapshot.checksum) {
+            finishPlan();
+            return '服务器已是同一份数据，无需重复上传。';
+        }
+        // 云端还是魔改版的数据：这台设备不一定是最新的，先问一句（魔改版的根清单会另存，不会丢）。
+        if (remoteStatus?.fork && !await openInlineConfirm({
+            title: '云端还是魔改版的数据',
+            message: `魔改版最后一次同步在 ${new Date(remoteStatus.fork.updatedAt).toLocaleString('zh-CN')}。上传会用这台设备的数据替换它。这台设备如果不是最新的，先点「下载」把云端的数据导进来。`,
+            confirmText: '仍然上传'
+        })) {
+            return '已取消上传。';
+        }
+
+        updateProgress(30, '正在准备流式上传...');
+        for (let conflictAttempt = 0; conflictAttempt < 4; conflictAttempt += 1) {
+            const uploadSession = await postSync({
+                action: 'upload-create',
+                checksum: snapshot.checksum,
+                snapshotFormat: snapshot.snapshotFormat,
+                schemaVersion: snapshot.schemaVersion,
+                chunkerProfile: snapshot.chunkerProfile,
+                recordCount: snapshot.recordCount,
+                chunkSize: CONFIG.chunkSize,
+                chunkCount: snapshot.chunkManifest.length,
+                totalBytes: snapshot.totalBytes,
+                chunkManifest: snapshot.chunkManifest
+            });
+            if (uploadSession.alreadyUpToDate) {
+                finishPlan();
+                return '服务器已是同一份数据，无需重复上传。';
+            }
+            const missingIndices = Array.isArray(uploadSession.missingIndices)
+                ? uploadSession.missingIndices
+                : snapshot.chunkManifest.map((chunk) => chunk.index);
+            if (new Set(missingIndices).size !== missingIndices.length
+                || missingIndices.some((index) => !Number.isInteger(index)
+                    || index < 0
+                    || index >= snapshot.chunkManifest.length)) {
+                throw new Error('服务器返回的待上传分片清单无效。');
+            }
+            updateProgress(missingIndices.length > 0 ? 36 : 88,
+                missingIndices.length > 0 ? '正在进行第二遍扫描并上传缺少的分片...' : '服务器已有全部分片，正在核对本地数据...');
+            await uploadMissingStreamChunks(plan, missingIndices);
+            updateProgress(92, '正在完成服务器提交...');
+            try {
+                const commitResponse = await postSync({
+                    action: 'upload-complete',
+                    checksum: snapshot.checksum,
+                    snapshotFormat: snapshot.snapshotFormat,
+                    schemaVersion: snapshot.schemaVersion,
+                    chunkerProfile: snapshot.chunkerProfile,
+                    recordCount: snapshot.recordCount,
+                    chunkSize: CONFIG.chunkSize,
+                    chunkCount: snapshot.chunkManifest.length,
+                    totalBytes: snapshot.totalBytes,
+                    chunkManifest: snapshot.chunkManifest,
+                    expectedVersion: uploadSession.previousVersion
+                }, { retryCount: 1, timeoutMs: CONFIG.commitTimeoutMs });
+                const confirmation = await postSync({ action: 'pull-manifest' });
+                if (!confirmation.remote
+                    || confirmation.remote.checksum !== snapshot.checksum
+                    || Number(confirmation.remote.version) !== Number(commitResponse.version)
+                    || confirmation.remote.snapshotFormat !== SNAPSHOT_FORMAT
+                    || Number(confirmation.remote.schemaVersion) !== SNAPSHOT_SCHEMA_VERSION) {
+                    throw new Error('服务器提交结果校验失败，请重新上传。');
+                }
+            } catch (error) {
+                if (Number(error?.status) !== 409 || conflictAttempt >= 3) throw error;
+                await wait(CONFIG.retryDelayMs);
+                continue;
+            }
+            finishPlan();
+            const rebuilt = plan.rebuilt.reduce((sum, region) => sum + region.end - region.start + 1, 0);
+            return plan.fast ? `快速上传成功：重做了 ${rebuilt} 个分片，共 ${snapshot.chunkManifest.length} 个。` : '上传成功。';
+        }
+        throw new Error('同步冲突重试失败，请稍后重试。');
+    }
+
+    // mode：fast 只重做改过的数据（没有上次的记录时自动完整扫描），full 全部重新扫描。
+    function pushToServer(mode = 'full') { return runSyncLocked(() => performPushSync(mode)); }
+
+    async function performPushSync(mode = 'full') {
         if (state.syncing) return;
 
         state.syncing = true;
@@ -3380,94 +3783,18 @@
             await flushAppState();
             globalThis.RPH_R2_SNAPSHOT_IN_PROGRESS = true;
 
-            updateProgress(16, '正在流式扫描本地浏览器数据...');
-            const snapshot = await buildStreamSnapshotManifest();
-
-            updateProgress(24, '正在检查服务器数据...');
-            const remoteStatus = await postSync({ action: 'pull-manifest' });
-            if (remoteStatus?.remote?.snapshotFormat === SNAPSHOT_FORMAT
-                && Number(remoteStatus.remote.schemaVersion) === SNAPSHOT_SCHEMA_VERSION
-                && remoteStatus.remote.checksum === snapshot.checksum) {
-                updateProgress(100, '服务器已是同一份数据，无需重复上传。');
-                setActionButtonsDisabled(false);
-                return;
-            }
-            // 云端还是魔改版的数据：这台设备不一定是最新的，先问一句（魔改版的根清单会另存，不会丢）。
-            if (remoteStatus?.fork && !await openInlineConfirm({
-                title: '云端还是魔改版的数据',
-                message: `魔改版最后一次同步在 ${new Date(remoteStatus.fork.updatedAt).toLocaleString('zh-CN')}。上传会用这台设备的数据替换它。这台设备如果不是最新的，先点「下载」把云端的数据导进来。`,
-                confirmText: '仍然上传'
-            })) {
-                updateProgress(100, '已取消上传。');
-                setActionButtonsDisabled(false);
-                return;
-            }
-
-            updateProgress(30, '正在准备流式上传...');
-            let committed = false;
-            for (let conflictAttempt = 0; conflictAttempt < 4; conflictAttempt += 1) {
-                const uploadSession = await postSync({
-                    action: 'upload-create',
-                    checksum: snapshot.checksum,
-                    snapshotFormat: snapshot.snapshotFormat,
-                    schemaVersion: snapshot.schemaVersion,
-                    chunkerProfile: snapshot.chunkerProfile,
-                    recordCount: snapshot.recordCount,
-                    chunkSize: CONFIG.chunkSize,
-                    chunkCount: snapshot.chunkManifest.length,
-                    totalBytes: snapshot.totalBytes,
-                    chunkManifest: snapshot.chunkManifest
-                });
-                if (uploadSession.alreadyUpToDate) {
-                    updateProgress(100, '服务器已是同一份数据，无需重复上传。');
-                    setActionButtonsDisabled(false);
-                    return;
-                }
-                const missingIndices = Array.isArray(uploadSession.missingIndices)
-                    ? uploadSession.missingIndices
-                    : snapshot.chunkManifest.map((chunk) => chunk.index);
-                if (new Set(missingIndices).size !== missingIndices.length
-                    || missingIndices.some((index) => !Number.isInteger(index)
-                        || index < 0
-                        || index >= snapshot.chunkManifest.length)) {
-                    throw new Error('服务器返回的待上传分片清单无效。');
-                }
-                updateProgress(missingIndices.length > 0 ? 36 : 88,
-                    missingIndices.length > 0 ? '正在进行第二遍扫描并上传缺少的分片...' : '服务器已有全部分片，正在核对本地数据...');
-                await uploadMissingStreamChunks(snapshot, missingIndices);
-                updateProgress(92, '正在完成服务器提交...');
+            // 上传中途本地数据被改了（第二遍生成的分片和第一遍对不上）就重新来一次
+            let status;
+            for (let attempt = 0; ; attempt += 1) {
                 try {
-                    const commitResponse = await postSync({
-                        action: 'upload-complete',
-                        checksum: snapshot.checksum,
-                        snapshotFormat: snapshot.snapshotFormat,
-                        schemaVersion: snapshot.schemaVersion,
-                        chunkerProfile: snapshot.chunkerProfile,
-                        recordCount: snapshot.recordCount,
-                        chunkSize: CONFIG.chunkSize,
-                        chunkCount: snapshot.chunkManifest.length,
-                        totalBytes: snapshot.totalBytes,
-                        chunkManifest: snapshot.chunkManifest,
-                        expectedVersion: uploadSession.previousVersion
-                    }, { retryCount: 1, timeoutMs: CONFIG.commitTimeoutMs });
-                    const confirmation = await postSync({ action: 'pull-manifest' });
-                    if (!confirmation.remote
-                        || confirmation.remote.checksum !== snapshot.checksum
-                        || Number(confirmation.remote.version) !== Number(commitResponse.version)
-                        || confirmation.remote.snapshotFormat !== SNAPSHOT_FORMAT
-                        || Number(confirmation.remote.schemaVersion) !== SNAPSHOT_SCHEMA_VERSION) {
-                        throw new Error('服务器提交结果校验失败，请重新上传。');
-                    }
-                    committed = true;
+                    status = await uploadLocalSnapshot(mode);
                     break;
                 } catch (error) {
-                    if (Number(error?.status) !== 409 || conflictAttempt >= 3) throw error;
-                    await wait(CONFIG.retryDelayMs);
+                    if (attempt >= 1 || !String(error?.message || '').startsWith('两次扫描结果不一致')) throw error;
+                    updateProgress(16, '本地数据刚刚变过，重新扫描一遍...');
                 }
             }
-            if (!committed) throw new Error('同步冲突重试失败，请稍后重试。');
-
-            updateProgress(100, '上传成功。');
+            updateProgress(100, status);
             setActionButtonsDisabled(false);
         } catch (error) {
             updateProgress(100, error?.message || '本地同步失败。');
