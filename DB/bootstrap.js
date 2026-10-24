@@ -37,7 +37,7 @@
         ],
         ignoredLocalStorageKeys: ['roleplay_hub_update_id'],
         chunkSize: 2 * 1024 * 1024,
-        maxRecordBytes: 127 * 1024 * 1024, // Chrome 单条 IndexedDB 记录的上限（133169152 字节），再大别的设备也存不下
+        maxRecordBytes: 127 * 1024 * 1024, // Chrome/Edge/安卓浏览器单条 IndexedDB 记录的硬上限（133169152 字节），再大同步到那些设备就写不进去
         warnRecordBytes: 32 * 1024 * 1024,
         uploadPartConcurrency: 6,
         downloadPartConcurrency: 3,
@@ -47,8 +47,7 @@
         downloadPendingBytes: 32 * 1024 * 1024,
         downloadCacheBytes: 256 * 1024 * 1024,
         requestTimeoutMs: 60_000,
-        uploadPartTimeoutMs: 300_000, // 一片最大 8MB，慢网络也给够时间
-        downloadTimeoutMs: 300_000, // 一次最多拉 16MB
+        transferTimeoutMs: 30_000, // 传分片：基础 30 秒，再按 50KB/s 加传输时间；慢网络给够，断网也不用干等太久
         commitTimeoutMs: 120_000,
         retryCount: 3,
         retryDelayMs: 600,
@@ -724,7 +723,7 @@
 
     function checkStreamRecordSize(key, size) {
         if (size > CONFIG.maxRecordBytes) {
-            throw new Error(`上传已取消：记录 ${String(key)} 约 ${(size / 1024 / 1024).toFixed(2)}MB，超过浏览器能存的单条上限约127MB。`);
+            throw new Error(`上传已取消：记录 ${String(key)} 约 ${(size / 1024 / 1024).toFixed(2)}MB，超过 Chrome/Edge/安卓浏览器能存的单条上限（127MB），同步到那些设备会失败。`);
         }
         if (size > CONFIG.warnRecordBytes) {
             console.warn(`[RP Sync] Large record ${String(key)}: ${(size / 1024 / 1024).toFixed(2)}MB`);
@@ -1087,7 +1086,7 @@
                     version: Number(remote.version),
                     start: range.start,
                     count: range.count
-                });
+                }, { timeoutMs: transferTimeout(range.bytes) });
                 if (!response.bytes || !(response.bytes instanceof Uint8Array)) {
                     throw new Error('服务器分批数据格式不正确。');
                 }
@@ -1238,7 +1237,8 @@
         const selected = chunkManifest.slice(start, start + count);
         const response = await postSyncBinary(remote.snapshotFormat === FORK_SNAPSHOT_FORMAT
             ? { action: 'fork-packs', checksums: selected.map((chunk) => chunk.checksum) }
-            : { action: 'pull-json-part', version: Number(remote.version), start, count }, options);
+            : { action: 'pull-json-part', version: Number(remote.version), start, count },
+        { ...options, timeoutMs: transferTimeout(selected.reduce((sum, chunk) => sum + chunk.length, 0)) });
         const gzip = Number(remote.schemaVersion) === GZIP_SCHEMA_VERSION;
         const storedLengths = gzip ? String(response.partLengths || '').split(',').map(Number) : selected.map((chunk) => chunk.length);
         const expectedLength = storedLengths.reduce((sum, length) => sum + length, 0);
@@ -2450,6 +2450,8 @@
         return !status || status === 408 || status === 429 || status >= 500;
     }
 
+    const transferTimeout = (bytes) => CONFIG.transferTimeoutMs + Math.ceil(bytes / 50);
+
     async function postSync(payload, options = {}) {
         const retryCount = Number.isInteger(options.retryCount) ? options.retryCount : CONFIG.retryCount;
         const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : CONFIG.requestTimeoutMs;
@@ -2496,7 +2498,7 @@
 
     async function postSyncBinary(payload, options = {}) {
         const retryCount = Number.isInteger(options.retryCount) ? options.retryCount : CONFIG.retryCount;
-        const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : CONFIG.downloadTimeoutMs;
+        const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : CONFIG.requestTimeoutMs;
         let lastError = null;
 
         for (let attempt = 0; attempt <= retryCount; attempt += 1) {
@@ -2566,7 +2568,7 @@
 
         for (let attempt = 0; attempt <= retryCount; attempt += 1) {
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), CONFIG.uploadPartTimeoutMs);
+            const timeoutId = setTimeout(() => controller.abort(), transferTimeout(body.byteLength));
             try {
                 const response = await fetch(`${CONFIG.apiEndpoint}?${params.toString()}`, {
                     method: 'POST',
