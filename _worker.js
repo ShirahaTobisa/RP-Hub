@@ -59,7 +59,6 @@ const MAX_APP_UPDATE_TOTAL_BYTES = 160 * 1024 * 1024;
 const MAX_APP_UPDATE_FILE_BYTES = 32 * 1024 * 1024;
 const APP_UPDATE_FILE_CONCURRENCY = 4;
 const MAX_PART_BYTES = 64 * 1024 * 1024;
-const MAX_TOTAL_BYTES = 1024 * 1024 * 1024;
 const MAX_CHUNK_COUNT = 10000;
 const MAX_PULL_CHUNKS = 8;
 const MANIFEST_HISTORY_KEEP = 5;
@@ -1491,7 +1490,7 @@ function normalizeManifest(value) {
     if (!Number.isInteger(version) || version < 0) return null;
     if (!Number.isInteger(recordCount) || recordCount < 0) return null;
     if (!Number.isInteger(chunkCount) || chunkCount < 0 || chunkCount > MAX_CHUNK_COUNT) return null;
-    if (!Number.isInteger(totalBytes) || totalBytes < 0 || totalBytes > MAX_TOTAL_BYTES) return null;
+    if (!Number.isInteger(totalBytes) || totalBytes < 0) return null;
     if (typeof value.checksum !== 'string' || !/^[a-f0-9]{64}$/i.test(value.checksum)) return null;
     if (chunkCount === 0) {
         return {
@@ -1872,7 +1871,7 @@ async function handleUploadCreate(bucket, body) {
         return json({ ok: true, alreadyUpToDate: true, remote: buildEmptyRemoteInfo(checksum, recordCount, totalBytes, snapshotMetadata) });
     }
     if (!Number.isInteger(chunkCount) || chunkCount <= 0 || chunkCount > MAX_CHUNK_COUNT) return error(`本地数据数量异常：${chunkCount}/${MAX_CHUNK_COUNT}。`);
-    if (!Number.isInteger(totalBytes) || totalBytes <= 0 || totalBytes > MAX_TOTAL_BYTES) return error(`本地数据太大：${totalBytes}/${MAX_TOTAL_BYTES}。`);
+    if (!Number.isInteger(totalBytes) || totalBytes <= 0) return error('本地数据大小异常。');
 
     let chunkManifest;
     try {
@@ -1978,7 +1977,7 @@ async function handleUploadComplete(bucket, body, ctx) {
     if (!snapshotMetadata) return error('本地快照格式无效。');
     if (!Number.isInteger(recordCount) || recordCount < 0) return error('本地数据记录数量异常。');
     if (!Number.isInteger(chunkCount) || chunkCount <= 0 || chunkCount > MAX_CHUNK_COUNT) return error('上传数据数量异常。');
-    if (!Number.isInteger(totalBytes) || totalBytes <= 0 || totalBytes > MAX_TOTAL_BYTES) return error(`本地数据太大：${totalBytes}/${MAX_TOTAL_BYTES}。`);
+    if (!Number.isInteger(totalBytes) || totalBytes <= 0) return error('本地数据大小异常。');
     if (!Number.isInteger(expectedVersion) || expectedVersion < 0) return error('上传会话版本无效，请重新开始上传。', 409);
 
     let chunkManifest;

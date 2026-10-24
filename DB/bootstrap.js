@@ -37,7 +37,6 @@
         ],
         ignoredLocalStorageKeys: ['roleplay_hub_update_id'],
         chunkSize: 2 * 1024 * 1024,
-        maxSnapshotBytes: 1024 * 1024 * 1024,
         maxRecordBytes: 100 * 1024 * 1024,
         warnRecordBytes: 32 * 1024 * 1024,
         uploadPartConcurrency: 6,
@@ -823,11 +822,10 @@
     }
 
     class SnapshotChunkWriter {
-        constructor(profile, targetBytes, hardMaxBytes, maxBytes) {
+        constructor(profile, targetBytes, hardMaxBytes) {
             this.profile = profile;
             this.targetBytes = targetBytes;
             this.hardMaxBytes = hardMaxBytes;
-            this.maxBytes = maxBytes;
             this.encoder = new TextEncoder();
             this.bufferParts = [];
             this.bufferLength = 0;
@@ -892,9 +890,6 @@
         appendLine(text) {
             const bytes = text instanceof Uint8Array ? text : this.encoder.encode(text);
             this.totalBytes += bytes.byteLength;
-            if (this.totalBytes > this.maxBytes) {
-                throw new Error(`本地数据太大：${this.totalBytes}/${this.maxBytes}。`);
-            }
             const completed = [];
             if (this.profile === 'fixed') {
                 this.appendFixed(bytes, completed);
@@ -913,7 +908,7 @@
 
     async function* iterateSnapshotChunks(stats, profile = 'cdc') {
         const hardMaxBytes = profile === 'fixed' ? LEGACY_FIXED_CHUNK_BYTES : CDC_HARD_MAX_BYTES;
-        const writer = new SnapshotChunkWriter(profile, CONFIG.chunkSize, hardMaxBytes, CONFIG.maxSnapshotBytes);
+        const writer = new SnapshotChunkWriter(profile, CONFIG.chunkSize, hardMaxBytes);
         let index = 0;
 
         for await (const line of iterateSnapshotLines(stats)) {
@@ -923,9 +918,6 @@
             } catch (error) {
                 if (profile === 'cdc') {
                     if (error instanceof CdcChunkingError) throw error;
-                    if (typeof error?.message === 'string' && error.message.startsWith('本地数据太大：')) {
-                        throw error;
-                    }
                     throw new CdcChunkingError('CDC 切块内部异常。', { cause: error });
                 }
                 throw error;
@@ -1039,9 +1031,6 @@
         if (!remote || !Number.isInteger(Number(remote.chunkCount)) || Number(remote.chunkCount) <= 0) {
             return null;
         }
-        if (Number(remote.totalBytes || 0) > CONFIG.maxSnapshotBytes) {
-            throw new Error(`服务器数据太大：${remote.totalBytes}/${CONFIG.maxSnapshotBytes}。`);
-        }
 
         let payload;
         try {
@@ -1149,7 +1138,7 @@
             return { index, checksum, length };
         });
 
-        if (totalBytes !== Number(remote.totalBytes) || totalBytes > CONFIG.maxSnapshotBytes) {
+        if (totalBytes !== Number(remote.totalBytes)) {
             throw new Error('服务器分片总大小校验失败。');
         }
         return normalized;
@@ -3308,9 +3297,6 @@
                 updateProgress(100, '服务器当前没有可同步的数据。');
                 setActionButtonsDisabled(false);
                 return;
-            }
-            if (Number(remote.totalBytes || 0) > CONFIG.maxSnapshotBytes) {
-                throw new Error(`服务器数据太大：${remote.totalBytes}/${CONFIG.maxSnapshotBytes}。`);
             }
 
             if (remote.snapshotFormat === 'rp-sync-jsonl-v2' || Number(remote.schemaVersion) === 5) {
