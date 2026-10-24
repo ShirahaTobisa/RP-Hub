@@ -572,6 +572,20 @@ async function readStreamChunk(reader, deadline, label) {
     }
 }
 
+// 生图服务出错时常常照样回 200，只是正文不是图：Nai2API 直链回一张写着原因的 SVG，别的服务回 JSON 或网页。把原因挖出来给用户看。
+async function describeNonImageReply(response, contentType) {
+    let text = '';
+    try { text = new TextDecoder().decode(await readLimitedBody(response.body, 64 * 1024, '生图服务回复')); } catch (_) { /* 读不到正文就只报类型 */ }
+    let reason = '';
+    try {
+        const data = JSON.parse(text);
+        reason = [data.error?.message, data.message, data.detail, data.error].find((item) => typeof item === 'string' && item) || '';
+    } catch (_) {
+        reason = (text.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || text.replace(/<(style|script)[\s\S]*?<\/\1>/gi, '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
+    }
+    return reason ? `它说：${reason.slice(0, 200)}` : `回的是 ${contentType || '不明类型'}`;
+}
+
 async function readLimitedBody(body, maxBytes, label, emptyStatus = 400, expectedBytes = 0, timeoutMs = 0) {
     if (!body || typeof body.getReader !== 'function') {
         throw createHttpError(`${label}为空。`, emptyStatus);
@@ -764,7 +778,7 @@ async function handleImageRender(request, env) {
         return error(`生图服务返回异常：HTTP ${upstreamResponse.status}`, upstreamResponse.status);
     }
     const contentType = (upstreamResponse.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
-    if (!IMAGE_RASTER_CONTENT_TYPES.has(contentType)) return error('生图服务没有返回受支持的栅格图片。', 502);
+    if (!IMAGE_RASTER_CONTENT_TYPES.has(contentType)) return error(`生图服务没有返回图片，${await describeNonImageReply(upstreamResponse, contentType)}`, 502);
     const contentLength = Number(upstreamResponse.headers.get('content-length') || 0);
     if (contentLength > IMAGE_MAX_BYTES) return error(`图片过大：${contentLength}/${IMAGE_MAX_BYTES}`, 413);
     const imageBytes = await readLimitedBody(

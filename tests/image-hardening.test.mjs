@@ -670,10 +670,23 @@ async function testProviderFailuresAndHeadMiss() {
     }
     {
         const bucket = new FakeR2();
-        const upstream = createUpstream({ contentType: 'image/svg+xml' });
+        // Nai2API 直链出错时回 200 + 写着原因的 SVG：不能存成图，原因要给用户看
+        const svg = '<svg xmlns="http://www.w3.org/2000/svg"><defs><style>text{fill:#000}</style></defs><text>生成失败</text><text>密钥无效或已被禁用。</text></svg>';
+        const upstream = createUpstream({ contentType: 'image/svg+xml', bytes: new TextEncoder().encode(svg) });
         const worker = await loadWorker(upstream.fetchImpl);
         const response = await worker.fetch(imageGenerationRequest(imageRequestUrl({ id: SVG_CARD })), makeEnv(bucket), new WaitUntilContext());
         assert.equal(response.status, 502, 'SVG upstream payload must not be cached as an image');
+        assert.equal((await response.json()).error, '生图服务没有返回图片，它说：生成失败 密钥无效或已被禁用。');
+        assert.equal(bucket.keys('rp-images/').length, 0);
+    }
+    {
+        // 别的服务可能回 200 + JSON 错误
+        const bucket = new FakeR2();
+        const upstream = createUpstream({ contentType: 'application/json', bytes: new TextEncoder().encode('{"error":{"message":"余额不足"}}') });
+        const worker = await loadWorker(upstream.fetchImpl);
+        const response = await worker.fetch(imageGenerationRequest(imageRequestUrl({ id: SVG_CARD })), makeEnv(bucket), new WaitUntilContext());
+        assert.equal(response.status, 502);
+        assert.equal((await response.json()).error, '生图服务没有返回图片，它说：余额不足');
         assert.equal(bucket.keys('rp-images/').length, 0);
     }
     {

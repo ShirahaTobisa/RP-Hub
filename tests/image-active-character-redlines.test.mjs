@@ -20,7 +20,7 @@ const expectedSourceHashes = new Map([
     ['DB/char-store.js', '572888C71A656871438D4D7ED61212F46F99DCEAB561A1A07264961CBD66B9E3'],
     ['DB/styles.css', '5E283E2CE8A57CEECDAFF6F63CA1820B8AB75B93A7D421005F0E93D9A9643E3E'],
     ['DB/app-patches.mjs', '55629DF1E0888F027863F2A618A72300BB03DDBF938F2119EAF520421C57AC53'],
-    ['_worker.js', '4D4FA00840807E545149DAF3FD848A120D422175711A0F2F77F3496FCB122061'],
+    ['_worker.js', 'E866A815FB5BB5F4D43E0F6DC6ED6FC27733540919BFBBCC82470AC789BC0BE4'],
     ['index.html', '936A2A66740722BF43B3EAD160FFDCFEE163CC6A2486440C8C0F66B9C24B28A3'],
     ['work.js', 'DAFEC08B9A370461E68A3412D9FD1D883113DA89CBD02B43052C99C67A207451'],
     ['wrangler.toml', 'C2FFFD4267C5234E72FF05B3388312F7230D525335E6AFB51F8065259805FCE0'],
@@ -59,7 +59,7 @@ assert.equal(workerSource.split(workshopInjection).length - 1, 1, 'workshop load
 const workerWithoutWorkshopInjection = workerSource.replace(/<script src="\/DB\/nav-adapter\.js\?v=sync-195"><\/script>\r?\n/, '').replace(`${workshopInjection}${workerSource.includes(`${workshopInjection}\r\n`) ? '\r\n' : '\n'}`, '');
 assert.equal(
     createHash('sha256').update(Buffer.from(workerWithoutWorkshopInjection, 'utf8')).digest('hex').toUpperCase(),
-    '19EFE5F8902ACB46224427D3525DC9916BF4A8741885A1215DD88EC017A4E2C9',
+    'DBF40D4A4E451EC89432AB85D9390B33300DAB8FA99F9903EDC45D25172DB26B',
     '_worker.js differs from the active-character delivery tree by more than the workshop injection line'
 );
 
