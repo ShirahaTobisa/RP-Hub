@@ -69,7 +69,7 @@
 .rph-voice-widget.is-busy .rph-voice-widget__dot{box-shadow:0 0 0 3px rgba(96,165,250,.45),0 6px 18px rgba(0,0,0,.16)}`;
 
     RPHubSDK.register({
-        id: 'character-voice', name: '角色语音', version: '1.2.2', requiresApi: 7,
+        id: 'character-voice', name: '角色语音', version: '1.2.3', requiresApi: 7,
         init(ctx) {
             const player = new Audio(); // 都用这一个播放器：手机上点过一次以后，自动播放也能出声
             const preview = new Audio(); // 声音库的试听
@@ -711,8 +711,9 @@
                     }
                 }, 800);
             });
-            ctx.app.watch(() => [characterId(), ctx.app.get('currentView')], ([id], [previousId] = []) => {
-                if (session && id !== previousId) stop();
+            // 监听值用字符串：返回数组的话每次都算「变了」。
+            ctx.app.watch(() => `${characterId()}\n${ctx.app.get('currentView')}`, (value, previous = '') => {
+                if (session && value.split('\n')[0] !== previous.split('\n')[0]) stop();
                 closePopover();
                 renderWidget();
                 loadStore().then(markAll, () => {});
@@ -750,8 +751,8 @@
             // AI 挑：几组条件各搜一页，合在一起按对得上的程度排，取前 8 个。
             async function searchLibrary(queries, want = {}) {
                 const found = new Map();
-                for (const query of queries) {
-                    for (const item of (await libraryPage(query)).items || []) if (item?._id && !found.has(item._id)) found.set(item._id, item);
+                for (const data of await Promise.all(queries.map((query) => libraryPage(query)))) {
+                    for (const item of data.items || []) if (item?._id && !found.has(item._id)) found.set(item._id, item);
                 }
                 // 排序：性别、年龄、标签、搜索词对得上的靠前，用的人多的稍微靠前。
                 const wanted = new Set((want.tags || []).map((tag) => String(tag).toLowerCase()));
@@ -909,8 +910,7 @@
                             renderWidget();
                         };
                         if (field.type === 'checkbox') field.checked = get(key) === '1'; else field.value = get(key);
-                        field.addEventListener('input', save);
-                        field.addEventListener('change', save);
+                        field.addEventListener(field.type === 'text' ? 'input' : 'change', save);
                     });
                     selects = ['fishModel', 'analysisModel', 'analyzeMode'].map((key) => styledSelect(body.querySelector(`[data-k="${key}"]`)));
 

@@ -1,6 +1,6 @@
 # RP-Hub 创意工坊 Mod 作者指南
 
-这份指南描述当前 `DB/module-loader.js` 的 API 6，兼容原有 API 1～5 模块。指南和 `examples/` 都是教材，
+这份指南描述当前 `DB/module-loader.js` 的 API 8，兼容原有 API 1～7 模块。指南和 `examples/` 都是教材，
 不会进入 `dist/` 或发布 ZIP。
 
 ## 1. 这是什么与信任模型
