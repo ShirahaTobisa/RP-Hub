@@ -334,7 +334,7 @@ async function testRecordSizeGuard() {
     const blockError = await captureRejection(api.scanStreamSnapshot('cdc'), '100MiB-equivalent record block');
     const blockErrorText = `${blockError.message} ${blockError.cause?.message || ''}`;
     assert(blockErrorText.includes('blocked-key'), 'record-size block omitted the key');
-    assert(blockErrorText.includes('100MiB'), 'record-size block omitted recovery-limit guidance');
+    assert(blockErrorText.includes('127MB'), 'record-size block omitted recovery-limit guidance');
 }
 
 async function installSyntheticData(snapshot) {

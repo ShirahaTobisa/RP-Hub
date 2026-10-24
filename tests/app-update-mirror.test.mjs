@@ -93,7 +93,7 @@ class FakeR2 {
         return {
             objects: [...this.records.keys()]
                 .filter((key) => key.startsWith(prefix))
-                .map((key) => ({ key })),
+                .map((key) => ({ key, size: this.records.get(key).bytes.byteLength, customMetadata: this.records.get(key).customMetadata })),
             truncated: false
         };
     }
@@ -276,6 +276,8 @@ async function callApi(worker, bucket, body, extraEnv = {}) {
     }), { RP_SYNC_R2: bucket, ...extraEnv }, ctx);
     const payload = await response.json();
     await ctx.drain();
+    // 程序更新分批进行：没处理完就像页面那样带着进度接着请求。
+    if (payload.done === false) return callApi(worker, bucket, { ...body, slot: payload.slot, offset: payload.staged }, extraEnv);
     return { response, payload };
 }
 
@@ -324,6 +326,52 @@ async function testMirrorUpdateAndRollback(version180, version181) {
         assert(mirror.requests.includes('/manifest.json'));
         assert(mirror.requests.some((item) => item.includes(`/snapshots/1.8.1/${version181.entry.commit}/`)));
         assert(calls.every((item) => item.startsWith(mirror.baseUrl)), `non-mirror request observed: ${calls.join(', ')}`);
+    } finally {
+        await mirror.close();
+    }
+}
+
+// 文件多时分几个请求处理：每个请求只下载 8 个文件，中途不切换版本；页面带着槽和进度接着请求，最后一次核对槽里的文件再切换。
+// 拿正在用的槽续传会被拒绝，从新槽开始。
+async function testApplyInBatches(version180, version181) {
+    const mirror = await startMirror([version181, version180]);
+    const worker = await loadWorker();
+    const bucket = new FakeR2();
+    const env = { APP_UPDATE_MIRROR_BASE: mirror.baseUrl };
+    const raw = async (body) => {
+        const response = await worker.fetch(new Request(API_URL, {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+        }), { RP_SYNC_R2: bucket, ...env }, new WaitUntilContext());
+        return { response, payload: await response.json() };
+    };
+    const keysUnder = (slot) => [...bucket.records.keys()].filter((key) => key.startsWith(`${APP_UPDATE_PREFIX}/${slot}/`));
+    try {
+        const applied180 = await callApi(worker, bucket, { action: 'app-update-apply', target: '1.8.0' }, env);
+        assert.equal(applied180.response.status, 200, applied180.payload.error);
+        const liveSlot = bucket.json(APP_UPDATE_MANIFEST_KEY).current.slot;
+        const liveKeys = keysUnder(liveSlot);
+        const total = version181.entry.files.length;
+        assert.ok(total > 8, `the 1.8.1 fixture has ${total} files`);
+        mirror.requests.length = 0;
+        const first = await raw({ action: 'app-update-apply', target: '1.8.1' });
+        assert.equal(first.response.status, 200, first.payload.error);
+        assert.deepEqual([first.payload.done, first.payload.staged, first.payload.total], [false, 8, total]);
+        assert.match(first.payload.slot, /^versions\/1\.8\.1-/);
+        assert.equal(mirror.requests.filter((item) => item.includes('/snapshots/')).length, 8, 'one request downloads 8 files');
+        assert.equal(keysUnder(first.payload.slot).length, 8);
+        assert.equal(bucket.json(APP_UPDATE_MANIFEST_KEY).current.slot, liveSlot, 'nothing is switched until every file is staged');
+        const hijack = await raw({ action: 'app-update-apply', target: '1.8.1', slot: liveSlot, offset: 8 });
+        assert.equal(hijack.payload.done, false);
+        assert.notEqual(hijack.payload.slot, liveSlot);
+        assert.deepEqual(keysUnder(liveSlot), liveKeys, 'the live version slot is never written to');
+        const second = await raw({ action: 'app-update-apply', target: '1.8.1', slot: first.payload.slot, offset: first.payload.staged });
+        assert.equal(second.response.status, 200, second.payload.error);
+        assert.deepEqual([second.payload.done, second.payload.fileCount], [true, total]);
+        const manifest = bucket.json(APP_UPDATE_MANIFEST_KEY);
+        assert.equal(manifest.current.slot, first.payload.slot);
+        assert.deepEqual(manifest.current.files.map((file) => file.path),
+            version181.entry.files.map((file) => file.path).sort((left, right) => left.localeCompare(right)));
+        assert.ok(manifest.current.files.every((file) => /^[a-f0-9]{64}$/.test(file.checksum) && file.byteLength > 0 && file.source === 'mirror'));
     } finally {
         await mirror.close();
     }
@@ -456,6 +504,7 @@ const [version180, version181] = await Promise.all([
 ]);
 
 await testMirrorUpdateAndRollback(version180, version181);
+await testApplyInBatches(version180, version181);
 await testChecksumMismatchFailsClosed(version181);
 await testMissingRequiredFileFailsClosed(version181);
 await testUnreachableMirrorFailsClosed();

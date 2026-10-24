@@ -9,7 +9,7 @@ const source = fs.readFileSync(path.join(here, '..', 'DB', 'bootstrap.js'), 'utf
 // 同步数据总量不设上限（用户早就去掉过，别再加回来）；只限单条记录和分片数量。
 assert.doesNotMatch(source, /maxSnapshotBytes|本地数据太大|服务器数据太大/);
 assert.doesNotMatch(fs.readFileSync(path.join(here, '..', '_worker.js'), 'utf8'), /MAX_TOTAL_BYTES|本地数据太大/);
-assert.match(source, /maxRecordBytes:\s*100 \* 1024 \* 1024/);
+assert.match(source, /maxRecordBytes:\s*127 \* 1024 \* 1024/);
 assert.match(source, /warnRecordBytes:\s*32 \* 1024 \* 1024/);
 assert.match(source, /chunkSize:\s*2 \* 1024 \* 1024/);
 assert.match(source, /uploadPartConcurrency:\s*6/);

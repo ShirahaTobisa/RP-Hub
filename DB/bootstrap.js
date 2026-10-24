@@ -37,7 +37,7 @@
         ],
         ignoredLocalStorageKeys: ['roleplay_hub_update_id'],
         chunkSize: 2 * 1024 * 1024,
-        maxRecordBytes: 100 * 1024 * 1024,
+        maxRecordBytes: 127 * 1024 * 1024, // Chrome 单条 IndexedDB 记录的上限（133169152 字节），再大别的设备也存不下
         warnRecordBytes: 32 * 1024 * 1024,
         uploadPartConcurrency: 6,
         downloadPartConcurrency: 3,
@@ -47,7 +47,8 @@
         downloadPendingBytes: 32 * 1024 * 1024,
         downloadCacheBytes: 256 * 1024 * 1024,
         requestTimeoutMs: 60_000,
-        uploadPartTimeoutMs: 120_000,
+        uploadPartTimeoutMs: 300_000, // 一片最大 8MB，慢网络也给够时间
+        downloadTimeoutMs: 300_000, // 一次最多拉 16MB
         commitTimeoutMs: 120_000,
         retryCount: 3,
         retryDelayMs: 600,
@@ -723,7 +724,7 @@
 
     function checkStreamRecordSize(key, size) {
         if (size > CONFIG.maxRecordBytes) {
-            throw new Error(`上传已取消：记录 ${String(key)} 约 ${(size / 1024 / 1024).toFixed(2)}MB，超过单条上限100MiB。`);
+            throw new Error(`上传已取消：记录 ${String(key)} 约 ${(size / 1024 / 1024).toFixed(2)}MB，超过浏览器能存的单条上限约127MB。`);
         }
         if (size > CONFIG.warnRecordBytes) {
             console.warn(`[RP Sync] Large record ${String(key)}: ${(size / 1024 / 1024).toFixed(2)}MB`);
@@ -2495,7 +2496,7 @@
 
     async function postSyncBinary(payload, options = {}) {
         const retryCount = Number.isInteger(options.retryCount) ? options.retryCount : CONFIG.retryCount;
-        const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : CONFIG.requestTimeoutMs;
+        const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : CONFIG.downloadTimeoutMs;
         let lastError = null;
 
         for (let attempt = 0; attempt <= retryCount; attempt += 1) {
@@ -2880,10 +2881,12 @@
                 durationMs: 165_000,
                 text: '正在连接 RP-Hub 上游'
             });
-            const result = await postSync({ action: 'app-update-apply', target }, {
-                timeoutMs: 180_000,
-                retryCount: 1
-            });
+            let result = await postSync({ action: 'app-update-apply', target }, { timeoutMs: 180_000, retryCount: 1 });
+            // 站点每个请求只处理一部分文件（Cloudflare 每个请求的子请求有限），没处理完就带着进度接着请求。
+            while (result?.done === false) {
+                startEstimatedProgress({ to: 88, durationMs: 165_000, text: `正在下载上游文件 ${result.staged}/${result.total}` });
+                result = await postSync({ action: 'app-update-apply', target, slot: result.slot, offset: result.staged }, { timeoutMs: 180_000, retryCount: 1 });
+            }
             stopEstimatedProgress();
             const latest = result?.latest?.tag || formatShortSha(result?.latest?.sha);
             if (result?.alreadyUpToDate) {

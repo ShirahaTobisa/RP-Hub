@@ -461,6 +461,8 @@ async function callApiWithEnv(worker, bucket, body, extraEnv = {}, ctx = new Wai
         body: JSON.stringify(body)
     }), { RP_SYNC_R2: bucket, ...extraEnv }, ctx);
     const payload = await response.json();
+    // 程序更新分批进行：没处理完就像页面那样带着进度接着请求。
+    if (payload.done === false) return callApiWithEnv(worker, bucket, { ...body, slot: payload.slot, offset: payload.staged }, extraEnv, ctx);
     return { response, payload, ctx };
 }
 

@@ -54,10 +54,12 @@ const REQUIRED_UPSTREAM_FILES = new Set([
     'assets/css/styles.css',
     'assets/js/app.js'
 ]);
-const MAX_APP_UPDATE_FILES = 32;
+const MAX_APP_UPDATE_FILES = 200;
 const MAX_APP_UPDATE_TOTAL_BYTES = 160 * 1024 * 1024;
 const MAX_APP_UPDATE_FILE_BYTES = 32 * 1024 * 1024;
 const APP_UPDATE_FILE_CONCURRENCY = 4;
+// Cloudflare 免费版每个请求最多 50 次子请求（下载和 R2 读写都算），每个文件要下载一次、写一次，所以一次只处理 8 个，剩下的由页面接着请求。
+const APP_UPDATE_FILES_PER_REQUEST = 8;
 const MAX_PART_BYTES = 64 * 1024 * 1024;
 const MAX_CHUNK_COUNT = 10000;
 const MAX_PULL_CHUNKS = 8;
@@ -87,7 +89,7 @@ const IMAGE_DELETED_PREFIX = `${IMAGE_PREFIX}/_deleted`;
 const IMAGE_MAX_BYTES = 64 * 1024 * 1024;
 const IMAGE_THUMB_MAX_BYTES = 2 * 1024 * 1024;
 const IMAGE_MAX_REQUEST_URL_LENGTH = 32 * 1024;
-const IMAGE_FETCH_TIMEOUT_MS = 120000;
+const IMAGE_FETCH_TIMEOUT_MS = 300000;
 const IMAGE_THUMB_READ_TIMEOUT_MS = 30000;
 const IMAGE_DEFAULT_MODEL = 'nai-diffusion-4-5-full';
 const IMAGE_DEFAULT_SIZE = '竖图';
@@ -1744,7 +1746,7 @@ async function handleForkPacks(bucket, body) {
 const FORK_PACK_MAX_BYTES = 1024 * 1024;
 const FORK_BLOOM_BYTES = 32 * 1024;
 const FORK_PAGE_PACKS = 32;
-const FORK_EXPORT_MAX_PAGES = 40;
+const FORK_EXPORT_MAX_PAGES = 1000;
 const TEST_ROOT_BACKUP_KEY = `${R2_PREFIX}/test-root-backup.json`;
 
 async function handleForkExportPack(request, bucket, url) {
@@ -2437,6 +2439,25 @@ async function deleteStoredFiles(bucket, slot, files) {
     if (keys.length > 0) await bucket.delete(keys);
 }
 
+// 新版本槽里实际存着的文件（一次 list 就够，不用逐个 head）。
+async function listStagedAppUpdateFiles(bucket, slot) {
+    const prefix = getStoredAppUpdateKey(slot, '');
+    const files = [];
+    for (let cursor; ;) {
+        const page = await bucket.list({ prefix, cursor, include: ['customMetadata'] });
+        for (const object of page.objects || []) {
+            files.push({
+                path: object.key.slice(prefix.length),
+                checksum: String(object.customMetadata?.checksum || ''),
+                byteLength: Number(object.size) || 0,
+                source: String(object.customMetadata?.source || '')
+            });
+        }
+        if (!page.truncated || !page.cursor) return files.sort((left, right) => left.path.localeCompare(right.path));
+        cursor = page.cursor;
+    }
+}
+
 function getReferencedAppUpdateSlots(manifest) {
     const slots = new Set();
     const current = getManifestCurrent(manifest);
@@ -2808,13 +2829,18 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
         throw err;
     }
     const upstreamFiles = upstreamFileResult.files;
-    const files = [];
+    // 分批：续传时页面带回上次的新版本槽和已处理的文件数。槽必须是 versions/ 下、还没启用的那个，免得写到正在用的版本上。
+    const continuedSlot = typeof body.slot === 'string' && /^versions\/[A-Za-z0-9._-]+$/.test(body.slot)
+        && !getReferencedAppUpdateSlots(applied).has(body.slot) ? body.slot : '';
+    const offset = continuedSlot && Number.isInteger(body.offset) && body.offset > 0 && body.offset <= upstreamFiles.length ? body.offset : 0;
+    const stagingSlot = offset > 0 ? continuedSlot : createAppUpdateSlot(latest.tag);
+    const batch = upstreamFiles.slice(offset, offset + APP_UPDATE_FILES_PER_REQUEST);
+    let files = [];
     let totalBytes = 0;
-    const stagingSlot = createAppUpdateSlot(latest.tag);
     let committed = false;
     let committedManifest = null;
     try {
-        const outcomes = await runConcurrent(upstreamFiles, APP_UPDATE_FILE_CONCURRENCY, async (path) => {
+        const outcomes = await runConcurrent(batch, APP_UPDATE_FILE_CONCURRENCY, async (path) => {
             try {
                 const upstreamFile = await fetchConfiguredUpstreamFile(path, latest, env, requestBudget);
                 let bytes = new Uint8Array(upstreamFile.bytes);
@@ -2828,7 +2854,7 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
                 const checksum = await sha256Bytes(bytes);
                 const stored = await bucket.put(getStoredAppUpdateKey(stagingSlot, path), bytes, {
                     httpMetadata: { contentType: getContentType(path) },
-                    customMetadata: { upstreamTag: latest.tag, checksum }
+                    customMetadata: { upstreamTag: latest.tag, checksum, source: upstreamFile.source }
                 });
                 if (!stored) throw new Error(`写入新版本槽失败：${path}`);
                 return {
@@ -2849,24 +2875,27 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
 
         const failed = outcomes.find((outcome) => outcome?.code === 'RP_HUB_APP_UPDATE_REQUEST_LIMIT')
             || outcomes.find((outcome) => outcome?.error);
-        for (const outcome of outcomes) {
-            if (!outcome || outcome.error) continue;
-            files.push({
-                path: outcome.path,
-                checksum: outcome.checksum,
-                byteLength: outcome.byteLength,
-                source: outcome.source
-            });
-            totalBytes += outcome.byteLength;
-            if (totalBytes > MAX_APP_UPDATE_TOTAL_BYTES) {
-                throw new Error(`上游文件总大小超过限制（${Math.round(MAX_APP_UPDATE_TOTAL_BYTES / 1024 / 1024)}MiB），已停止更新。`);
-            }
-        }
         if (failed) {
             const failure = new Error(failed.error);
             if (failed.patchRejected) failure.code = 'RP_HUB_APP_PATCH_REJECTED';
             else if (failed.code) failure.code = failed.code;
             throw failure;
+        }
+        const staged = offset + batch.length;
+        if (staged < upstreamFiles.length) {
+            return json({ ok: true, alreadyUpToDate: false, done: false, latest, slot: stagingSlot, staged, total: upstreamFiles.length });
+        }
+        // 全部文件都进了新版本槽：按槽里实际存的文件记清单，少了就不启用。
+        files = await listStagedAppUpdateFiles(bucket, stagingSlot);
+        const missing = upstreamFiles.find((path) => !files.some((file) => file.path === path));
+        if (missing) {
+            const failure = new Error(`新版本文件没有存全（${missing}），请重新更新。`);
+            failure.code = 'RP_HUB_APP_RELEASE_INCOMPLETE';
+            throw failure;
+        }
+        totalBytes = files.reduce((sum, file) => sum + file.byteLength, 0);
+        if (totalBytes > MAX_APP_UPDATE_TOTAL_BYTES) {
+            throw new Error(`上游文件总大小超过限制（${Math.round(MAX_APP_UPDATE_TOTAL_BYTES / 1024 / 1024)}MiB），已停止更新。`);
         }
         for (const required of REQUIRED_UPSTREAM_FILES) {
             if (!files.some((file) => file.path === required)) {
@@ -2952,6 +2981,7 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
     return json({
         ok: true,
         alreadyUpToDate: false,
+        done: true,
         latest,
         fileCount: files.length,
         totalBytes,
