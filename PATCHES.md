@@ -135,8 +135,8 @@ app-update 的提交边界同样 fail closed：每次更新写入一个新的不
 1. 用 `git show <tag>:assets/js/app.js` 取得原始上游文件，不在生成后的 app.js 上继续手改。
 2. 查明新的角色保存、角色装载和 `manualSave`/持久化符号位置，确认语义仍可映射到 `RPHubCharStore` 与 E2b 桥。
 3. 只修改 `DB/app-patches.mjs` 中对应模式、桥生成逻辑或返回契约加固锚点，并递增 `RP_HUB_APP_PATCH_REVISION`。
-4. 更新 `tests/app-patches.test.mjs`，至少覆盖当前线上 tag、目标 tag、改名接口拒绝和锚点失效拒绝。
-5. 运行 `node tests/run-all.mjs`。补丁数量不能作为唯一判断，必须同时通过不变量、生成 JS 语法、角色迁移、同步、Worker 更新拒绝和旧槽 revision 测试。
+4. 在 `tests/package-upstream.test.mjs` 补上目标 tag 的检查（它默认取分发端最新收录的上游），至少覆盖改名接口拒绝和锚点失效拒绝。
+5. 运行 `npm run test:all`。补丁数量不能作为唯一判断，必须同时通过不变量、生成 JS 语法、角色迁移、同步、Worker 更新拒绝和旧槽 revision 测试。
 6. 更新 `_worker.js` 的 bundled 上游版本/commit 后运行 `node scripts/rebuild.mjs`，再执行一次全量测试。
 
 不得通过放宽不变量、跳过验证或直接编辑生成 app.js 来解除更新拒绝。

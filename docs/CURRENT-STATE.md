@@ -30,4 +30,4 @@ Worker 优先读取 R2 中当前更新槽的页面，应用共享补丁并注入
 
 可重复测试范围见 [开发与测试](DEVELOPMENT.md)。测试版一键更新、回退已在独立的测试 Pages 项目上用真实分发端和 GitHub Release 验证；手机真机和正式站点部署仍需单独验收。
 
-`tests/workshop-module-loader.runner.mjs` 依赖 1.7.5 底稿的旧侧边栏，底稿升到 1.9.8 后不再适用，未列入测试命令。
+测旧底稿或要读本机旧资料的测试已挪到 `tests/archive/`，不再运行；全量测试用 `npm run test:all`。

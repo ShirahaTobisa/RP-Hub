@@ -28,27 +28,32 @@ function instrumentBootstrap(source) {
     result = replaceExactlyOnce(result, /const PAGE_SCOPE = \['\/', '\/index\.html'\];/g,
         "const PAGE_SCOPE = ['/', '/index.html', '/tests/bootstrap-behavior.html'];",
         'test page scope');
-    result = replaceExactlyOnce(result, /maxRecordBytes:\s*100 \* 1024 \* 1024/g,
+    result = replaceExactlyOnce(result, /maxRecordBytes:\s*127 \* 1024 \* 1024/g,
         'maxRecordBytes: 256', 'maxRecordBytes threshold');
+    // 这一页测的是不压缩的版本 4（不支持 CompressionStream 的浏览器走这条路）；压缩的版本 6 由 sync-gzip.test 和 sync-fast-upload.runner 覆盖。
+    result = replaceExactlyOnce(result,
+        /const SNAPSHOT_SCHEMA_VERSION = typeof CompressionStream === 'function' \? GZIP_SCHEMA_VERSION : RAW_SCHEMA_VERSION;/g,
+        'const SNAPSHOT_SCHEMA_VERSION = RAW_SCHEMA_VERSION;', 'uncompressed schema');
     result = replaceExactlyOnce(result, /warnRecordBytes:\s*32 \* 1024 \* 1024/g,
         'warnRecordBytes: 128', 'warnRecordBytes threshold');
     result = replaceExactlyOnce(result, /retryDelayMs:\s*600/g,
         'retryDelayMs: 1', 'retry delay');
     result = replaceExactlyOnce(result,
-        /async function\* iterateSnapshotChunks\(stats, profile = 'cdc'\) \{/g,
-        `async function* iterateSnapshotChunks(stats, profile = 'cdc') {
+        /async function\* iterateSnapshotChunks\(stats, profile = 'cdc', bounds = \{\}\) \{/g,
+        `async function* iterateSnapshotChunks(stats, profile = 'cdc', bounds = {}) {
         globalThis.__bootstrapIterateSnapshotProfiles ||= [];
         globalThis.__bootstrapIterateSnapshotProfiles.push(profile);`,
         'iterateSnapshotChunks instrumentation');
+    // 整份扫描（上传方案和 scanStreamSnapshot 都走它）
     result = replaceExactlyOnce(result,
-        /async function scanStreamSnapshot\(profile = 'cdc'\) \{/g,
-        `async function scanStreamSnapshot(profile = 'cdc') {
+        /async function scanAllChunks\(profile, localEntries\) \{/g,
+        `async function scanAllChunks(profile, localEntries) {
         globalThis.__bootstrapScanProfiles ||= [];
         globalThis.__bootstrapScanProfiles.push(profile);
         if (profile === 'cdc' && globalThis.__RPH_FORCE_CDC_FAILURE === true) {
             throw new CdcChunkingError('forced test failure');
         }`,
-        'scanStreamSnapshot instrumentation');
+        'scanAllChunks instrumentation');
     result = replaceExactlyOnce(result,
         /function openDownloadStagingDb\(name = DOWNLOAD_STAGING_DB\) \{/g,
         `function openDownloadStagingDb(name = DOWNLOAD_STAGING_DB) {
@@ -71,7 +76,7 @@ function instrumentBootstrap(source) {
         SnapshotLineReader,
         buildStreamSnapshotChecksumSource,
         scanStreamSnapshot,
-        buildStreamSnapshotManifest,
+        buildSnapshotPlan,
         validateStreamSnapshotManifest,
         openDownloadStagingDb,
         clearDownloadStagingStore,

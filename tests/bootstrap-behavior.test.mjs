@@ -494,18 +494,19 @@ async function testCdcPropertiesAndLocality() {
         console.warn = (...args) => warnings.push(args.map(String).join(' '));
         let fallback;
         try {
-            fallback = await api.buildStreamSnapshotManifest();
+            fallback = await api.buildSnapshotPlan('full');
         } finally {
             console.warn = nativeWarn;
             globalThis.__RPH_FORCE_CDC_FAILURE = false;
         }
         assert(warnings.some((message) => message.includes('回退旧定长切块')), 'CDC failure did not warn and fall back');
-        assert(!fallback.chunkerProfile, 'fixed fallback retained the CDC profile');
+        assertEqual(fallback.profile, 'fixed', 'CDC failure did not switch the upload plan to fixed chunks');
+        assert(!fallback.snapshot.chunkerProfile, 'fixed fallback retained the CDC profile');
         assertDeepEqual(globalThis.__bootstrapScanProfiles, ['cdc', 'fixed'],
             'CDC fallback did not rescan using fixed chunks');
     } finally {
         api.CONFIG.chunkSize = productionChunkSize;
-        api.CONFIG.maxRecordBytes = 100 * 1024 * 1024;
+        api.CONFIG.maxRecordBytes = 127 * 1024 * 1024; // 后面的大数据测试按正式上限跑
     }
 }
 
@@ -1170,20 +1171,21 @@ async function testPushSelfCheckAndConflictWorkflow() {
         localStorage.removeItem('rp_hub_behavior_test');
     }
 
+    // 要传的分片第一次就存进本机暂存并传上去了：冲突重试时不再重新生成，也不再重传已经传成功的分片（服务器上已经有了）。
     assertDeepEqual(events, [
         'self-check', 'bridge', 'pull-manifest',
         'upload-create', 'upload-part', 'upload-complete',
-        'upload-create', 'upload-part', 'upload-complete',
-        'upload-create', 'upload-part', 'upload-complete',
-        'upload-create', 'upload-part', 'upload-complete', 'pull-manifest'
+        'upload-create', 'upload-complete',
+        'upload-create', 'upload-complete',
+        'upload-create', 'upload-complete', 'pull-manifest'
     ], 'push did not run self-check first or retry the complete workflow');
     assertDeepEqual(globalThis.__bootstrapScanProfiles, ['cdc'],
         'push performed more than one manifest scan before upload');
-    assertEqual(globalThis.__bootstrapIterateSnapshotProfiles.length, 5,
-        'push did not rescan the local stream for each upload session');
+    assertEqual(globalThis.__bootstrapIterateSnapshotProfiles.length, 2,
+        'push should scan once for the plan and once to stage the missing parts');
     assertEqual(createPayloads.length, 4, '409 handling did not perform first attempt plus three retries');
     assertEqual(completePayloads.length, 4, '409 handling did not retry upload-complete three times');
-    assertEqual(partBodies.length, 4, '409 handling did not revisit missing parts for every new session');
+    assertEqual(partBodies.length, 1, '409 retries resent a part that was already uploaded');
     assert(createPayloads.every((payload) => payload.checksum === createPayloads[0].checksum),
         '409 retries did not reuse the snapshot checksum');
     assert(createPayloads.every((payload) => payload.totalBytes === createPayloads[0].totalBytes),
