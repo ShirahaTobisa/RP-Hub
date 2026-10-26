@@ -267,6 +267,46 @@ try {
     assert.deepEqual(c.local, a2.local);
     console.log('PASS a third device pulls everything after the chain of fast uploads and matches');
 
+    // 7b. 上传途中又写了一条本来就改过的数据（AI 还在往聊天里写、插件在写）：这次上传完以后它还记着改过，下次快速上传把新内容传上去。
+    await write(pageA, [['rp_hub_chat_role-9', [message(1, 7)]]]);
+    let wroteDuringUpload = false;
+    await pageA.route('**/api/rp-sync', async (route) => {
+        if (!wroteDuringUpload && route.request().postDataJSON()?.action === 'upload-complete') {
+            wroteDuringUpload = true;
+            await write(pageA, [['rp_hub_chat_role-9', [message(2, 7)]], ['rp_hub_settings', { theme: 'during-upload' }]]);
+        }
+        return route.continue();
+    });
+    fastResult(await push(pageA, 'fast'));
+    assert.ok(wroteDuringUpload);
+    const afterRace = (await dirtyState(pageA)).tokens;
+    assert.ok(afterRace.includes(JSON.stringify(['RPHubDB', 'store', 'rp_hub_chat_role-9'])), `a key rewritten during the upload stays marked: ${afterRace}`);
+    assert.ok(afterRace.includes(JSON.stringify(['RPHubDB', 'store', 'rp_hub_settings'])), 'a key first written during the upload stays marked');
+    await pageA.unroute('**/api/rp-sync');
+    fastResult(await push(pageA, 'fast'));
+    const pageD = await openDevice();
+    await pullInto(pageD);
+    const raced = Object.fromEntries((await dumpDevice(pageD)).records);
+    assert.deepEqual(raced['rp_hub_chat_role-9'], [message(2, 7)], 'the content written during the earlier upload reaches the cloud on the next fast upload');
+    assert.deepEqual(raced['rp_hub_settings'], { theme: 'during-upload' });
+    // 完整上传途中写的也一样（拉取过的设备第一次上传就是完整的）
+    assert.equal((await dirtyState(pageD)).full, true);
+    let wroteDuringFull = false;
+    await pageD.route('**/api/rp-sync', async (route) => {
+        if (!wroteDuringFull && route.request().postDataJSON()?.action === 'upload-complete') {
+            wroteDuringFull = true;
+            await write(pageD, [['rp_hub_chat_role-9', [message(3, 7)]]]);
+        }
+        return route.continue();
+    });
+    assert.equal(await push(pageD, 'fast'), '上传成功。');
+    assert.ok(wroteDuringFull);
+    assert.ok((await dirtyState(pageD)).tokens.includes(JSON.stringify(['RPHubDB', 'store', 'rp_hub_chat_role-9'])), 'a write during a full upload stays marked too');
+    await pageD.unroute('**/api/rp-sync');
+    console.log('PASS writes made while an upload is running stay marked and go up with the next fast upload');
+    // 云端现在是另一台设备传的；这台再传一次，云端回到这台的数据，好接着测下面的「没改动就不传」
+    fastResult(await push(pageA, 'fast'));
+
     // 8. 没改动：快速上传直接说已是同一份；拉取过的设备下次上传完整扫描；改动太多、布局丢了也完整扫描。
     assert.equal(await push(pageA, 'fast'), '服务器已是同一份数据，无需重复上传。');
     assert.equal((await dirtyState(pageB)).full, true, 'a pull marks everything as changed');

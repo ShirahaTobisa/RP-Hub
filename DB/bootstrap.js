@@ -63,54 +63,69 @@
 
     // ---- 快速上传的记账：哪些键改过了 ----
     // 写库的地方太多（官方代码、插件、生图模块都写），所以挂在 IndexedDB 的原型上记，谁写都记得到。
-    // 每个改过的键在本机 localStorage 里占一个 rp_hub_sync_dirty_v1: 开头的条目（这个前缀不进同步），上传成功后删掉。
+    // 每个改过的键在本机 localStorage 里占一个 rp_hub_sync_dirty_v1: 开头的条目（这个前缀不进同步），值是写入时的批次记号。
+    // 每次开始上传换一个批次记号（存在 localStorage，几个标签页共用）：之后的写入按新记号重新标记，
+    // 上传成功后只清掉记号没变的，上传途中又写过的留到下次。
     // 改过的键太多（比如整站恢复）就记一个「全部」标记，快速上传不比完整扫描省，直接完整扫描。
     const DIRTY_PREFIX = 'rp_hub_sync_dirty_v1:';
     const DIRTY_FULL = `${DIRTY_PREFIX}*`;
+    const DIRTY_EPOCH = 'rp_hub_sync_dirty_epoch_v1';
     const DIRTY_LIMIT = 3000;
     const LAYOUT_DB = 'RPHubSyncState'; // 上次上传的分片布局存在这个单独的小库里（不进同步，写它也不记账）
-    const dirtyMarked = new Set();
+    let newMarks = 0;
 
     function markDirty(dbName, storeName, key) {
         if (!CONFIG.knownDatabases.some((dbDef) => dbDef.name === dbName && dbDef.stores.includes(storeName))) return;
-        const token = JSON.stringify([dbName, storeName, key === undefined ? null : key]);
-        if (dirtyMarked.has(token)) return;
-        dirtyMarked.add(token);
+        const markKey = DIRTY_PREFIX + JSON.stringify([dbName, storeName, key === undefined ? null : key]);
         try {
-            if (localStorage.getItem(DIRTY_FULL)) return;
-            if (dirtyMarked.size > DIRTY_LIMIT) localStorage.setItem(DIRTY_FULL, '1');
-            else localStorage.setItem(DIRTY_PREFIX + token, '1');
+            const epoch = localStorage.getItem(DIRTY_EPOCH) || '0';
+            if (localStorage.getItem(DIRTY_FULL) === epoch) return; // 这一批已经记了「全部」
+            const previous = localStorage.getItem(markKey);
+            if (previous === epoch) return;
+            if (previous === null && (newMarks += 1) > DIRTY_LIMIT) localStorage.setItem(DIRTY_FULL, epoch);
+            else localStorage.setItem(markKey, epoch);
         } catch (_) {
             discardSyncLayout(); // 记不下来就作废上次的布局，下次上传完整扫描
         }
     }
 
     function markDirtyAll() {
-        dirtyMarked.clear();
-        try { localStorage.setItem(DIRTY_FULL, '1'); } catch (_) { discardSyncLayout(); }
+        try { localStorage.setItem(DIRTY_FULL, localStorage.getItem(DIRTY_EPOCH) || '0'); } catch (_) { discardSyncLayout(); }
     }
 
-    function readDirty() {
-        const tokens = [];
-        let full = false;
+    function readDirtyMarks() {
+        const marks = new Map();
+        let fullMark = null;
         for (let index = 0; index < localStorage.length; index += 1) {
             const key = localStorage.key(index);
             if (!key || !key.startsWith(DIRTY_PREFIX)) continue;
-            if (key === DIRTY_FULL) full = true;
-            else tokens.push(key.slice(DIRTY_PREFIX.length));
+            if (key === DIRTY_FULL) fullMark = localStorage.getItem(key);
+            else marks.set(key.slice(DIRTY_PREFIX.length), localStorage.getItem(key));
         }
-        return { full: full || tokens.length > DIRTY_LIMIT, tokens };
+        return { full: fullMark !== null || marks.size > DIRTY_LIMIT, fullMark, marks };
     }
 
-    function clearDirty(tokens, full) {
-        for (const token of tokens) {
-            dirtyMarked.delete(token);
-            try { localStorage.removeItem(DIRTY_PREFIX + token); } catch (_) { /* storage blocked */ }
-        }
-        if (full) {
-            dirtyMarked.clear();
-            try { localStorage.removeItem(DIRTY_FULL); } catch (_) { /* storage blocked */ }
-        }
+    function readDirty() {
+        const { full, marks } = readDirtyMarks();
+        return { full, tokens: [...marks.keys()] };
+    }
+
+    // 开始上传时：记下现在的标记，换一个批次记号
+    function takeDirty() {
+        const taken = readDirtyMarks();
+        try { localStorage.setItem(DIRTY_EPOCH, crypto.randomUUID?.() || String(Date.now())); } catch (_) { /* storage blocked */ }
+        newMarks = 0;
+        return taken;
+    }
+
+    // 上传成功后：只清掉记号没变的（上传途中又写过的留着）。完整上传连「全部」标记一起清。
+    function clearDirty(taken, uploadedFull) {
+        try {
+            for (const [token, value] of taken.marks) {
+                if (localStorage.getItem(DIRTY_PREFIX + token) === value) localStorage.removeItem(DIRTY_PREFIX + token);
+            }
+            if (uploadedFull && taken.fullMark !== null && localStorage.getItem(DIRTY_FULL) === taken.fullMark) localStorage.removeItem(DIRTY_FULL);
+        } catch (_) { /* storage blocked */ }
     }
 
     (function hookIndexedDbWrites() {
@@ -1256,7 +1271,8 @@
     // 整理出这次要上传的东西：清单、每块的描述、要生成的区域。mode 是 fast（只重做改过的）或 full（全部重新扫描）。
     // 没有上次的布局、改动太多或快速路径出错时自动改成 full。
     async function buildSnapshotPlan(mode = 'full') {
-        const dirtyState = readDirty();
+        const dirtyState = takeDirty();
+        const tokens = [...dirtyState.marks.keys()];
         // 本机设置只读这一次，两遍生成共用：页面（比如生图模块）在上传中途写个设置项，不会让两遍对不上
         const localEntries = readLocalStorageSnapshot();
         const layout = mode === 'fast' ? await loadSyncLayout() : null;
@@ -1269,7 +1285,7 @@
             else if (dirtyState.full) reason = '改动太多，这次完整扫描一遍。';
             else {
                 try {
-                    ({ chunks, rebuilt } = await rebuildDirtyRegions(layout, dirtyState.tokens, localEntries));
+                    ({ chunks, rebuilt } = await rebuildDirtyRegions(layout, tokens, localEntries));
                 } catch (error) {
                     if (!(error instanceof CdcChunkingError)) throw error;
                     console.warn('[RP Sync] 快速上传切块失败，改为完整扫描。', error);
@@ -1298,8 +1314,8 @@
             chunkManifest: chunks.map((chunk, index) => ({ index, checksum: chunk.checksum, length: chunk.length }))
         };
         snapshot.checksum = await sha256(buildStreamSnapshotChecksumSource(snapshot));
-        // consumed：这次扫描之前记下的改过的键，上传成功后清掉（上传期间新写的留到下次）
-        return { snapshot, chunks, rebuilt, profile, localEntries, fast: Boolean(layout) && !reason, consumed: dirtyState.tokens };
+        // consumed：这次开始时记下的改过的键和它们的批次记号，上传成功后只清掉记号没变的
+        return { snapshot, chunks, rebuilt, profile, localEntries, fast: Boolean(layout) && !reason, consumed: dirtyState };
     }
 
     async function scanStreamSnapshot(profile = 'cdc') {
