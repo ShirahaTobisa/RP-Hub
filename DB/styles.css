@@ -306,7 +306,7 @@
     background: var(--overlay, rgba(0, 0, 0, 0.5));
     backdrop-filter: blur(6px) saturate(120%);
 }
-:is(.rph-ui-overlay, .rp-sync-modal, [data-rph-workshop-page]) {
+:is(.rph-ui-overlay, .rp-sync-modal, [data-rph-workshop-page], .rp-sync-float) {
     --rk-text: var(--c-text, #111827);
     --rk-muted: var(--c-text-3, #6b7280);
     --rk-border: var(--c-border-soft, #e5e7eb);
@@ -317,7 +317,7 @@
     --rk-accent: var(--c-accent-text, #2563eb);
     --rk-danger: var(--c-danger, #dc2626);
 }
-:root[data-app-theme="dark"] :is(.rph-ui-overlay, .rp-sync-modal, [data-rph-workshop-page]) {
+:root[data-app-theme="dark"] :is(.rph-ui-overlay, .rp-sync-modal, [data-rph-workshop-page], .rp-sync-float) {
     --rk-text: var(--c-text, var(--night-text));
     --rk-muted: var(--c-text-3, var(--night-muted));
     --rk-border: var(--c-border-soft, var(--night-border));
@@ -382,3 +382,31 @@ textarea.rph-ui-input { min-height: 6rem; resize: vertical; }
 /* RPH 原生提示条是单行的，长消息会被截成省略号；改为自动换行，圆角改成单行时看着仍像药丸、多行时不变形的大小。 */
 .toast-item { border-radius: 1.3rem; }
 .toast-text { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
+/* 上传的小悬浮条：同步面板关着时显示进度；样子照提示条，放在标题栏下面（提示条在更上面）。 */
+.rp-sync-float {
+    position: fixed;
+    top: calc(env(safe-area-inset-top, 0px) + 3.75rem);
+    left: 50%;
+    z-index: 80;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    max-width: min(26rem, calc(100vw - 1.5rem));
+    padding: 0.25rem 0.35rem 0.25rem 0.9rem;
+    overflow: hidden;
+    border: 1px solid var(--c-border, var(--rk-border));
+    border-radius: 999px;
+    background: var(--c-surface, #fff);
+    color: var(--rk-text);
+    box-shadow: 0 8px 22px rgba(15, 23, 42, 0.16);
+    font-size: 13px;
+    font-weight: 600;
+    transform: translateX(-50%);
+}
+.rp-sync-float[hidden] { display: none; }
+.rp-sync-float__main { min-width: 0; padding: 0.3rem 0.25rem 0.3rem 0; border: 0; background: none; color: inherit; font: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.rp-sync-float__action { flex-shrink: 0; padding: 0.25rem 0.75rem; border: 0; border-radius: 999px; background: var(--rk-tint); color: var(--rk-accent); font: inherit; cursor: pointer; }
+.rp-sync-float__close { flex-shrink: 0; width: 1.6rem; height: 1.6rem; border: 0; border-radius: 999px; background: none; color: var(--rk-muted); font-size: 1rem; line-height: 1; cursor: pointer; }
+.rp-sync-float__close[hidden], .rp-sync-float__action[hidden] { display: none; }
+.rp-sync-float__bar { position: absolute; left: 0; bottom: 0; width: 0; height: 2px; background: var(--rk-accent); transition: width 0.3s ease; }
+.rp-sync-float[data-kind="error"] .rp-sync-float__main { color: var(--rk-danger); }

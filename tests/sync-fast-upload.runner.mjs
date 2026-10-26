@@ -323,6 +323,70 @@ try {
     await write(pageA, [['rp_hub_settings', { theme: 'green' }]]);
     assert.match(await push(pageA, 'fast'), /^快速上传成功/);
     console.log('PASS unchanged data is not re-uploaded; pulls, too many changes and a missing layout fall back to a full upload');
+
+    // 9. 点了上传不用等：要传的分片进了本机暂存以后，同步面板能关，进度显示在悬浮条上；这时接着写数据不影响这次上传，写的东西下次快速上传传上去。
+    await write(pageA, [['rp_hub_chat_role-5', [message(5, 40)]]]);
+    let releaseParts;
+    const partsHeld = new Promise((resolve) => { releaseParts = resolve; });
+    await pageA.route('**/api/rp-sync?action=upload-part*', async (route) => { await partsHeld; return route.continue(); });
+    const pushing = push(pageA, 'fast');
+    await pageA.waitForFunction(() => api.state.background === true && !document.querySelector('.rp-sync-modal__close').disabled);
+    await pageA.click('.rp-sync-modal__close');
+    assert.equal(await pageA.locator('.rp-sync-modal.is-open').count(), 0, 'the sync panel closes while the upload runs');
+    await pageA.locator('[data-rph-sync-float][data-kind="busy"]', { hasText: '上传中' }).waitFor();
+    await write(pageA, [['rp_hub_chat_role-6', [message(6, 9)]]]);
+    releaseParts();
+    assert.match(await pushing, /^快速上传成功/, 'writing during the upload does not break it');
+    await pageA.locator('[data-rph-sync-float][data-kind="done"]', { hasText: '上传成功' }).waitFor();
+    assert.ok((await dirtyState(pageA)).tokens.includes(JSON.stringify(['RPHubDB', 'store', 'rp_hub_chat_role-6'])), 'what was written during the upload waits for the next one');
+    assert.equal(await pageA.evaluate(() => localStorage.getItem('rp_hub_sync_pending_upload_v1')), null);
+    await pageA.unroute('**/api/rp-sync?action=upload-part*');
+    console.log('PASS the panel can be closed during the upload, a floating bar shows progress, and writes made meanwhile wait for the next upload');
+
+    // 10. 传到一半断了：悬浮条显示失败和「重试」；重新打开页面提示「上次上传没传完」，点「继续上传」只补没传上去的分片。
+    await write(pageA, Array.from({ length: 12 }, (_, i) => [`rp_hub_chat_role-${10 + i}`, Array.from({ length: 120 }, (__, m) => message(m + 7, 20))]));
+    await pageA.evaluate(() => { api.CONFIG.retryCount = 0; });
+    const uploadedBefore = new Set();
+    let allowed = 3;
+    let cutNetwork;
+    const networkCut = new Promise((resolve) => { cutNetwork = resolve; });
+    await pageA.route('**/api/rp-sync?action=upload-part*', async (route) => {
+        if (allowed <= 0) {
+            await networkCut; // 面板关了以后再断网
+            return route.abort();
+        }
+        allowed -= 1;
+        const response = await route.fetch();
+        if (response.ok()) uploadedBefore.add(route.request().headers()['x-rp-part-checksum']); // 服务器回了成功才算传上去了
+        return route.fulfill({ response });
+    });
+    const broken = push(pageA, 'fast');
+    await pageA.waitForFunction(() => api.state.background === true);
+    await pageA.click('.rp-sync-modal__close');
+    cutNetwork();
+    await broken;
+    await pageA.locator('[data-rph-sync-float][data-kind="error"]', { hasText: '上传失败' }).waitFor();
+    assert.ok(await pageA.evaluate(() => localStorage.getItem('rp_hub_sync_pending_upload_v1')), 'the unfinished upload is remembered');
+    await pageA.unroute('**/api/rp-sync?action=upload-part*');
+    const uploadedAfter = [];
+    await pageA.route('**/api/rp-sync?action=upload-part*', (route) => {
+        uploadedAfter.push(route.request().headers()['x-rp-part-checksum']);
+        return route.continue();
+    });
+    await pageA.reload({ waitUntil: 'domcontentloaded' });
+    await initializeFixture(pageA);
+    await pageA.evaluate(() => { api.CONFIG.chunkSize = 256 * 1024; });
+    await pageA.locator('[data-rph-sync-float][data-kind="resume"]', { hasText: '上次上传没传完' }).waitFor();
+    await pageA.locator('[data-rph-sync-float] [data-act]', { hasText: '继续上传' }).click();
+    await pageA.waitForFunction(() => !api.state.syncing && /^快速上传成功/.test(api.state.statusText), null, { timeout: 60_000 });
+    assert.ok(uploadedBefore.size >= 3 && uploadedAfter.length > 0, `${uploadedBefore.size} parts went up before the break, ${uploadedAfter.length} after`);
+    assert.ok(!uploadedAfter.some((checksum) => uploadedBefore.has(checksum)), 'parts that already went up are not sent again');
+    assert.equal(await pageA.evaluate(() => localStorage.getItem('rp_hub_sync_pending_upload_v1')), null);
+    const pageE = await openDevice();
+    await pullInto(pageE);
+    const [a3, e] = await Promise.all([dumpDevice(pageA), dumpDevice(pageE)]);
+    assert.deepEqual(sortEntries(e.records), sortEntries(a3.records), 'after resuming, another device pulls exactly this device\'s data');
+    console.log(`PASS a broken upload shows retry, and after reopening the page it resumes: ${uploadedBefore.size} parts before the break, ${uploadedAfter.length} after, none sent twice`);
     assert.deepEqual(pageErrors, []);
 } finally {
     stopSite();

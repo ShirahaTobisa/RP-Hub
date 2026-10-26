@@ -71,7 +71,8 @@
     const DIRTY_FULL = `${DIRTY_PREFIX}*`;
     const DIRTY_EPOCH = 'rp_hub_sync_dirty_epoch_v1';
     const DIRTY_LIMIT = 3000;
-    const LAYOUT_DB = 'RPHubSyncState'; // 上次上传的分片布局存在这个单独的小库里（不进同步，写它也不记账）
+    const LAYOUT_DB = 'RPHubSyncState'; // 上次上传的分片布局和这次要上传的分片暂存在这个单独的小库里（不进同步，写它也不记账）
+    const PENDING_UPLOAD_KEY = 'rp_hub_sync_pending_upload_v1'; // 已经开始往服务器传、还没传完；页面关了下次打开提示接着传
     let newMarks = 0;
 
     function markDirty(dbName, storeName, key) {
@@ -161,6 +162,7 @@
 
     const state = {
         syncing: false,
+        background: false, // 上传进入「只从本机暂存往上传」那一段：不挡页面，可以关掉同步面板
         syncLockHeld: false,
         reloadPending: false,
         progress: 0,
@@ -1140,21 +1142,28 @@
     // ---- 上次上传的分片布局：每块的校验码、长度、从它开始的记录数、起止单元（和行号）。数据几 GB 时有一两 MB，放 localStorage 会挤占官方页面的额度，所以存 IndexedDB ----
     const layoutSignature = () => JSON.stringify(CONFIG.knownDatabases.map((dbDef) => [dbDef.name, dbDef.stores]));
 
-    function layoutStore(mode, operation) {
+    // state 表放上次上传的分片布局；parts 表暂存这次要上传的分片（压缩好的），上传只从这里读，页面接着写也不影响这次上传；
+    // uploaded 表记哪些分片已经传成功、什么时候传的（还没提交前断了，续传时跳过它们）。
+    function syncStateStore(storeName, mode, operation) {
         return new Promise((resolve, reject) => {
-            const request = indexedDB.open(LAYOUT_DB, 1);
-            request.onupgradeneeded = () => request.result.createObjectStore('state');
+            const request = indexedDB.open(LAYOUT_DB, 2);
+            request.onupgradeneeded = () => {
+                for (const name of ['state', 'parts', 'uploaded']) {
+                    if (!request.result.objectStoreNames.contains(name)) request.result.createObjectStore(name);
+                }
+            };
             request.onerror = () => reject(request.error);
             request.onblocked = () => reject(new Error('RPHubSyncState blocked'));
             request.onsuccess = () => {
                 const db = request.result;
-                const tx = db.transaction('state', mode);
-                const result = operation(tx.objectStore('state'));
+                const tx = db.transaction(storeName, mode);
+                const result = operation(tx.objectStore(storeName));
                 tx.oncomplete = () => { db.close(); resolve(result?.result); };
                 tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
             };
         });
     }
+    const layoutStore = (mode, operation) => syncStateStore('state', mode, operation);
 
     async function loadSyncLayout() {
         try {
@@ -1341,22 +1350,16 @@
         }
     }
 
-    // 第二遍：只重新生成要传的块所在的区域（快速上传就是改过的区域，加上服务器碰巧没有的沿用块），边生成边上传；生成出来的必须和第一遍一样。
-    async function uploadMissingStreamChunks(plan, missingIndices) {
+    // 第二遍：只重新生成服务器缺的块所在的区域（快速上传就是改过的区域，加上服务器碰巧没有的沿用块），生成出来的必须和第一遍一样；
+    // 压缩好存进本机暂存。之后上传只从暂存读，页面接着写也不影响这次上传。
+    async function stageMissingChunks(plan, missingIndices) {
         const missing = new Set(missingIndices);
         const { snapshot } = plan;
+        const gzip = snapshot.schemaVersion === GZIP_SCHEMA_VERSION;
         const extra = [...missing].filter((index) => !plan.rebuilt.some((region) => index >= region.start && index <= region.end))
             .map((index) => ({ start: index, end: index }));
         const regions = mergeRegions(plan.chunks, [...plan.rebuilt, ...extra]);
-        let pendingUploads = [];
-        let completedUploads = 0;
-
-        const flushUploads = async () => {
-            if (pendingUploads.length === 0) return;
-            await Promise.all(pendingUploads);
-            pendingUploads = [];
-        };
-
+        let staged = 0;
         for (const region of regions) {
             if (![...missing].some((index) => index >= region.start && index <= region.end)) continue;
             const stats = { recordCount: 0, totalBytes: 0 };
@@ -1364,18 +1367,46 @@
             for await (const chunk of iterateSnapshotChunks(stats, plan.profile, { ...region.bounds, localEntries: plan.localEntries, recordCount: () => snapshot.recordCount })) {
                 assertChunkMatchesManifest({ index, length: chunk.length, checksum: chunk.checksum }, snapshot.chunkManifest[index]);
                 if (missing.has(index)) {
-                    pendingUploads.push(postUploadPart({ ...chunk, index }, snapshot.schemaVersion === GZIP_SCHEMA_VERSION).then(() => {
-                        completedUploads += 1;
-                        const percent = missing.size === 0 ? 100 : Math.round((completedUploads / missing.size) * 100);
-                        updateProgress(36 + Math.round(percent * 0.52), `正在上传服务器数据 ${percent}%...`);
-                    }));
-                    if (pendingUploads.length >= CONFIG.uploadPartConcurrency) await flushUploads();
+                    const part = await preparePart({ ...chunk, index }, gzip);
+                    await syncStateStore('parts', 'readwrite', (store) => store.put(part, index));
+                    staged += 1;
+                    updateProgress(36, `正在整理要上传的分片 ${staged}/${missing.size}...`);
                 }
                 index += 1;
             }
             if (index !== region.end + 1) throw new Error('两次扫描结果不一致，本地数据可能仍在变化，已取消提交。');
         }
-        await flushUploads();
+    }
+
+    // 从本机暂存把分片传上去，同时传 uploadPartConcurrency 个；一个失败就都停下。
+    // 服务器只认已经提交的数据，没提交前断掉的那次传上去的分片它不知道；这些分片在服务器上至少留 24 小时（清理只删 24 小时前上传、没人用的），
+    // 所以 12 小时内传成功过的直接跳过。
+    const UPLOADED_TRUST_MS = 12 * 60 * 60 * 1000;
+    async function sendStagedParts(indices) {
+        const queue = [...indices];
+        let done = 0;
+        let failed = null;
+        const worker = async () => {
+            while (queue.length && !failed) {
+                const index = queue.shift();
+                try {
+                    const part = await syncStateStore('parts', 'readonly', (store) => store.get(index));
+                    if (!part) throw new Error('本机暂存的上传数据不见了，请再点一次上传。');
+                    const id = `${part.checksum}.${part.encoding === 'gzip' ? 'gz' : 'bin'}`;
+                    const uploadedAt = await syncStateStore('uploaded', 'readonly', (store) => store.get(id));
+                    if (!(uploadedAt > Date.now() - UPLOADED_TRUST_MS)) {
+                        await postUploadPart(part);
+                        await syncStateStore('uploaded', 'readwrite', (store) => store.put(Date.now(), id));
+                    }
+                } catch (error) {
+                    failed ||= error;
+                    throw error;
+                }
+                done += 1;
+                updateProgress(36 + Math.round((done / indices.length) * 52), `正在上传 ${done}/${indices.length}，可以关掉这个窗口接着玩`);
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(CONFIG.uploadPartConcurrency, queue.length) }, worker));
     }
 
     async function downloadLegacyRemoteSnapshot(remote, allowVersionRetry = true) {
@@ -2899,16 +2930,28 @@
         throw lastError || new Error('同步请求失败。');
     }
 
-    async function postUploadPart(chunk, gzip = false) {
+    // 一块要传的内容：版本 6 先压缩，记下压缩后的长度和校验码（服务器按这个核对）。
+    async function preparePart(chunk, gzip = false) {
+        const body = gzip ? await gzipBytes(chunk.bytes) : chunk.bytes;
+        return {
+            index: chunk.index,
+            checksum: chunk.checksum,
+            length: chunk.length,
+            body,
+            ...(gzip ? { encoding: 'gzip', storedLength: body.byteLength, storedChecksum: await sha256Bytes(body) } : {})
+        };
+    }
+
+    async function postUploadPart(chunk) {
         const retryCount = CONFIG.retryCount;
         let lastError = null;
-        const body = gzip ? await gzipBytes(chunk.bytes) : chunk.bytes;
+        const { body } = chunk;
         const headers = {
             ...buildPartHeaders(chunk),
-            ...(gzip ? {
+            ...(chunk.encoding === 'gzip' ? {
                 'x-rp-part-encoding': 'gzip',
-                'x-rp-part-stored-length': String(body.byteLength),
-                'x-rp-part-stored-checksum': await sha256Bytes(body)
+                'x-rp-part-stored-length': String(chunk.storedLength),
+                'x-rp-part-stored-checksum': chunk.storedChecksum
             } : {})
         };
         const params = new URLSearchParams({
@@ -2970,6 +3013,9 @@
         }
         if (modalStatus) {
             modalStatus.textContent = state.statusText;
+        }
+        if (state.background && floatRoot && !floatRoot.hidden && floatRoot.dataset.kind === 'busy') {
+            showFloat({ text: `上传中 ${Math.round(state.progress)}%`, progress: state.progress });
         }
     }
 
@@ -3338,7 +3384,8 @@
     }
 
     async function handleSyncButtonClick() {
-        if (state.syncing || checkingPassword) return;
+        if (state.syncing) return openModal(); // 正在同步（比如后台上传）：打开面板看进度
+        if (checkingPassword) return;
 
         syncEntry?.update({ busy: true });
         try {
@@ -3452,9 +3499,7 @@
         appUpdateVersionMenu = modalRoot.querySelector('[data-action="app-update-version-menu"]');
         closeButton = modalRoot.querySelector('.rp-sync-modal__close');
 
-        modalRoot.querySelector('.rp-sync-modal__backdrop').addEventListener('click', () => {
-            if (!state.syncing) closeModal();
-        });
+        modalRoot.querySelector('.rp-sync-modal__backdrop').addEventListener('click', () => closeModal());
         pullButton.addEventListener('click', () => pullFromServer().catch(() => { }));
         pushButton.addEventListener('click', () => pushToServer('fast').catch(() => { }));
         pushFullButton.addEventListener('click', () => pushToServer('full').catch(() => { }));
@@ -3624,6 +3669,7 @@
     function openModal() {
         rememberSyncFocus();
         ensureModal();
+        hideFloat();
         modalRoot.classList.add('is-open');
         setModalTitle();
         updateProgress(state.progress, state.statusText || '选择同步');
@@ -3631,10 +3677,12 @@
         if (!modalRoot.contains(document.activeElement)) closeButton?.focus();
     }
 
+    // 后台上传时也能关，关了进度显示在悬浮条上
     function closeModal() {
-        if (state.syncing || !modalRoot) return;
+        if ((state.syncing && !state.background) || !modalRoot) return;
         modalRoot.classList.remove('is-open');
         returnSyncFocus();
+        if (state.background) showFloat({ text: `上传中 ${Math.round(state.progress)}%`, progress: state.progress });
     }
 
     function pullFromServer() { return runSyncLocked(performPullSync); }
@@ -3746,6 +3794,8 @@
         }
 
         updateProgress(30, '正在准备流式上传...');
+        await syncStateStore('parts', 'readwrite', (store) => store.clear());
+        const staged = new Set();
         for (let conflictAttempt = 0; conflictAttempt < 4; conflictAttempt += 1) {
             const uploadSession = await postSync({
                 action: 'upload-create',
@@ -3772,9 +3822,15 @@
                     || index >= snapshot.chunkManifest.length)) {
                 throw new Error('服务器返回的待上传分片清单无效。');
             }
-            updateProgress(missingIndices.length > 0 ? 36 : 88,
-                missingIndices.length > 0 ? '正在进行第二遍扫描并上传缺少的分片...' : '服务器已有全部分片，正在核对本地数据...');
-            await uploadMissingStreamChunks(plan, missingIndices);
+            const toStage = missingIndices.filter((index) => !staged.has(index));
+            if (toStage.length) {
+                updateProgress(36, '正在整理要上传的分片...');
+                await stageMissingChunks(plan, toStage);
+                toStage.forEach((index) => staged.add(index));
+            }
+            // 要传的都在本机暂存里了：之后不挡页面，可以关掉同步面板接着玩
+            if (missingIndices.length) enterBackgroundUpload();
+            await sendStagedParts(missingIndices);
             updateProgress(92, '正在完成服务器提交...');
             try {
                 const commitResponse = await postSync({
@@ -3803,6 +3859,7 @@
                 await wait(CONFIG.retryDelayMs);
                 continue;
             }
+            await syncStateStore('uploaded', 'readwrite', (store) => store.clear()).catch(() => {}); // 都提交了，不用再记
             await finishPlan();
             const rebuilt = plan.rebuilt.reduce((sum, region) => sum + region.end - region.start + 1, 0);
             return plan.fast ? `快速上传成功：重做了 ${rebuilt} 个分片，共 ${snapshot.chunkManifest.length} 个。` : '上传成功。';
@@ -3820,6 +3877,7 @@
         updateButtonState();
         openModal();
         setActionButtonsDisabled(true);
+        let succeeded = false;
 
         try {
             updateProgress(8, '正在整理本地数据...');
@@ -3830,26 +3888,108 @@
             await flushAppState();
             globalThis.RPH_R2_SNAPSHOT_IN_PROGRESS = true;
 
-            // 上传中途本地数据被改了（第二遍生成的分片和第一遍对不上）就重新来一次
+            // 整理途中本地数据被改了（第二遍生成的分片和第一遍对不上）就重新来一次；已经在后台上传时不再自动重来
             let status;
             for (let attempt = 0; ; attempt += 1) {
                 try {
                     status = await uploadLocalSnapshot(mode);
                     break;
                 } catch (error) {
-                    if (attempt >= 1 || !String(error?.message || '').startsWith('两次扫描结果不一致')) throw error;
+                    if (attempt >= 1 || state.background || !String(error?.message || '').startsWith('两次扫描结果不一致')) throw error;
                     updateProgress(16, '本地数据刚刚变过，重新扫描一遍...');
                 }
             }
             updateProgress(100, status);
+            succeeded = true;
             setActionButtonsDisabled(false);
         } catch (error) {
             updateProgress(100, error?.message || '本地同步失败。');
             setActionButtonsDisabled(false);
         } finally {
             delete globalThis.RPH_R2_SNAPSHOT_IN_PROGRESS;
+            syncStateStore('parts', 'readwrite', (store) => store.clear()).catch(() => {});
+            leaveBackgroundUpload(succeeded);
             state.syncing = false;
             updateButtonState();
+        }
+    }
+
+    // ---- 不挡页面的上传：分片都进了本机暂存以后，同步面板可以关掉，进度显示在屏幕上方的小悬浮条上 ----
+    function warnBeforeUnload(event) {
+        event.preventDefault();
+        event.returnValue = '';
+    }
+
+    function enterBackgroundUpload() {
+        if (state.background) return;
+        state.background = true;
+        try { localStorage.setItem(PENDING_UPLOAD_KEY, String(Date.now())); } catch (_) { /* storage blocked */ }
+        window.addEventListener('beforeunload', warnBeforeUnload);
+        if (closeButton) closeButton.disabled = false;
+    }
+
+    function clearPendingUpload() {
+        try { localStorage.removeItem(PENDING_UPLOAD_KEY); } catch (_) { /* storage blocked */ }
+    }
+
+    function leaveBackgroundUpload(succeeded) {
+        const wasBackground = state.background;
+        state.background = false;
+        window.removeEventListener('beforeunload', warnBeforeUnload);
+        if (succeeded) clearPendingUpload();
+        if (!wasBackground || modalRoot?.classList.contains('is-open')) return hideFloat();
+        // 面板关着：结果显示在悬浮条上
+        if (succeeded) showFloat({ text: '上传成功', progress: 100, kind: 'done', autoHide: 3000 });
+        else showFloat({ text: `上传失败：${state.statusText}`, kind: 'error', action: { label: '重试', onClick: () => pushToServer('fast') } });
+    }
+
+    let floatRoot = null;
+    let floatTimer = null;
+    function showFloat({ text, progress = null, kind = 'busy', action = null, autoHide = 0 }) {
+        if (!floatRoot) {
+            floatRoot = document.createElement('div');
+            floatRoot.className = 'rp-sync-float';
+            floatRoot.dataset.rphSyncFloat = '';
+            floatRoot.innerHTML = '<button type="button" class="rp-sync-float__main" data-open></button>'
+                + '<button type="button" class="rp-sync-float__action" data-act hidden></button>'
+                + '<button type="button" class="rp-sync-float__close" data-close aria-label="关闭">×</button>'
+                + '<span class="rp-sync-float__bar"></span>';
+            floatRoot.querySelector('[data-open]').addEventListener('click', () => openModal());
+            floatRoot.querySelector('[data-close]').addEventListener('click', () => {
+                if (floatRoot.dataset.kind === 'resume') clearPendingUpload();
+                hideFloat();
+            });
+            document.body.appendChild(floatRoot);
+        }
+        clearTimeout(floatTimer);
+        floatRoot.hidden = false;
+        floatRoot.dataset.kind = kind;
+        floatRoot.querySelector('[data-open]').textContent = text;
+        floatRoot.querySelector('.rp-sync-float__bar').style.width = progress === null ? '0' : `${progress}%`;
+        const actionButton = floatRoot.querySelector('[data-act]');
+        actionButton.hidden = !action;
+        if (action) {
+            actionButton.textContent = action.label;
+            actionButton.onclick = () => {
+                hideFloat();
+                action.onClick();
+            };
+        }
+        floatRoot.querySelector('[data-close]').hidden = kind === 'busy';
+        if (autoHide) floatTimer = setTimeout(hideFloat, autoHide);
+    }
+
+    function hideFloat() {
+        clearTimeout(floatTimer);
+        if (floatRoot) floatRoot.hidden = true;
+    }
+
+    // 上次上传传到一半页面就关了：提示接着传（服务器已经有的分片不会再传）
+    function offerResumeUpload() {
+        let pending = null;
+        try { pending = localStorage.getItem(PENDING_UPLOAD_KEY); } catch (_) { /* storage blocked */ }
+        if (pending && !state.syncing) {
+            showFloat({ text: '上次上传没传完', kind: 'resume', action: { label: '继续上传', onClick: () => pushToServer('fast') } });
         }
     }
 
@@ -3867,10 +4007,12 @@
         document.addEventListener('DOMContentLoaded', () => {
             ensureModal();
             mountSyncButton();
+            offerResumeUpload();
         }, { once: true });
     } else {
         ensureModal();
         mountSyncButton();
+        offerResumeUpload();
     }
     watchSettingsView();
 })();
