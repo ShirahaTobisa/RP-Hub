@@ -194,6 +194,27 @@ try {
     await page.waitForFunction(() => document.querySelector('[data-rph-image-param] input[type="range"]').value === '50', null, { timeout: 5000 });
     assert.equal(server.params.steps, 50);
     console.log('PASS a plugin generator that loads after the settings page shows the saved steps once its range is known');
+
+    // 插件加的「全部参数恢复默认」：取消什么都不改；确认后除生图接口外都改回默认值，一次存好。
+    await view(page, 'chat');
+    server = { generator: 'nai2api-web', params: { steps: 50, scale: 8, cfg: 0.5, sampler: 'k_euler', noise_schedule: 'native', resolution: '4K', negative: '自定义负面' } };
+    await app(() => RPHubImageModule.reloadGenerationSettings());
+    await openSettings();
+    puts.length = 0;
+    const resetAll = page.getByRole('button', { name: '全部参数恢复默认' });
+    await resetAll.click();
+    await page.locator('[data-rph-ui-confirm] button', { hasText: '取消' }).click();
+    await page.waitForTimeout(600);
+    assert.equal(puts.length, 0);
+    await resetAll.click();
+    await page.locator('[data-rph-ui-confirm-accept]').click();
+    await page.waitForTimeout(900);
+    assert.deepEqual(puts, [{ params: { resolution: '', sampler: 'k_dpmpp_2m_sde', noise_schedule: 'karras', steps: 28, scale: 6, cfg: 0, negative: '' } }]);
+    assert.equal(server.generator, 'nai2api-web');
+    assert.equal(await shownSteps(), '28');
+    assert.match(await fields.nth(1).locator('button[aria-haspopup="listbox"]').textContent(), /标准/);
+    assert.equal(await app(() => document.querySelector('[data-rph-image-param] textarea').value), await app(() => RPHubImageModule.defaultNegativePrompt));
+    console.log('PASS reset all puts every image parameter except the generator back to its default');
 } finally {
     await browser.close();
     await harness.close();

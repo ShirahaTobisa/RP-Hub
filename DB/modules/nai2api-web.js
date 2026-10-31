@@ -8,7 +8,7 @@
     const MAX_WAIT_MS = 10 * 60_000;
 
     RPHubSDK.register({
-        id: 'nai2api-web', name: 'Nai2API 网页任务生图', version: '1.1.1', requiresApi: 5,
+        id: 'nai2api-web', name: 'Nai2API 网页任务生图', version: '1.2.0', requiresApi: 5,
         init(ctx) {
             const base = () => String(ctx.storage.get('base') || DEFAULT_BASE).replace(/\/+$/, '');
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -71,13 +71,42 @@
                 if (saved) steps.value = String(saved);
                 steps.dispatchEvent(new Event('input'));
             };
+
+            // 设置页「生图设置」的负面提示词下面加「全部参数恢复默认」：生图接口不变，其余参数改回默认，
+            // 和手动改每一项一样由设置页自己存到站点。
+            const DEFAULTS = { 分辨率: '', 采样器: 'k_dpmpp_2m_sde', 噪声调度: 'karras', 生成步数: '28', 提示词引导值: '6', 缩放引导值: '0' };
+            const resetAll = () => {
+                const defaults = { ...DEFAULTS, 负面提示词: globalThis.RPHubImageModule?.defaultNegativePrompt || '' };
+                for (const field of document.querySelectorAll('[data-rph-image-param]')) {
+                    const control = field.querySelector('select, input[type="range"], textarea');
+                    const value = defaults[field.querySelector('label')?.textContent.trim()];
+                    if (!control || value === undefined) continue;
+                    control.value = value;
+                    control.sync?.();
+                    control.dispatchEvent(new Event('input'));
+                    control.dispatchEvent(new Event('change'));
+                }
+            };
+            const addResetButton = () => {
+                const resetNegative = document.querySelector('[data-rph-image-param] textarea')?.parentElement.querySelector(':scope > button');
+                if (!resetNegative) return;
+                const row = Object.assign(document.createElement('div'), { className: 'flex justify-between gap-3' });
+                const button = Object.assign(document.createElement('button'), { type: 'button', className: resetNegative.className, textContent: '全部参数恢复默认' });
+                button.onclick = async () => {
+                    if (await window.RPHubUI.confirm({ title: '全部参数恢复默认', message: '生图接口不变，其余参数都改回默认值。', confirmText: '恢复默认' })) resetAll();
+                };
+                resetNegative.replaceWith(row);
+                row.append(resetNegative, button);
+            };
+
+            const patchSettings = () => { fixStepsSlider(); addResetButton(); };
             let observer = null;
             ctx.app.watch(() => ctx.app.get('currentView'), (view) => {
                 observer?.disconnect();
                 observer = null;
                 if (view !== 'settings') return;
-                fixStepsSlider();
-                observer = new MutationObserver(fixStepsSlider);
+                patchSettings();
+                observer = new MutationObserver(patchSettings);
                 observer.observe(document.getElementById('app'), { childList: true, subtree: true });
             }, { immediate: true });
 
