@@ -59,7 +59,7 @@ try {
     const row = (name) => page.locator('[data-scheme]').filter({ has: page.locator('b', { hasText: new RegExp(`^${name}$`) }) });
     const saveAs = async (name) => {
         await page.locator('[data-new]').fill(name);
-        await page.getByRole('button', { name: '存成方案' }).click();
+        await page.getByRole('button', { name: '存成方案', exact: true }).click();
         await row(name).waitFor();
     };
 
@@ -171,6 +171,70 @@ try {
     await bar.getByRole('button', { name: '管理方案' }).click();
     await row('日常').waitFor();
     console.log('PASS the native preset page gets a scheme dropdown that switches in one pick, follows manual toggles, and imports and exports');
+
+    // 方案也管全局正则：存方案时一起记、切换时一起切；卡里的正则不管；没记正则的旧方案切换时不动正则；
+    // 导出带上方案用到的正则，导入时补上缺的（全局、先关着），刷新后还在。
+    const regexSwitches = () => page.evaluate(() => {
+        const a = document.querySelector('#app').__vue_app__;
+        return (a._instance?.proxy || a._container._vnode.component.proxy).regexScripts
+            .filter((script) => ['正则A', '正则B', '卡里的'].includes(script.name)).map((script) => `${script.name}:${script.enabled !== false}`);
+    });
+    const editRegexes = (change) => page.evaluate((change) => {
+        const a = document.querySelector('#app').__vue_app__;
+        const scripts = (a._instance?.proxy || a._container._vnode.component.proxy).regexScripts;
+        const base = { flags: 'g', replacement: '', placement: [2], markdownOnly: true, promptOnly: false, runOnEdit: false, minDepth: null, maxDepth: null };
+        if (change === 'seed') {
+            scripts.push({ ...base, name: '正则A', regex: 'a', scope: 'global', enabled: true }, { ...base, name: '正则B', regex: 'b', scope: 'global', enabled: false },
+                { ...base, name: '卡里的', regex: 'c', scope: 'character', enabled: true });
+        } else if (change === 'drop B') scripts.splice(scripts.findIndex((script) => script.name === '正则B'), 1);
+        else for (const [name, enabled] of Object.entries(change)) scripts.find((script) => script.name === name).enabled = enabled;
+    }, change);
+    await editRegexes('seed');
+    await saveAs('正则一');
+    await editRegexes({ 正则A: false, 正则B: true, 卡里的: false });
+    await saveAs('正则二');
+    assert.equal(await row('正则一').locator('.rph-ui-muted').first().textContent(), '切换后：开正则 1 条；关正则 1 条');
+    await row('正则一').getByRole('button', { name: '切换' }).click();
+    assert.deepEqual(await regexSwitches(), ['正则A:true', '正则B:false', '卡里的:false'], 'switching sets the global regexes and leaves the card ones alone');
+    await row('分享来的').getByRole('button', { name: '切换' }).click();
+    assert.deepEqual(await regexSwitches(), ['正则A:true', '正则B:false', '卡里的:false'], 'a scheme without regex switches leaves the regexes alone');
+    console.log('PASS schemes save and switch global regexes too, leaving card regexes and old schemes alone');
+
+    await row('正则二').getByRole('button', { name: '编辑' }).click();
+    assert.equal(await page.locator('[data-regex]').filter({ hasText: '卡里的' }).count(), 0, 'the editor lists only global regexes');
+    await page.locator('[data-regex]').filter({ hasText: '正则A' }).locator('.settings-toggle').click();
+    await page.getByRole('button', { name: '保存方案' }).click();
+    assert.deepEqual(await regexSwitches(), ['正则A:true', '正则B:false', '卡里的:false'], 'editing a scheme does not touch the current regexes');
+    await row('正则二').getByRole('button', { name: '切换' }).click();
+    assert.deepEqual(await regexSwitches(), ['正则A:true', '正则B:true', '卡里的:false']);
+    console.log('PASS the scheme editor lists the global regexes and the edit applies on switch');
+
+    const [regexDownload] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '导出全部', exact: true }).click()]);
+    const regexFile = JSON.parse(await (await regexDownload.createReadStream()).toArray().then((chunks) => Buffer.concat(chunks).toString('utf8')));
+    assert.deepEqual(regexFile.regex.map((script) => script.name).filter((name) => ['正则A', '正则B', '卡里的'].includes(name)), ['正则A', '正则B']);
+    assert.ok(regexFile.regex.every((script) => !('enabled' in script) && !('scope' in script)), 'exported regexes carry no switch or scope');
+    assert.equal(regexFile.schemes.find((scheme) => scheme.name === '分享来的').regexStates, undefined);
+    await editRegexes('drop B');
+    const [regexChooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: '导入', exact: true }).click()]);
+    await regexChooser.setFiles({ name: 'regex.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(regexFile)) });
+    await page.getByText('新加了 1 条正则').first().waitFor();
+    assert.deepEqual(await regexSwitches(), ['正则A:true', '卡里的:false', '正则B:false'], 'a missing regex comes back switched off');
+    await row('正则二').getByRole('button', { name: '切换' }).click();
+    assert.deepEqual(await regexSwitches(), ['正则A:true', '卡里的:false', '正则B:true']);
+    const storedRegex = () => page.evaluate(async () => {
+        const db = await new Promise((resolve) => { indexedDB.open('RPHubDB').onsuccess = (event) => resolve(event.target.result); });
+        const value = await new Promise((resolve) => { db.transaction('store').objectStore('store').get('rp_hub_global_regex').onsuccess = (event) => resolve(event.target.result); });
+        db.close();
+        return (value || []).filter((script) => script.name === '正则B').map((script) => `${script.scope}:${script.enabled}`);
+    });
+    for (const deadline = Date.now() + 10000; String(await storedRegex()) !== 'global:true'; await new Promise((resolve) => setTimeout(resolve, 200))) {
+        if (Date.now() > deadline) throw new Error('RPH 没在 10 秒内存好导入的正则');
+    }
+    await load();
+    await button.click();
+    assert.deepEqual((await regexSwitches()).filter((item) => !item.startsWith('卡里的')), ['正则A:true', '正则B:true']);
+    await row('正则二').getByText('正在用').waitFor();
+    console.log('PASS exported schemes carry their regexes; importing adds the missing ones as global and off, and they survive a reload');
 } finally {
     await browser.close();
     await harness.close();

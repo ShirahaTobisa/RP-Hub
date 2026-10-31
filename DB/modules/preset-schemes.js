@@ -1,10 +1,10 @@
-// 预设方案：把 RPH 预设列表里“哪些条目开着”存成方案，一键切换（像酒馆切预设那样）。
+// 预设方案：把 RPH 预设列表里“哪些条目开着”存成方案，一键切换（像酒馆切预设那样）。全局正则的开关也一起记、一起切，角色卡自带的正则不管。
 // 方案只记开关、不存条目内容：内容只在 RPH 的预设里改一次，切换方案不会把改过的内容换回去。
-// 条目按名字对应，同名的按先后顺序对应；存方案之后才加的条目，切换时保持原样。
+// 条目和正则按名字对应，同名的按先后顺序对应；存方案之后才加的，切换时保持原样；没记正则的旧方案切换时不动正则。
 // 「预设管理」页顶上有方案下拉框，选中就切换；聊天输入框上方的「方案」按钮和模块管理里也能打开方案面板。
-// 方案存在插件数据里，随云同步。导出的文件带上方案用到的条目内容，别人导入时缺的条目会补上（先关着），同名方案会被替换。
+// 方案存在插件数据里，随云同步。导出的文件带上方案用到的条目和正则，别人导入时缺的会补上（先关着），同名方案会被替换。
 RPHubSDK.register({
-    id: 'preset-schemes', name: '预设方案', version: '1.2.1', requiresApi: 4,
+    id: 'preset-schemes', name: '预设方案', version: '1.3.0', requiresApi: 4,
     init(ctx) {
         'use strict';
         const FORMAT = 'rph-preset-schemes-v1';
@@ -19,114 +19,149 @@ RPHubSDK.register({
             if (!Array.isArray(list)) throw new Error('页面的预设还没加载好，稍后再试。');
             return list;
         }
-        // 每个条目对应成 [名字, 第几个同名, 条目]。
+        // 全局正则；角色卡自带的正则跟着卡走，方案不管。
+        function regexes() {
+            const list = ctx.app.get('regexScripts');
+            if (!Array.isArray(list)) throw new Error('页面的正则还没加载好，稍后再试。');
+            return list.filter((script) => script?.scope === 'global');
+        }
+        const nameOf = (item) => String(item.name ?? item.scriptName ?? '');
+        // 每个条目（或正则）对应成 [名字, 第几个同名, 条目]。
         function keyed(list) {
             const seen = new Map();
-            return list.map((preset) => {
-                const name = String(preset.name);
+            return list.map((item) => {
+                const name = nameOf(item);
                 const index = seen.get(name) || 0;
                 seen.set(name, index + 1);
-                return [name, index, preset];
+                return [name, index, item];
             });
         }
         // 方案里记的开关：名字 → 按顺序的开关列表。
-        function recorded(scheme) {
+        function recorded(states) {
             const map = new Map();
-            for (const [name, on] of scheme.states) {
+            for (const [name, on] of states) {
                 if (!map.has(name)) map.set(name, []);
                 map.get(name).push(on);
             }
             return map;
         }
-        const snapshot = () => presets().map((preset) => [String(preset.name), preset.enabled !== false]);
-        const isOn = (preset) => preset.enabled !== false;
+        const isOn = (item) => item.enabled !== false;
+        const snapshot = () => ({
+            states: presets().map((preset) => [nameOf(preset), isOn(preset)]),
+            regexStates: regexes().map((script) => [nameOf(script), isOn(script)])
+        });
 
-        // 切换到这个方案要改的条目：[条目, 方案里的开关]；compared 是方案里记了、页面上也还在的条目数。
+        // 切换到这个方案要改的：[条目或正则, 方案里的开关]；compared 是方案里记了、页面上也还在的个数。没记正则的旧方案不比正则。
         function differences(scheme) {
-            const wanted = recorded(scheme);
-            const changes = [];
+            const changes = [], regexChanges = [];
             let compared = 0;
-            for (const [name, index, preset] of keyed(presets())) {
-                const on = wanted.get(name)?.[index];
-                if (on === undefined) continue;
-                compared += 1;
-                if (isOn(preset) !== on) changes.push([preset, on]);
-            }
-            return { changes, compared };
+            const walk = (list, states, out) => {
+                const wanted = recorded(states);
+                for (const [name, index, item] of keyed(list)) {
+                    const on = wanted.get(name)?.[index];
+                    if (on === undefined) continue;
+                    compared += 1;
+                    if (isOn(item) !== on) out.push([item, on]);
+                }
+            };
+            walk(presets(), scheme.states, changes);
+            if (scheme.regexStates) walk(regexes(), scheme.regexStates, regexChanges);
+            return { changes, regexChanges, compared };
         }
 
         function apply(scheme) {
-            const { changes } = differences(scheme);
-            for (const [preset, on] of changes) preset.enabled = on;
-            return changes.length;
+            const { changes, regexChanges } = differences(scheme);
+            for (const [item, on] of [...changes, ...regexChanges]) item.enabled = on;
+            return [changes.length, regexChanges.length];
         }
 
         function isCurrent(scheme) {
-            const { changes, compared } = differences(scheme);
-            return compared > 0 && !changes.length;
+            const { changes, regexChanges, compared } = differences(scheme);
+            return compared > 0 && !changes.length && !regexChanges.length;
         }
 
         function switchTo(scheme) {
-            const changed = apply(scheme);
-            ctx.ui.toast(changed ? `已切换到「${scheme.name}」，改了 ${changed} 个条目的开关` : `已经是「${scheme.name}」的开关了`, { kind: 'success' });
+            const [changed, regexChanged] = apply(scheme);
+            const what = [changed && `${changed} 个条目`, regexChanged && `${regexChanged} 条正则`].filter(Boolean).join('、');
+            ctx.ui.toast(what ? `已切换到「${scheme.name}」，改了 ${what}的开关` : `已经是「${scheme.name}」的开关了`, { kind: 'success' });
         }
 
-        // 列表里的说明：正在用的写开着几条；别的写切换后会开、关哪些（内置条目大家都开着，列出来分不出方案）。
+        // 列表里的说明：正在用的写开着几条；别的写切换后会开、关哪些条目（内置条目大家都开着，列出来分不出方案），正则只写条数。
         function describe(scheme, current) {
-            if (scheme === current) return `开着 ${scheme.states.filter(([, on]) => on).length} 条`;
-            const { changes, compared } = differences(scheme);
+            const count = (states) => states.filter(([, on]) => on).length;
+            if (scheme === current) return `开着 ${count(scheme.states)} 条${scheme.regexStates ? `，正则 ${count(scheme.regexStates)} 条` : ''}`;
+            const { changes, regexChanges, compared } = differences(scheme);
             if (!compared) return '方案里记的条目都已经不在了';
-            if (!changes.length) return '和现在的开关一样';
+            if (!changes.length && !regexChanges.length) return '和现在的开关一样';
             const names = (list) => (list.length > 4 ? `${list.slice(0, 4).join('、')} 等 ${list.length} 条` : list.join('、'));
             const turnOn = changes.filter(([, on]) => on).map(([preset]) => preset.name);
             const turnOff = changes.filter(([, on]) => !on).map(([preset]) => preset.name);
-            return `切换后：${[turnOn.length && `开 ${names(turnOn)}`, turnOff.length && `关 ${names(turnOff)}`].filter(Boolean).join('；')}`;
+            const regexOn = regexChanges.filter(([, on]) => on).length, regexOff = regexChanges.length - regexOn;
+            return `切换后：${[turnOn.length && `开 ${names(turnOn)}`, turnOff.length && `关 ${names(turnOff)}`,
+                regexOn && `开正则 ${regexOn} 条`, regexOff && `关正则 ${regexOff} 条`].filter(Boolean).join('；')}`;
         }
 
-        // 方案文件带上方案用到的预设条目（名字、内容、角色）：对方没有这些条目时一起导入，方案才切得动。
+        // 方案文件带上方案用到的预设条目（名字、内容、角色）和正则：对方没有时一起导入，方案才切得动。
         function exportSchemes(list, fileName) {
             if (!list.length) return ctx.ui.toast('还没有方案可以导出', { kind: 'warning' });
-            const used = new Set(list.flatMap((scheme) => scheme.states.map(([name]) => name)));
-            const entries = presets().filter((preset) => used.has(String(preset.name)))
-                .map((preset) => ({ name: String(preset.name), content: String(preset.content ?? ''), role: preset.role || 'system' }));
+            const used = (key) => new Set(list.flatMap((scheme) => (scheme[key] || []).map(([name]) => name)));
+            const usedPresets = used('states'), usedRegex = used('regexStates');
+            const entries = presets().filter((preset) => usedPresets.has(nameOf(preset)))
+                .map((preset) => ({ name: nameOf(preset), content: String(preset.content ?? ''), role: preset.role || 'system' }));
+            const regex = regexes().filter((script) => usedRegex.has(nameOf(script)))
+                .map(({ enabled, disabled, scope, ...script }) => ({ ...script, name: nameOf(script) }));
+            const file = { format: FORMAT, schemes: list.map(({ name, states, regexStates }) => ({ name, states, ...(regexStates && { regexStates }) })), presets: entries };
+            if (regex.length) file.regex = regex;
             const link = document.createElement('a');
-            link.href = URL.createObjectURL(new Blob([JSON.stringify({ format: FORMAT, schemes: list.map(({ name, states }) => ({ name, states })), presets: entries }, null, 2)],
-                { type: 'application/json' }));
+            link.href = URL.createObjectURL(new Blob([JSON.stringify(file, null, 2)], { type: 'application/json' }));
             link.download = fileName;
             link.click();
             setTimeout(() => URL.revokeObjectURL(link.href), 1000);
         }
 
-        // 导入：同名方案替换。文件里带的条目，本地没有的（同名的按个数补齐）加到预设列表末尾，先关着，切到方案时才打开；
-        // 本地已有的同名条目用本地的内容。
+        // 导入：同名方案替换。文件里带的条目和正则，本地没有的（同名的按个数补齐）加到列表末尾，先关着，切到方案时才打开；
+        // 本地已有的同名条目、正则用本地的。
         async function importSchemes(text) {
             const value = JSON.parse(text);
-            const validScheme = (scheme) => typeof scheme?.name === 'string' && scheme.name.trim() && Array.isArray(scheme.states)
-                && scheme.states.every((state) => Array.isArray(state) && typeof state[0] === 'string' && typeof state[1] === 'boolean');
+            const validStates = (states) => Array.isArray(states)
+                && states.every((state) => Array.isArray(state) && typeof state[0] === 'string' && typeof state[1] === 'boolean');
+            const validScheme = (scheme) => typeof scheme?.name === 'string' && scheme.name.trim() && validStates(scheme.states)
+                && (scheme.regexStates === undefined || validStates(scheme.regexStates));
+            const validList = (list, check) => list === undefined || (Array.isArray(list) && list.every(check));
             if (value?.format !== FORMAT || !Array.isArray(value.schemes) || !value.schemes.every(validScheme)
-                || (value.presets !== undefined && !(Array.isArray(value.presets)
-                    && value.presets.every((entry) => typeof entry?.name === 'string' && typeof entry.content === 'string')))) {
+                || !validList(value.presets, (entry) => typeof entry?.name === 'string' && typeof entry.content === 'string')
+                || !validList(value.regex, (script) => typeof script?.name === 'string' && typeof script.regex === 'string')) {
                 throw new Error('不是预设方案文件。');
             }
+            const addMissing = (have, items = [], add) => {
+                const count = new Map(), seen = new Map();
+                for (const item of have) count.set(nameOf(item), (count.get(nameOf(item)) || 0) + 1);
+                let added = 0;
+                for (const item of items) {
+                    const index = (seen.get(item.name) || 0) + 1;
+                    seen.set(item.name, index);
+                    if (index <= (count.get(item.name) || 0)) continue;
+                    add(item);
+                    added += 1;
+                }
+                return added;
+            };
             const list = presets();
-            const have = new Map();
-            for (const preset of list) have.set(String(preset.name), (have.get(String(preset.name)) || 0) + 1);
-            const seen = new Map();
-            let added = 0;
-            for (const entry of value.presets || []) {
-                const count = (seen.get(entry.name) || 0) + 1;
-                seen.set(entry.name, count);
-                if (count <= (have.get(entry.name) || 0)) continue;
-                list.push({ name: entry.name, content: entry.content, role: ROLES[entry.role] ? entry.role : 'system', enabled: false });
-                added += 1;
-            }
+            const added = addMissing(list, value.presets,
+                (entry) => list.push({ name: entry.name, content: entry.content, role: ROLES[entry.role] ? entry.role : 'system', enabled: false }));
+            const addedRegex = value.regex?.length
+                ? addMissing(regexes(), value.regex, ({ disabled, ...script }) => ctx.app.get('regexScripts').push({ ...script, scope: 'global', enabled: false }))
+                : 0;
+            const copy = (states) => states.map(([name, on]) => [name, on]);
             const imported = value.schemes.map((scheme, index) => ({
-                id: `s-${Date.now().toString(36)}${index}`, name: scheme.name.trim(), states: scheme.states.map(([name, on]) => [name, on])
+                id: `s-${Date.now().toString(36)}${index}`, name: scheme.name.trim(), states: copy(scheme.states),
+                ...(scheme.regexStates && { regexStates: copy(scheme.regexStates) })
             }));
             const names = new Set(imported.map((scheme) => scheme.name));
             schemes = [...schemes.filter((scheme) => !names.has(scheme.name)), ...imported];
             await save();
-            return `导入了 ${imported.length} 个方案（同名的已替换）${added ? `，新加了 ${added} 个预设条目，先关着，切到方案时打开` : ''}`;
+            const what = [added && `${added} 个预设条目`, addedRegex && `${addedRegex} 条正则`].filter(Boolean).join('、');
+            return `导入了 ${imported.length} 个方案（同名的已替换）${what ? `，新加了 ${what}，先关着，切到方案时打开` : ''}`;
         }
 
         // 选文件导入，面板和预设页的导入按钮共用。
@@ -153,7 +188,7 @@ RPHubSDK.register({
                         let current = null;
                         try { current = schemes.find(isCurrent) || null; } catch (error) { body.innerHTML = `<p class="rph-ui-note">${escapeHtml(error.message)}</p>`; return; }
                         body.innerHTML = `
-                            <p class="rph-ui-note">方案记下 RPH 预设里哪些条目开着，点「切换」一键换过去。条目内容还在 RPH 的预设里改，切换方案不会动内容；存方案之后才加的条目，切换时保持原样。</p>
+                            <p class="rph-ui-note">方案记下 RPH 预设里哪些条目开着（全局正则也一起记），点「切换」一键换过去。条目内容还在 RPH 的预设里改，切换方案不会动内容；存方案之后才加的条目，切换时保持原样。</p>
                             <p class="rph-ui-muted">${current ? `现在用的是「${escapeHtml(current.name)}」` : schemes.length ? '现在的开关和哪个方案都不一样' : '还没有方案，先把现在的开关存成一个。'}</p>
                             ${schemes.map((scheme) => `<div class="rph-ui-row" data-scheme="${escapeHtml(scheme.id)}">
                                     <div class="rph-ui-row-main"><b>${escapeHtml(scheme.name)}</b>
@@ -183,7 +218,7 @@ RPHubSDK.register({
                             });
                             act('edit', () => edit(scheme));
                             act('update', async () => {
-                                scheme.states = snapshot();
+                                Object.assign(scheme, snapshot());
                                 await save();
                                 ctx.ui.toast(`已把现在的开关存进「${scheme.name}」`, { kind: 'success' });
                                 list();
@@ -198,7 +233,7 @@ RPHubSDK.register({
                         body.querySelector('[data-act="add"]').onclick = async () => {
                             const name = body.querySelector('[data-new]').value.trim();
                             if (!name) return ctx.ui.toast('先给方案起个名字', { kind: 'warning' });
-                            schemes = [...schemes, { id: `s-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name, states: snapshot() }];
+                            schemes = [...schemes, { id: `s-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name, ...snapshot() }];
                             await save();
                             ctx.ui.toast(`已存成方案「${name}」`, { kind: 'success' });
                             list();
@@ -209,42 +244,48 @@ RPHubSDK.register({
                         syncBar();
                     };
 
-                    // 编辑方案：不改现在的开关，只改方案里记的；还没记进方案的条目默认关着，标出来。
+                    // 编辑方案：不改现在的开关，只改方案里记的；还没记进方案的条目、正则默认关着，标出来。没记正则的旧方案不列正则。
                     const edit = (scheme) => {
-                        const wanted = recorded(scheme);
-                        const entries = keyed(presets()).map(([name, index, preset]) => ({ name, preset, on: wanted.get(name)?.[index] }));
+                        const rows = (items, states) => {
+                            const wanted = recorded(states);
+                            return keyed(items).map(([name, index, item]) => ({ name, item, on: wanted.get(name)?.[index] }));
+                        };
+                        const kinds = { entry: rows(presets(), scheme.states), regex: scheme.regexStates ? rows(regexes(), scheme.regexStates) : [] };
+                        const row = (kind, entry, index) => `<div class="rph-ui-row" data-${kind}="${index}">
+                                <div class="rph-ui-row-main"><b>${escapeHtml(entry.name)}</b>
+                                    <span class="rph-ui-muted">· ${kind === 'regex' ? '正则' : ROLES[entry.item.role] || '系统'}${entry.on === undefined ? ` · 新${kind === 'regex' ? '正则' : '条目'}，还没记进方案` : ''}</span></div>
+                                <label class="rph-ui-check"><input type="checkbox" class="settings-toggle-input sr-only" aria-label="${escapeHtml(entry.name)}" ${entry.on ? 'checked' : ''}><span class="settings-toggle"></span></label>
+                            </div>`;
                         body.innerHTML = `
                             <label class="rph-ui-field">方案名<input class="rph-ui-input" data-name value="${escapeHtml(scheme.name)}"></label>
                             <label class="rph-ui-field">找条目<input class="rph-ui-input" data-filter placeholder="输入名字筛选"></label>
-                            <div data-entries>${entries.map((entry, index) => `<div class="rph-ui-row" data-entry="${index}">
-                                <div class="rph-ui-row-main"><b>${escapeHtml(entry.name)}</b>
-                                    <span class="rph-ui-muted">· ${ROLES[entry.preset.role] || '系统'}${entry.on === undefined ? ' · 新条目，还没记进方案' : ''}</span></div>
-                                <label class="rph-ui-check"><input type="checkbox" class="settings-toggle-input sr-only" aria-label="${escapeHtml(entry.name)}" ${entry.on ? 'checked' : ''}><span class="settings-toggle"></span></label>
-                            </div>`).join('')}</div>
+                            <div data-entries>${Object.entries(kinds).map(([kind, list]) => list.map((entry, index) => row(kind, entry, index)).join('')).join('')}</div>
                             <div class="rph-ui-actions">
                                 <button type="button" class="modal-secondary-button rph-ui-button" data-act="back">返回</button>
                                 <button type="button" class="modal-secondary-button rph-ui-button" data-act="export">导出这个方案</button>
                                 <button type="button" class="modal-primary-button rph-ui-button" data-act="save">保存方案</button>
                             </div>`;
+                        const each = (handle) => Object.keys(kinds).forEach((kind) => body.querySelectorAll(`[data-${kind}]`)
+                            .forEach((item) => handle(item, kinds[kind][item.dataset[kind]], kind)));
                         body.querySelector('[data-filter]').oninput = (event) => {
                             const text = event.target.value.trim().toLowerCase();
-                            for (const row of body.querySelectorAll('[data-entry]')) row.hidden = Boolean(text) && !entries[row.dataset.entry].name.toLowerCase().includes(text);
+                            each((item, entry) => { item.hidden = Boolean(text) && !entry.name.toLowerCase().includes(text); });
                         };
                         // 编辑框里现在的样子（没保存也算），保存和导出都用它。
-                        const draft = () => ({
-                            name: body.querySelector('[data-name]').value.trim(),
-                            states: [...body.querySelectorAll('[data-entry]')].map((row) => [entries[row.dataset.entry].name, row.querySelector('input').checked])
-                        });
+                        const draft = () => {
+                            const states = { entry: [], regex: [] };
+                            each((item, entry, kind) => states[kind].push([entry.name, item.querySelector('input').checked]));
+                            return { name: body.querySelector('[data-name]').value.trim(), states: states.entry, ...(scheme.regexStates && { regexStates: states.regex }) };
+                        };
                         body.querySelector('[data-act="back"]').onclick = list;
                         body.querySelector('[data-act="export"]').onclick = () => {
-                            const { name, states } = draft();
-                            exportSchemes([{ name: name || scheme.name, states }], `RPH 预设方案-${name || scheme.name}.json`);
+                            const { name, ...states } = draft();
+                            exportSchemes([{ name: name || scheme.name, ...states }], `RPH 预设方案-${name || scheme.name}.json`);
                         };
                         body.querySelector('[data-act="save"]').onclick = async () => {
-                            const { name, states } = draft();
+                            const { name, ...states } = draft();
                             if (!name) return ctx.ui.toast('方案名不能空着', { kind: 'warning' });
-                            scheme.name = name;
-                            scheme.states = states;
+                            Object.assign(scheme, { name, ...states });
                             await save();
                             ctx.ui.toast(`已保存「${name}」；要用它就点「切换」`, { kind: 'success' });
                             list();
@@ -311,8 +352,9 @@ RPHubSDK.register({
             }
             globalThis.Vue.nextTick(() => mountBar().catch((error) => ctx.log('预设页方案栏没加上', error)));
         }, { immediate: true });
-        // 在原生列表里手动开关条目后，下拉框跟着显示对应的方案（或「没存成方案」）。
-        ctx.app.watch(() => (ctx.app.get('presets') || []).map((preset) => `${preset.name}\n${isOn(preset)}`).join('\n'), syncBar);
+        // 在原生列表里手动开关条目或全局正则后，下拉框跟着显示对应的方案（或「没存成方案」）。
+        ctx.app.watch(() => [...(ctx.app.get('presets') || []), ...(ctx.app.get('regexScripts') || []).filter((script) => script?.scope === 'global')]
+            .map((item) => `${nameOf(item)}\n${isOn(item)}`).join('\n'), syncBar);
 
         ctx.ui.addComposerButton({ label: '预设方案', text: '方案', onClick: openPanel });
         ctx.ui.addSidebarEntry({ label: '预设方案', onClick: openPanel });
