@@ -628,8 +628,14 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         return token ? (getTokenProviderName(token) || 'std') : '';
     }
 
+    // 画风、模型、比例以页面上正在用的设置为准，改完下一张图就生效；页面还没挂载时才用启动时读的副本。
+    function liveSettings() {
+        const live = readLiveAppValue('settings');
+        return live && typeof live === 'object' ? live : (state.settings || {});
+    }
+
     function getImageArtistConfig(model = '') {
-        const settings = state.settings || {};
+        const settings = liveSettings();
         let styleKey = settings.imageStyle || 'vertical';
         // Mirrors upstream 1.8.6: v5 rejects these styles and migrates to
         // vertical; keep the set in sync with app.js v5UnsupportedImageStyles.
@@ -643,7 +649,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
     }
 
     function getModuleImageModel() {
-        const settings = state.settings || {};
+        const settings = liveSettings();
         // Pre-1.8.6 slots have no imageModel setting; fall back to the model
         // this module has always used.
         const model = String(settings.imageModel || '').trim();
@@ -745,7 +751,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         const seed = options.reroll
             ? createRerollSeed(options.previousSeed)
             : deriveImageSeed(safePrompt, options.occurrenceIndex, characterUuid);
-        const settings = state.settings || {};
+        const settings = liveSettings();
         const params = generation.settings.params || {};
         return applyParamHandlers({
             prompt: safePrompt,

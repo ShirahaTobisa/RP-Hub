@@ -92,6 +92,18 @@
         });
     }
 
+    // 一个只读事务里把所有键一起读出来，不是一张卡开一个事务。
+    function readValues(db, keys) {
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction([STORE_NAME], 'readonly');
+            const store = tx.objectStore(STORE_NAME);
+            const results = keys.map((key) => store.get(key));
+            tx.oncomplete = () => resolve(results.map((request) => request.result));
+            tx.onerror = () => reject(tx.error || new Error('读取角色卡失败。'));
+            tx.onabort = () => reject(tx.error || new Error('读取角色卡事务已中止。'));
+        });
+    }
+
     function enqueueMutation(task) {
         const result = mutationQueue.then(task, task);
         mutationQueue = result.catch(() => undefined);
@@ -272,17 +284,19 @@
                 hashCache.clear();
                 return null;
             }
-            return migrate();
+            // 两个 loadAll 同时跑时，排在后面的迁移会发现旧表已经没了、返回 null：这时按索引再读一遍，
+            // 别把"没数据"交出去（页面会当成没有角色，下次保存把分键全删光）。
+            return (await migrate()) ?? loadAll();
         }
 
         const order = normalizeIndexOrder(indexValue);
         const cards = [];
         hashCache.clear();
-        for (const uuid of order) {
-            const key = characterKey(uuid);
-            const card = await readValue(db, key);
+        const values = await readValues(db, order.map(characterKey));
+        for (const [index, uuid] of order.entries()) {
+            const card = values[index];
             if (card === undefined) {
-                console.warn(`[RPHubCharStore] 角色卡索引引用了缺失记录：${key}`);
+                console.warn(`[RPHubCharStore] 角色卡索引引用了缺失记录：${characterKey(uuid)}`);
                 continue;
             }
             const serialized = JSON.stringify(card);
@@ -455,6 +469,4 @@
         assertPushAllowed,
         getPatchAuditStatus: () => ({ ...patchAudit })
     });
-
-    startPatchAudit();
 })();

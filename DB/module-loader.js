@@ -2,7 +2,7 @@
 (() => {
     'use strict';
 
-    const API_VERSION = 8;
+    const API_VERSION = 9;
     const LOADER_VERSION = 'r2-workshop-8';
     const LIST_KEY = 'rp_hub_workshop_modules_v1';
     const DB_NAME = 'RPHubDB';
@@ -783,6 +783,14 @@
             { deep: options.deep === true, immediate: options.immediate === true });
     }
 
+    // API 9：插件改过 chatHistory 里的消息之后调用，RPH 按自己的流程（排队、失败重试、失败提示）把当前聊天记录存盘，返回是否存成。
+    // RPH 只在消息条数变化、自己编辑或生成结束时才存，插件改了正文不存就等于没改。
+    function saveChatHistory() {
+        const save = globalThis.RPH_R2_SAVE_CHAT_HISTORY;
+        if (typeof save !== 'function') throw new Error('这个版本的 RPH 不支持插件保存聊天记录');
+        return save();
+    }
+
     function isMainChatRequest(url, body) {
         return /chat\/completions/i.test(url) && Array.isArray(body?.messages) && appGet('isGenerating') === true
             && !body.messages.some(message => AUXILIARY_REQUEST_MARKERS.some(marker => String(message?.content || '').includes(marker)));
@@ -1037,7 +1045,8 @@
             app: {
                 get: appGet,
                 set: appSet,
-                watch: appWatch
+                watch: appWatch,
+                saveChatHistory
             },
             requests: {
                 onChat: callback => onChatRequest(id, callback)

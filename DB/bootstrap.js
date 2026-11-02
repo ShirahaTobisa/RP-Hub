@@ -94,6 +94,25 @@
         try { localStorage.setItem(DIRTY_FULL, localStorage.getItem(DIRTY_EPOCH) || '0'); } catch (_) { discardSyncLayout(); }
     }
 
+    // 拉取是直接改本地库，别的标签页内存里还是旧数据：开始时让它们把写延后，完成或失败后让它们刷新，别拿旧数据盖回去。
+    // 键以 rp_hub_sync_ 开头，不进快照。
+    const RESTORE_BROADCAST_KEY = 'rp_hub_sync_restore_v1';
+    const RESTORE_NOTICE_KEY = 'rp_hub_sync_restore_notice_v1';
+    function announceRestore(phase) {
+        try { localStorage.setItem(RESTORE_BROADCAST_KEY, `${phase}:${Date.now()}`); } catch (_) { /* storage blocked */ }
+    }
+    window.addEventListener('storage', (event) => {
+        if (event.key !== RESTORE_BROADCAST_KEY || !event.newValue) return;
+        if (event.newValue.startsWith('start:')) globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS = true;
+        else location.reload();
+    });
+    function showRestoreNotice() {
+        const notice = localStorage.getItem(RESTORE_NOTICE_KEY);
+        if (!notice) return;
+        try { localStorage.removeItem(RESTORE_NOTICE_KEY); } catch (_) { /* storage blocked */ }
+        window.RPHubUI?.toast?.(notice, { kind: 'error', duration: 10000 });
+    }
+
     function readDirtyMarks() {
         const marks = new Map();
         let fullMark = null;
@@ -1282,6 +1301,8 @@
     async function buildSnapshotPlan(mode = 'full') {
         const dirtyState = takeDirty();
         const tokens = [...dirtyState.marks.keys()];
+        // 小说页和角色生成页没有记脏的钩子（覆盖层脚本只注入主页），它们各自写的那个键每次都按改过处理，不然云端会悄悄变旧。
+        tokens.push(JSON.stringify(['RPHubDB', 'store', 'rp_hub_novel_library']), JSON.stringify(['AICharGen', 'characters', 'ai_chargen_characters']));
         // 本机设置只读这一次，两遍生成共用：页面（比如生图模块）在上传中途写个设置项，不会让两遍对不上
         const localEntries = readLocalStorageSnapshot();
         const layout = mode === 'fast' ? await loadSyncLayout() : null;
@@ -3733,6 +3754,7 @@
                 await restoreStreamSnapshot(remote, () => {
                     globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS = true;
                     restoreStarted = true;
+                    announceRestore('start');
                 });
             } else if (!remote.snapshotFormat || remote.snapshotFormat === LEGACY_SNAPSHOT_FORMAT) {
                 const response = await downloadLegacyRemoteSnapshot(remote);
@@ -3746,6 +3768,7 @@
                 }
                 globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS = true;
                 restoreStarted = true;
+                announceRestore('start');
                 await replaceLocalSnapshot(remoteSnapshot);
             } else {
                 throw new Error('服务器快照格式不受支持。');
@@ -3753,28 +3776,29 @@
 
             restoreSucceeded = true;
             markDirtyAll(); // 本地数据整个换过了，下次上传完整扫描
+            try { localStorage.removeItem(RESTORE_NOTICE_KEY); } catch (_) { /* storage blocked */ }
+            announceRestore('done');
             state.reloadPending = true;
             updateProgress(100, '服务器数据已写入本地，页面即将刷新...');
             setTimeout(() => {
                 location.reload();
             }, 700);
         } catch (error) {
-            let finalError = error;
             if (restoreStarted && !restoreSucceeded) {
-                delete globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS;
+                // 本地库可能只换了一半。内存里的旧数据不能写回去（会把换好的部分盖掉，角色卡还会因为哈希缓存没变而漏写），
+                // 写闸门保持关着，刷新让页面按现在的库重新加载，刷新后提示一次让用户重新拉取。
+                announceRestore('failed');
                 try {
-                    await releaseDeferredPersistenceWrites();
-                    if (typeof globalThis.RPHubCharStore?.waitForPendingMutations === 'function') {
-                        await globalThis.RPHubCharStore.waitForPendingMutations();
-                    }
-                } catch (deferredError) {
-                    finalError = new Error(
-                        `${error?.message || '服务器同步失败。'} 恢复期间待保存数据写回失败：${deferredError?.message || deferredError}`,
-                        { cause: deferredError }
-                    );
-                }
+                    localStorage.setItem(RESTORE_NOTICE_KEY, `上次拉取没有完成（${error?.message || '服务器同步失败。'}），本地数据可能只换了一部分，请重新拉取一次再上传。`);
+                } catch (_) { /* storage blocked */ }
+                state.reloadPending = true;
+                updateProgress(100, '拉取没有完成，页面即将刷新...');
+                setTimeout(() => {
+                    location.reload();
+                }, 700);
+                return;
             }
-            updateProgress(100, finalError.message || '服务器同步失败。');
+            updateProgress(100, error?.message || '服务器同步失败。');
             setActionButtonsDisabled(false);
         } finally {
             state.syncing = state.reloadPending;
@@ -3903,7 +3927,6 @@
             }
             await globalThis.RPHubCharStore.assertPushAllowed();
             await flushAppState();
-            globalThis.RPH_R2_SNAPSHOT_IN_PROGRESS = true;
 
             // 整理途中本地数据被改了（第二遍生成的分片和第一遍对不上）就重新来一次；已经在后台上传时不再自动重来
             let status;
@@ -3923,7 +3946,6 @@
             updateProgress(100, error?.message || '本地同步失败。');
             setActionButtonsDisabled(false);
         } finally {
-            delete globalThis.RPH_R2_SNAPSHOT_IN_PROGRESS;
             syncStateStore('parts', 'readwrite', (store) => store.clear()).catch(() => {});
             leaveBackgroundUpload(succeeded);
             state.syncing = false;
@@ -4025,11 +4047,13 @@
             ensureModal();
             mountSyncButton();
             offerResumeUpload();
+            showRestoreNotice();
         }, { once: true });
     } else {
         ensureModal();
         mountSyncButton();
         offerResumeUpload();
+        showRestoreNotice();
     }
     watchSettingsView();
 })();

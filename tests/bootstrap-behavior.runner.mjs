@@ -202,7 +202,13 @@ async function runChrome(url) {
     try {
         const page = await browser.newPage();
         await page.goto(url, { waitUntil: 'domcontentloaded' });
-        await page.waitForFunction(() => ['pass', 'fail'].includes(document.querySelector('#result')?.dataset.status), null, { timeout: 120000 });
+        try {
+            await page.waitForFunction(() => ['pass', 'fail'].includes(document.querySelector('#result')?.dataset.status), null, { timeout: 120000 });
+        } catch (error) {
+            // 卡住时把页面上的进度文字打出来，知道停在哪个用例。
+            console.error('page phase when the wait gave up:', await page.evaluate(() => `${globalThis.__bootstrapTestPhase || ''} | ${document.querySelector('#result')?.textContent || ''}`).catch(() => ''));
+            throw error;
+        }
         return await page.content();
     } finally { await browser.close(); }
 }

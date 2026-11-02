@@ -396,21 +396,13 @@ async function readBrowserRecord(page, key) {
     }), key);
 }
 
-async function setStoredImageStyle(page, imageStyle) {
-    return page.evaluate((nextStyle) => new Promise((resolve, reject) => {
-        const request = indexedDB.open('RPHubDB', 1);
-        request.onerror = () => reject(request.error);
-        request.onsuccess = () => {
-            const database = request.result;
-            const transaction = database.transaction('store', 'readwrite');
-            const store = transaction.objectStore('store');
-            const get = store.get('rp_hub_settings');
-            get.onerror = () => reject(get.error);
-            get.onsuccess = () => store.put({ ...(get.result || {}), imageStyle: nextStyle }, 'rp_hub_settings');
-            transaction.oncomplete = () => { database.close(); resolve(); };
-            transaction.onerror = () => { database.close(); reject(transaction.error); };
-        };
-    }), imageStyle);
+// 像在设置页里切画风一样改页面上的设置，不等它保存落盘。
+async function setLiveImageStyle(page, imageStyle) {
+    return page.evaluate((nextStyle) => {
+        const app = document.querySelector('#app').__vue_app__;
+        const proxy = app._instance?.proxy || app._container?._vnode?.component?.proxy;
+        proxy.settings.imageStyle = nextStyle;
+    }, imageStyle);
 }
 
 async function readLibrary(origin) {
@@ -841,11 +833,7 @@ async function runMainScenario(browser, origin, providerCalls) {
         phase = 'old-style-drift';
         const providerBeforeStyle = providerCalls.length;
         const styleResponseStart = responses.length;
-        await page.evaluate(() => {
-            const app = document.querySelector('#app').__vue_app__;
-            const proxy = app._instance?.proxy || app._container?._vnode?.component?.proxy;
-            proxy.settings.imageStyle = 'anime';
-        });
+        await setLiveImageStyle(page, 'anime');
         await flushPage(page);
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 90000 });
         await waitForApp(page);
@@ -920,13 +908,8 @@ async function runMainScenario(browser, origin, providerCalls) {
         const rerollProviderStart = providerCalls.length;
         const rerollResponseStart = responses.length;
         const beforeReroll = await waitForPromptRecord(page, NEW_PROMPT);
-        await setStoredImageStyle(page, 'galgame');
-        const liveStyleBeforeReroll = await page.evaluate(() => {
-            const app = document.querySelector('#app').__vue_app__;
-            const proxy = app._instance?.proxy || app._container?._vnode?.component?.proxy;
-            return proxy.settings.imageStyle;
-        });
-        assert.equal(liveStyleBeforeReroll, 'anime', 'fixture unexpectedly refreshed settings before explicit reroll');
+        // 重绘要用页面上刚切的画风，不等它保存落盘。
+        await setLiveImageStyle(page, 'galgame');
         const rerollButton = await page.evaluate((prompt) => {
             const image = [...document.querySelectorAll('.rp-generated-image-frame img')].find((candidate) => {
                 try { return new URL(candidate.currentSrc || candidate.src, location.origin).searchParams.get('tag') === prompt; }
@@ -969,11 +952,7 @@ async function runMainScenario(browser, origin, providerCalls) {
         phase = 'post-reroll-freeze';
         const providerAfterReroll = providerCalls.length;
         const postRerollResponseStart = responses.length;
-        await page.evaluate(() => {
-            const app = document.querySelector('#app').__vue_app__;
-            const proxy = app._instance?.proxy || app._container?._vnode?.component?.proxy;
-            proxy.settings.imageStyle = 'galgame';
-        });
+        await setLiveImageStyle(page, 'galgame');
         await setNativeAuto(page, false);
         await setNativeAuto(page, true);
         await exerciseMaintenanceCycles(page, 2);

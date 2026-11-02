@@ -1,5 +1,5 @@
 export const RP_HUB_APP_PATH = 'assets/js/app.js';
-export const RP_HUB_APP_PATCH_REVISION = 'r2-character-split-e2b-v4';
+export const RP_HUB_APP_PATCH_REVISION = 'r2-character-split-e2b-v5';
 
 export const APP_PATCH_MODES = Object.freeze({
     characterSave: Object.freeze({
@@ -288,7 +288,9 @@ function buildPersistenceBridge(indent, eol) {
         `${inner}if (chatSaved === false) throw new Error('聊天记录保存失败，已取消同步或版本切换');`,
         `${inner}return true;`,
         `${indent}};`,
-        `${indent}globalThis.RPH_R2_FLUSH_PERSISTENCE = flushPersistenceForRpSync;`
+        `${indent}globalThis.RPH_R2_FLUSH_PERSISTENCE = flushPersistenceForRpSync;`,
+        // 给插件加载器的 ctx.app.saveChatHistory 用：插件改过消息正文后，按官方流程把当前聊天记录存盘。
+        `${indent}globalThis.RPH_R2_SAVE_CHAT_HISTORY = () => saveChatHistoryNow();`
     ].join(eol);
 }
 

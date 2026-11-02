@@ -12,7 +12,7 @@
         id: 'template-mod',
         name: '官方模板 mod',
         version: '1.0.0',
-        // 当前插件接口是 API 8。本模板只用 API 1 的接口，哪个版本的测试版都能装；
+        // 当前插件接口是 API 9。本模板只用 API 1 的接口，哪个版本的测试版都能装；
         // 用到更新的接口时把 requiresApi 改成对应版本：ctx.data 是 2，ctx.app、ctx.requests、生成事件是 3，
         // ctx.app.set、ctx.ui.addComposerButton 是 4，ctx.image 是 5，beforeMount 是 6，ctx.ai 是 7，ctx.ui.addPage 是 8。
         // 写法见 examples/api-demo-module.js。

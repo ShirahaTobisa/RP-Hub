@@ -25,13 +25,13 @@ function normalizedWorkerSegment(source, startMarker, endMarker) {
 }
 
 const protectedFiles = new Map([
-    ['DB/image-module.js', '5ABA6CD6E4491512BF8832778FF3B1A3B258D17FEEEED91D7BC71ECF00708925'],
-    ['_worker.js', '055B751AF0A01F173A1F6D2CB1C2216CA60C1CE89511DF05A71E3C27D77E648F'],
-    ['DB/char-store.js', '572888C71A656871438D4D7ED61212F46F99DCEAB561A1A07264961CBD66B9E3'],
-    ['DB/bootstrap.js', 'DD77496338AF82744C616F748DB0C136C2F9906D44D32FF9ADE383AD94907D65'],
+    ['DB/image-module.js', 'B3EF7655CBE5A2E6B2B0E768AF6E901AF0B92A7A42542BC0B356BEAEF6C87469'],
+    ['_worker.js', '0CED66DEC188FC426BDFE2905D0840B057A104A1A6D29F9B1588241717E9A304'],
+    ['DB/char-store.js', '3B097F967B2C60394C9452BDAA3EBB679B70511954F5297212C7FF010C130AA3'],
+    ['DB/bootstrap.js', 'FE2F395C64AC605281AF2F3F871DDA47A720F1E3BD35AE29BE1060433AB5CD17'],
     ['DB/styles.css', '87E4E5F49F1D6155AAA430B3CA3CFC8878057D5269A2C938D6E887509FB280BC'],
-    ['DB/app-patches.mjs', 'E2251ABF702975AC3CC1B4ABA9713917C4F269BDCCE476265B36E067FE4E2A00'],
-    ['assets/js/app.js', '2A966442F7E937A5229FE093C97336C152A8153B38E8B335CDC680D06781430C'],
+    ['DB/app-patches.mjs', '86CA3B02AA3F78A71FD736935A7ED458EF51F1E8B602882FBC2AB589BB69F791'],
+    ['assets/js/app.js', 'F7161759C64116E1B1EA86F9A97AF7680C4FF15B06FEAF8FCAC87D68792432FE'],
     ['scripts/rebuild.mjs', 'BFD59ECA2596E37C55583146FFB8CFE48656B9C4AF81E9ACA606B833C02302DC']
 ]);
 
@@ -45,14 +45,14 @@ assert.equal(workerSource.split(workshopInjection).length - 1, 1, 'workshop load
 const workerWithoutWorkshopInjection = workerSource.replace(/<script src="\/DB\/nav-adapter\.js\?v=sync-195"><\/script>\r?\n/, '').replace(`${workshopInjection}${workerSource.includes(`${workshopInjection}\r\n`) ? '\r\n' : '\n'}`, '');
 assert.equal(
     sha256Bytes(Buffer.from(workerWithoutWorkshopInjection, 'utf8')),
-    '1A829A9F64F4C2570F14D40DA4B63DBF22823EFDC1F12DA30EC0902F25FDDF98',
+    '836D6669FF3397F198D37F0F9DC16CBAAA50D10E0BCB14A6A8538DB63C6A98C9',
     '_worker.js differs from the current img baseline by more than the workshop injection line'
 );
 const stableWorkerSegments = [
     ['sync CAS/history/GC core', 'function getChunkLength', 'function buildRemoteInfo', '249EB45190B0DB34C3BFB46D3467AE217E1E2F4A60C5CF592FBFAC49DF8DEC53'],
     ['pull-json-part handler', 'async function handlePullJsonPart', 'async function handleUploadCreate', '652B0707538D3C91BD9F1522A055C566086AEDEDEE0DF33B0E33B91E7D6065FB'],
     ['upload-part handler', 'async function handleUploadPart', 'async function handleUploadComplete', '279F7F19B8B0F47180D9D4D65A343A1BC013C52AF7D00AD7F7A035FA79FA296E'],
-    ['app-update implementation', 'function buildGitHubHeaders', 'async function handleJsonApi', '644ED6634BE64B68577FAC595432AD1A9BBF1FEA9DDBF785464C0357DC634590']
+    ['app-update implementation', 'function buildGitHubHeaders', 'async function handleJsonApi', 'C9D3AFB5E97927DAB8C0D3F4001C861F177CA662F56270377F3E411C0D69862A']
 ];
 
 for (const [label, startMarker, endMarker, expectedHash] of stableWorkerSegments) {

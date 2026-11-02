@@ -21,6 +21,7 @@ const probeSource = `RPHubSDK.register({ id:'api3-probe', name:'Probe', version:
     ctx.requests.onChat(() => { probe.handled++; });
     probe.ai = ctx.ai;
     probe.addPage = (options) => ctx.ui.addPage(options);
+    probe.saveChatHistory = () => ctx.app.saveChatHistory();
 } });`;
 
 try {
@@ -258,6 +259,15 @@ try {
     await page.evaluate(() => api3Probe.page.open());
     await probePage.waitFor();
     console.log('PASS ctx.ui.addPage adds a navigation entry and a full page with the native header that cleans up when left');
+
+    // API 9：插件改了消息正文后调 ctx.app.saveChatHistory，刷新后改动还在（RPH 自己不会因为这种修改存盘）。
+    await page.evaluate(() => { const app = document.querySelector('#app').__vue_app__; const history = (app._instance || app._container._vnode.component).proxy.chatHistory; history[history.length - 1].content += '\n\n插件补的一句'; });
+    assert.equal(await page.evaluate(() => api3Probe.saveChatHistory()), true, 'ctx.app.saveChatHistory must report the save succeeded');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    const lastContent = () => { const app = document.querySelector('#app')?.__vue_app__; const proxy = app && (app._instance || app._container?._vnode?.component)?.proxy; return (proxy?.chatHistory || []).at(-1)?.content || ''; };
+    await page.waitForFunction(`(${lastContent.toString()})().length > 0`, null, { timeout: 45000 });
+    assert.equal(await page.evaluate(`(${lastContent.toString()})().endsWith('插件补的一句')`), true, 'the plugin edit must survive a reload');
+    console.log('PASS ctx.app.saveChatHistory persists a plugin edit across a reload');
     assert.deepEqual(errors, []);
 } finally {
     await context.close();

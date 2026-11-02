@@ -1053,10 +1053,14 @@ async function testBridgeAndPullIsolation() {
     };
     try {
         await api.pullFromServer();
-        assert(globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS !== true,
-            'failed pull left the restore flag enabled');
-        assertEqual(reloadScheduled, 0, 'failed pull scheduled a reload');
-        assert(/UUID 重复/.test(api.state.statusText), 'failed pull did not report the restore validation error');
+        // 恢复开始后失败：写闸门保持关着、刷新页面（旧内存不能写回半新半旧的库），错误留到刷新后提示。
+        assertEqual(globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS, true, 'failed restore released the write gate before the reload');
+        assertEqual(reloadScheduled, 1, 'failed restore did not schedule a reload');
+        assert(/UUID 重复/.test(localStorage.getItem('rp_hub_sync_restore_notice_v1') || ''), 'failed restore did not keep the error for the notice after reload');
+        delete globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS;
+        api.state.reloadPending = false;
+        api.state.syncing = false;
+        reloadScheduled = 0;
 
         remoteBytes = new TextEncoder().encode(JSON.stringify({
             schemaVersion: 3,
@@ -1080,6 +1084,7 @@ async function testBridgeAndPullIsolation() {
     assertEqual(globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS, true,
         'successful pull did not keep the restore flag until reload');
     assert(/页面即将刷新/.test(api.state.statusText), 'successful pull did not reach restore completion');
+    assertEqual(localStorage.getItem('rp_hub_sync_restore_notice_v1'), null, 'successful pull did not clear the failed-restore notice');
     delete globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS;
     api.state.syncing = false;
     api.state.reloadPending = false;
@@ -1477,12 +1482,19 @@ async function testDeferredWritesAcrossPullOutcomes() {
 
         await api.pullFromServer();
         assert(failureWrites && failureWrites.length === 4, 'failed restore did not queue all pending writes');
-        await Promise.all(failureWrites);
-        assert(globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS !== true,
-            'failed restore did not clear the pull flag');
-        assertEqual(reloadScheduled, 0, 'failed restore scheduled a reload');
+        // 恢复开始后失败：写闸门保持关着、排队的写不回放（页面会刷新，旧内存不能盖半新半旧的库）。
+        assertEqual(globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS, true, 'failed restore released the write gate before the reload');
+        assertEqual(reloadScheduled, 1, 'failed restore did not schedule a reload');
         assertEqual(await readRecord('restore-trigger'), undefined,
             'aborted restore committed a remote record');
+        assertEqual(await readRecord('rp_hub_chat_pending-b'), undefined, 'queued writes ran before the reload');
+        // 测试里没有真的刷新：清掉闸门、把队列放完，顺便验证队列本身的顺序，再接着测成功路径。
+        delete globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS;
+        api.state.reloadPending = false;
+        api.state.syncing = false;
+        reloadScheduled = 0;
+        await api.releaseDeferredPersistenceWrites();
+        await Promise.all(failureWrites);
         assertEqual(await readRecord('delete-me'), undefined,
             'deferred dbDeleteFrom did not run after restore failure');
         assertDeepEqual(await readRecord('rp_hub_chat_pending-b'),

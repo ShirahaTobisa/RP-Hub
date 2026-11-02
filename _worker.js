@@ -754,6 +754,7 @@ async function handleImageRender(request, env) {
             await discardBody(cached);
             return new Response(null, { status: 304, headers });
         }
+        if (request.method === 'HEAD') await discardBody(cached);
         return imageResponse(request.method === 'HEAD' ? null : cached.body, contentType, {
             'content-length': String(cached.size || 0),
             ...headers
@@ -774,18 +775,16 @@ async function handleImageRender(request, env) {
     }
 
     if (!token) return error('缺少生图密钥。', 401);
-    if (!clientToken) {
-        if (!getSyncPassword(env)) {
-            return error('使用 Worker 生图密钥时必须配置 RP_SYNC_PASSWORD。', 503);
-        }
-        if (!await isRequestAuthorized(request, env)) {
-            return error('Sync password required.', 401, { authRequired: true });
-        }
+    if (!clientToken && !getSyncPassword(env)) return error('使用 Worker 生图密钥时必须配置 RP_SYNC_PASSWORD。', 503);
+    // 配了同步密码就一律要带（和上传接口一样）：不然谁拿个生图密钥都能往这个站的 R2 里写图、把站主最旧的图挤掉。
+    if (getSyncPassword(env) && !await isRequestAuthorized(request, env)) {
+        return error('Sync password required.', 401, { authRequired: true });
     }
     assertImageTokenProvider(primary.params, token);
 
     const upstreamResponse = await fetchImageWithTimeout(buildImageUpstreamUrl(primary.params, token, env));
     if (!upstreamResponse.ok) {
+        await discardBody(upstreamResponse);
         return error(`生图服务返回异常：HTTP ${upstreamResponse.status}`, upstreamResponse.status);
     }
     const contentType = (upstreamResponse.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
@@ -809,9 +808,7 @@ async function handleImageRender(request, env) {
             createdAt: String(Date.now())
         }
     });
-    const stored = await bucket.get(primary.key);
-    if (!stored) throw createHttpError('图片写入 R2 后无法读取。', 502);
-    return imageResponse(stored.body, contentType, {
+    return imageResponse(imageBytes, contentType, {
         'content-length': String(imageBytes.byteLength),
         'x-rp-image-cache': 'MISS',
         'x-rp-image-key': imageHeaderValue(primary.key)
@@ -889,15 +886,14 @@ async function handleImageThumbUpload(request, env) {
     let imageKey = '';
     let thumbKey = '';
     for (const candidate of candidates) {
-        if (await bucket.get(candidate.key)) {
+        if (await bucket.head(candidate.key)) {
             imageKey = candidate.key;
             thumbKey = createImageThumbKey(candidate.params.character_name, candidate.checksum);
             break;
         }
     }
     if (!imageKey) return error('原图不存在，不能保存缩略图。', 404);
-    const existing = await bucket.get(thumbKey);
-    if (existing) return json({ ok: true, existed: true, key: thumbKey });
+    if (await bucket.head(thumbKey)) return json({ ok: true, existed: true, key: thumbKey });
     const bytes = await readThumbnailBytes(request);
     await putImageThumbnail(bucket, imageKey, bytes);
     return json({ ok: true, key: thumbKey, bytes: bytes.byteLength });
@@ -1048,7 +1044,9 @@ const IMAGE_SETTINGS_DEFAULTS = Object.freeze({
     params: Object.freeze({ steps: 28, scale: 6, cfg: 0, sampler: IMAGE_DEFAULT_SAMPLER, noise_schedule: 'karras', resolution: '', negative: '' })
 });
 const R2_FREE_BYTES = 10 * 1024 ** 3;
-const STORAGE_CLEANUP_BATCH = 300;
+// 一次请求最多删多少张：免费版每个请求只有 50 次子请求（列表、写墓碑、删除都算），超了会在写完墓碑、还没删原图时中断，
+// 图就成了"已删除"却还占着空间，下次清理又选中同一批、在同一处失败。剩下的由前端继续调用。
+const STORAGE_CLEANUP_BATCH = 15;
 
 function clampNumber(value, min, max, fallback, digits = 0) {
     const number = Number(value);
@@ -1151,18 +1149,20 @@ async function buildStorageReport(bucket) {
     };
 }
 
-// 按清理计划删除一批最旧的图（写删除记录，聊天里显示“已删除”而不是重新生成）；剩下的由前端继续调用。
+// 先写删除记录（聊天里显示“已删除”而不是重新生成），再把原图和缩略图一次删掉；返回释放的字节数。
+async function deleteImageObjects(bucket, objects, reason) {
+    await Promise.all(objects.map((object) => writeImageTombstone(bucket, object, reason)));
+    const keys = objects.flatMap((object) => object.thumbKey ? [object.key, object.thumbKey] : [object.key]);
+    for (let index = 0; index < keys.length; index += 1000) await bucket.delete(keys.slice(index, index + 1000));
+    return objects.reduce((sum, object) => sum + object.size, 0);
+}
+
+// 按清理计划删除一批最旧的图；剩下的由前端继续调用。
 async function runStorageCleanup(bucket) {
     const report = await buildStorageReport(bucket);
     const batch = new Set(report.cleanup.keys.slice(0, STORAGE_CLEANUP_BATCH));
     const objects = (await listImageObjects(bucket)).filter((object) => batch.has(object.key));
-    let deletedBytes = 0;
-    for (const object of objects) {
-        await writeImageTombstone(bucket, object, 'storage-cleanup');
-        deletedBytes += object.size;
-    }
-    const keys = objects.flatMap((object) => object.thumbKey ? [object.key, object.thumbKey] : [object.key]);
-    for (let index = 0; index < keys.length; index += 1000) await bucket.delete(keys.slice(index, index + 1000));
+    const deletedBytes = await deleteImageObjects(bucket, objects, 'storage-cleanup');
     return {
         ok: true,
         deletedCount: objects.length,
@@ -1255,7 +1255,7 @@ function setSelecting(on){selecting=on;selected.clear();gallery.querySelectorAll
 function applyBlur(){var on=stored(blurStorageKey)==='1';gallery.classList.toggle('blurred',on);blurToggle.classList.toggle('on',on);blurToggle.title=on?'显示图片':'隐藏图片';}
 function ask(title,text,ok,danger){return new Promise(function(resolve){$('dialogTitle').textContent=title;$('dialogText').textContent=text;$('dialogOk').textContent=ok||'删除';$('dialogOk').className='btn '+(danger===false?'primary':'danger-fill');$('dialog').classList.remove('hidden');function done(v){$('dialog').classList.add('hidden');$('dialogOk').onclick=null;$('dialogCancel').onclick=null;resolve(v);}$('dialogOk').onclick=function(){done(true);};$('dialogCancel').onclick=function(){done(false);};$('dialogOk').focus();});}
 function forget(keys){var keySet=new Set(keys);data.characters=groups().map(function(g){g.images=g.images.filter(function(img){return !keySet.has(img.key);});return g;}).filter(function(g){return g.images.length;});cachedAll=null;if(current!==ALL&&!groups().some(function(g){return g.id===current;}))current=ALL;}
-async function remove(keys,title,text){if(!keys.length||!await ask(title,text))return false;try{var r=await api('/image/api/delete',{method:'POST',body:JSON.stringify({keys:keys})});forget(keys);selected.clear();renderStats();renderCharacters();renderGallery();syncSelectBar();setNotice('已删除 '+r.deletedCount+' 张，释放 '+r.deletedHuman+'。');return true;}catch(e){setNotice(e.message,true);return false;}}
+async function remove(keys,title,text){if(!keys.length||!await ask(title,text))return false;try{var r,count=0,bytes=0;do{r=await api('/image/api/delete',{method:'POST',body:JSON.stringify({keys:keys})});count+=r.deletedCount;bytes+=r.deletedBytes;}while(r.remaining&&r.deletedCount);forget(keys);selected.clear();renderStats();renderCharacters();renderGallery();syncSelectBar();setNotice('已删除 '+count+' 张，释放 '+fmt(bytes)+'。');return true;}catch(e){setNotice(e.message,true);return false;}}
 function openViewer(index){var list=images(),img=list[index];if(!img)return;viewIndex=index;viewerImage.src=imgUrl(img.key);viewerDownload.href=imgUrl(img.key);viewerDownload.setAttribute('download',fileName(img,index));viewerInfo.textContent=(index+1)+' / '+list.length+' · '+(current===ALL?img.characterName+' · ':'')+img.sizeHuman+(img.uploaded?' · '+day(img.uploaded):'');$('prev').disabled=index===0;$('next').disabled=index===list.length-1;viewer.classList.remove('hidden');}
 function closeViewer(){viewer.classList.add('hidden');viewerImage.removeAttribute('src');viewIndex=-1;}
 function step(delta){var next=viewIndex+delta;if(viewIndex>=0&&next>=0&&next<images().length)openViewer(next);}
@@ -1335,28 +1335,30 @@ async function handleImageAdmin(request, env, url) {
     if (url.pathname === `${IMAGE_ADMIN_PATH}/api/image`) {
         if (request.method !== 'GET' && request.method !== 'HEAD') return error('Method not allowed.', 405);
         const key = url.searchParams.get('key') || '';
-        if (!key.startsWith(`${IMAGE_OBJECT_PREFIX}/`) || key.includes('..') || !parseImageObjectKey(key)) return error('图片路径无效。', 400);
+        if (!key.startsWith(`${IMAGE_OBJECT_PREFIX}/`) || !parseImageObjectKey(key)) return error('图片路径无效。', 400);
         const object = await bucket.get(key);
         if (!object) return error('图片不存在。', 404);
         const contentType = normalizeRasterContentType(object.httpMetadata?.contentType);
         if (!contentType) return error('图片格式不受支持。', 415);
+        if (request.method === 'HEAD') await discardBody(object);
         return imageResponse(request.method === 'HEAD' ? null : object.body, contentType, {
             'content-length': String(object.size || 0), 'cache-control': 'private, no-store'
         });
     }
     if (url.pathname === `${IMAGE_ADMIN_PATH}/api/thumb`) {
         const key = url.searchParams.get('key') || '';
-        if (!key.startsWith(`${IMAGE_OBJECT_PREFIX}/`) || key.includes('..') || !parseImageObjectKey(key)) return error('图片路径无效。', 400);
+        if (!key.startsWith(`${IMAGE_OBJECT_PREFIX}/`) || !parseImageObjectKey(key)) return error('图片路径无效。', 400);
         const thumbKey = createImageThumbKeyFromImageKey(key);
         if (request.method === 'GET' || request.method === 'HEAD') {
             const object = await bucket.get(thumbKey);
             if (!object) return error('缩略图不存在。', 404);
-            return imageResponse(request.method === 'HEAD' ? null : object.body, object.httpMetadata?.contentType || 'image/webp', {
+            if (request.method === 'HEAD') await discardBody(object);
+        return imageResponse(request.method === 'HEAD' ? null : object.body, object.httpMetadata?.contentType || 'image/webp', {
                 'content-length': String(object.size || 0), 'cache-control': 'private, no-store'
             });
         }
         if (request.method !== 'PUT' && request.method !== 'POST') return error('Method not allowed.', 405);
-        if (!await bucket.get(key)) return error('原图不存在，不能保存缩略图。', 404);
+        if (!await bucket.head(key)) return error('原图不存在，不能保存缩略图。', 404);
         const bytes = await readThumbnailBytes(request);
         const savedKey = await putImageThumbnail(bucket, key, bytes);
         return json({ ok: true, key: savedKey, bytes: bytes.byteLength });
@@ -1385,19 +1387,12 @@ async function handleImageAdmin(request, env, url) {
         const keySet = new Set(Array.isArray(body.keys) ? body.keys : []);
         const groupSet = new Set(Array.isArray(body.groupIds) ? body.groupIds : []);
         const characterSet = new Set(Array.isArray(body.characterNames) ? body.characterNames : []);
-        const targets = objects.filter((object) => keySet.has(object.key)
+        const matched = objects.filter((object) => keySet.has(object.key)
             || groupSet.has(object.groupId)
             || characterSet.has(object.characterName));
-        let deletedCount = 0;
-        let deletedBytes = 0;
-        for (const object of targets) {
-            await writeImageTombstone(bucket, object);
-            if (object.thumbKey) await bucket.delete(object.thumbKey);
-            await bucket.delete(object.key);
-            deletedCount += 1;
-            deletedBytes += object.size;
-        }
-        return json({ ok: true, deletedCount, deletedBytes, deletedHuman: formatBytes(deletedBytes) });
+        const targets = matched.slice(0, STORAGE_CLEANUP_BATCH);
+        const deletedBytes = await deleteImageObjects(bucket, targets, 'manual-delete');
+        return json({ ok: true, deletedCount: targets.length, deletedBytes, deletedHuman: formatBytes(deletedBytes), remaining: matched.length - targets.length });
     }
     return error('Not found.', 404);
 }
@@ -2518,8 +2513,31 @@ async function cleanupUnreferencedAppUpdateVersions(bucket, candidates) {
     }
 }
 
+// 更新中途断掉（关掉页面、首个请求超时后页面重发了不带 slot 的请求）留下的半截槽没人引用也没人删，
+// 每个最多 160MB：按槽名里的时间戳，隔天还没进清单的整槽删掉；正在写的新槽不到一天，不会误删。
+async function cleanupStaleAppUpdateSlots(bucket) {
+    const keysBySlot = new Map();
+    let cursor;
+    do {
+        const page = await bucket.list({ prefix: `${APP_UPDATE_PREFIX}/versions/`, cursor, limit: 1000 });
+        for (const object of page.objects || []) {
+            const slot = object.key.slice(APP_UPDATE_PREFIX.length + 1).split('/').slice(0, 2).join('/');
+            if (!keysBySlot.has(slot)) keysBySlot.set(slot, []);
+            keysBySlot.get(slot).push(object.key);
+        }
+        cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor);
+    if (!keysBySlot.size) return;
+    const referenced = getReferencedAppUpdateSlots(await getAppliedAppUpdateManifest(bucket));
+    for (const [slot, keys] of keysBySlot) {
+        const createdAt = parseInt(slot.match(/-([0-9a-z]+)-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/)?.[1] || '', 36);
+        if (referenced.has(slot) || !Number.isFinite(createdAt) || Date.now() - createdAt < 24 * 60 * 60 * 1000) continue;
+        for (let index = 0; index < keys.length; index += 1000) await bucket.delete(keys.slice(index, index + 1000));
+    }
+}
+
 function scheduleAppUpdateCleanup(ctx, bucket, candidates) {
-    const cleanup = cleanupUnreferencedAppUpdateVersions(bucket, candidates).catch((err) => {
+    const cleanup = cleanupUnreferencedAppUpdateVersions(bucket, candidates).then(() => cleanupStaleAppUpdateSlots(bucket)).catch((err) => {
         console.warn('[RP App Update] Failed to clean unreferenced version slot:', err);
     });
     if (ctx && typeof ctx.waitUntil === 'function') ctx.waitUntil(cleanup);
@@ -3101,7 +3119,7 @@ async function handleJsonApi(request, env, ctx) {
     if (body.action === 'app-update-check') return handleAppUpdateCheck(bucket, env);
     if (body.action === 'app-update-apply') return handleAppUpdateApply(bucket, body, env, ctx);
     if (body.action === 'app-update-rollback') return handleAppUpdateRollback(bucket);
-    if (body.action.startsWith('self-update-')) {
+    if (typeof body.action === 'string' && body.action.startsWith('self-update-')) {
         const handlers = {
             'self-update-status': () => handleSelfUpdateStatus(env),
             'self-update-apply': () => handleSelfUpdateApply(request, env, body),
@@ -3290,7 +3308,7 @@ async function serveStatic(request, env) {
     let response = null;
     let appUpdateInfo = null;
 
-    if (staticPath) {
+    if (staticPath && isAllowedAppUpdatePath(staticPath)) {
         try {
             const bucket = getBucket(env);
             const manifest = await getAppliedAppUpdateManifest(bucket).catch(() => null);

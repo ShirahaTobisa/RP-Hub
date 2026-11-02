@@ -175,7 +175,7 @@ async function buildMirrorVersion(reference, tag) {
             name: `RP-Hub ${tag}`,
             date: '2026-08-12T00:00:00Z',
             publishedAt: 1786464000000,
-            precheckPatchRevision: 'r2-character-split-e2b-v4',
+            precheckPatchRevision: 'r2-character-split-e2b-v5',
             files
         },
         blobs
@@ -300,9 +300,18 @@ async function testMirrorUpdateAndRollback(version180, version181) {
         assert.equal(listedAgain.payload.cache.hit, false);
         assert.equal(mirror.requests.filter((item) => item === '/manifest.json').length, 2);
 
+        // 更新中途断掉留下的半截槽：隔天的清掉，刚写的留着（可能正在更新）。
+        const staleSlot = `versions/1.8.0-${(Date.now() - 2 * 24 * 60 * 60 * 1000).toString(36)}-11111111-1111-4111-8111-111111111111`;
+        const freshSlot = `versions/1.8.0-${Date.now().toString(36)}-22222222-2222-4222-8222-222222222222`;
+        await bucket.put(`${APP_UPDATE_PREFIX}/${staleSlot}/assets/js/app.js`, 'stale');
+        await bucket.put(`${APP_UPDATE_PREFIX}/${freshSlot}/assets/js/app.js`, 'fresh');
+
         const first = await callApi(worker, bucket, { action: 'app-update-apply', target: '1.8.0' }, env);
         assert.equal(first.response.status, 200, first.payload.error);
         assert.equal(first.payload.fileListSource, 'mirror-manifest');
+        assert.equal(bucket.keys(`${APP_UPDATE_PREFIX}/${staleSlot}/`).length, 0, 'the day-old orphan slot was not cleaned');
+        assert.equal(bucket.keys(`${APP_UPDATE_PREFIX}/${freshSlot}/`).length, 1, 'a fresh slot may still be mid-update and must stay');
+        await bucket.delete(`${APP_UPDATE_PREFIX}/${freshSlot}/assets/js/app.js`);
         assert.equal(bucket.json(APP_UPDATE_MANIFEST_KEY).current.upstreamSha, version180.entry.commit);
 
         const second = await callApi(worker, bucket, { action: 'app-update-apply', target: '1.8.1' }, env);

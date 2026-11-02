@@ -35,6 +35,8 @@ try {
         const chunk = (text) => `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: text } }] })}\n\n`;
         return route.fulfill({ contentType: 'text/event-stream', body: chunk('流式') + chunk('回复') + 'data: [DONE]\n\n' });
     });
+    // 开屏图在外部图床，连不上时开屏不会结束；测试不碰外网，直接让它失败（插件按加载失败照常倒计时）。
+    await page.route('https://img.scdn.io/**', (route) => route.abort());
     await page.goto(harness.url + '/seed.html');
     await initializeFixture(page);
     await page.evaluate(async ({ base, source }) => {

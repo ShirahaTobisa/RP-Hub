@@ -67,6 +67,7 @@
 
             // ⑭ ctx.ui.addPage（API 8）：给完整的新功能用的整页（导航菜单里单独一项），这里不用，免得示范插件占导航；
             //    写法见 DB/modules/character-voice.js。普通插件像下面这样放进「模块管理」就行。
+            // ⑮ ctx.app.saveChatHistory（API 9）：改过 chatHistory 里的消息正文以后调一下，RPH 才会把聊天记录存盘；这里不改消息，不用。
             // ⑨ ctx.ui.addSidebarEntry + openPanel + toast，⑩ ctx.appDb 只读查询
             ctx.ui.addSidebarEntry({
                 label: '接口示范',

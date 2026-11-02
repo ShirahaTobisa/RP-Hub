@@ -1,6 +1,6 @@
 # RP-Hub 创意工坊 Mod 作者指南
 
-这份指南描述当前 `DB/module-loader.js` 的 API 8，兼容原有 API 1～7 模块。指南和 `examples/` 都是教材，
+这份指南描述当前 `DB/module-loader.js` 的 API 9，兼容原有 API 1～8 模块。指南和 `examples/` 都是教材，
 不会进入 `dist/` 或发布 ZIP。
 
 ## 1. 这是什么与信任模型
@@ -50,7 +50,7 @@ Mod 是由用户在“模块管理”面板通过 URL 或文件导入安装的 J
 | `id` | 必填字符串，必须匹配 `^[a-z0-9-]{3,32}$`；也是存储隔离和卸载清理的身份。 |
 | `name` | 必填、非空字符串；显示在模块管理面板。 |
 | `version` | 必填、非空字符串；loader 不解释版本格式，只负责显示。 |
-| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `8`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`，使用 `ctx.image` 的模块声明 `5`；离不开 `beforeMount` 的模块声明 `6`（可有可无的不用改，旧外壳会忽略它）；离不开 `ctx.ai` 的模块声明 `7`（可有可无的可以先判断 `ctx.ai` 在不在）；离不开 `ctx.ui.addPage` 的模块声明 `8`（可以先判断它在不在，旧外壳退回 `addSidebarEntry`）。 |
+| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `9`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`，使用 `ctx.image` 的模块声明 `5`；离不开 `beforeMount` 的模块声明 `6`（可有可无的不用改，旧外壳会忽略它）；离不开 `ctx.ai` 的模块声明 `7`（可有可无的可以先判断 `ctx.ai` 在不在）；离不开 `ctx.ui.addPage` 的模块声明 `8`（可以先判断它在不在，旧外壳退回 `addSidebarEntry`）；离不开 `ctx.app.saveChatHistory` 的模块声明 `9`（可以先判断它在不在）。 |
 | `init(ctx)` | 必填函数；应用启动落定后调用。抛错会隔离为 `init-error`。 |
 | `beforeMount({ options, root })` | 可选函数（API 6）；官方页面挂载前调用一次，见下文。 |
 
@@ -145,8 +145,10 @@ await ctx.persistence.track('import', async () => {
 ### `ctx.app`（API 3）
 
 - `get(name)`：读取页面数据或方法，如 `chatHistory`、`settings`、`currentCharacter`、`user`、`userInput`、
-  `isGenerating`、`sendMessage`。返回页面里的原对象；改聊天记录里的消息内容会在页面下次保存时一起保存。
+  `isGenerating`、`sendMessage`。返回页面里的原对象；改了聊天记录里的消息内容要调 `saveChatHistory()`，否则要等页面下次自己保存。
 - `set(name, value)`（API 4）：修改页面已有的状态，如 `set('userInput', '文字')` 填写输入框；不能新增状态或覆盖方法。
+- `saveChatHistory()`（API 9）：改过 `chatHistory` 里的消息之后调用，RPH 按自己的流程把当前聊天记录存盘（排队、失败重试、失败弹提示），返回 `Promise<boolean>`。
+  RPH 只在消息条数变化、自己编辑消息或生成结束时才存，插件改了正文不调它，刷新就丢。
 - `watch(getter, callback, { deep, immediate })`：`getter` 里通过 `get` 读到的数据变化时调用
   `callback(新值, 旧值)`，返回停止监听的函数。用它代替定时轮询。只能在 `init` 及之后调用。
 

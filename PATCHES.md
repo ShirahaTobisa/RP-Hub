@@ -55,7 +55,10 @@ const flushPersistenceForRpSync = async () => {
     return true;
 };
 globalThis.RPH_R2_FLUSH_PERSISTENCE = flushPersistenceForRpSync;
+globalThis.RPH_R2_SAVE_CHAT_HISTORY = () => saveChatHistoryNow();
 ```
+
+最后一行是 2026-11-03（版本 v5）加的：给插件加载器的 `ctx.app.saveChatHistory` 用，插件改过消息正文后按官方流程把当前聊天记录存盘。
 
 桥本身按规格只把 `false` 视为失败。实际 tag 1.7.5 另有一个必须处理的数据安全差异：`saveData` 的 catch 原本吞掉异常并返回 `undefined`，`flushPendingChatHistorySave` 也丢弃聊天保存的 `false`。若只插入上述桥，失败和成功都会表现为 `undefined`，push 仍可能继续上传旧数据。
 

@@ -125,6 +125,9 @@ function copyUpstream(upstream, stageRoot) {
     }
     const appPath = path.join(stageRoot, 'assets', 'js', 'app.js');
     fs.writeFileSync(appPath, patchRpHubAppJs(fs.readFileSync(appPath, 'utf8'), { version: upstream.tag }).code, 'utf8');
+    // 补丁只按模式替换、不懂语法（比如给非 async 函数里的调用加了 await），发出去之前确认文件还能解析。
+    const appSyntax = spawnSync(process.execPath, ['--check', appPath], { encoding: 'utf8' });
+    if (appSyntax.status !== 0) throw new Error(`补丁后的 app.js 语法检查没过：\n${appSyntax.stderr || appSyntax.stdout}`);
     const cloudBackupPath = path.join(stageRoot, RP_HUB_CLOUD_BACKUP_PATH);
     if (fs.existsSync(cloudBackupPath)) {
         fs.writeFileSync(cloudBackupPath, patchRpHubCloudBackupJs(fs.readFileSync(cloudBackupPath, 'utf8'), { version: upstream.tag }).code, 'utf8');

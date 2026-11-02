@@ -1682,6 +1682,7 @@ const app = createApp({
             return true;
         };
         globalThis.RPH_R2_FLUSH_PERSISTENCE = flushPersistenceForRpSync;
+        globalThis.RPH_R2_SAVE_CHAT_HISTORY = () => saveChatHistoryNow();
 
         const saveConversationMutationNow = async ({ saveTemplateRuntime = false } = {}) => {
             try {
