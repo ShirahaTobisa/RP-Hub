@@ -1,7 +1,7 @@
-// Adapted from RP-Hub 终极美化 & 全功能增强 v20.4.3, author 苏萝萝.
+// Adapted from 柳贯一 RP-Hub 插件 v20.5.7, author 苏萝萝.
 // Workshop edition: no image-generation integration; persistent data supports cloud sync.
 RPHubSDK.register({
-    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.4.3-rph.1', requiresApi: 2,
+    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.5.7-rph.1', requiresApi: 2,
     // 原生五槽：页面挂载前把聊天模型槽位扩到五个，并恢复输入混淆开关。加载器 API 6 起才会调用，
     // 旧外壳或官方代码对不上时保持官方三槽。
     beforeMount({ options, root }) {
@@ -11,6 +11,11 @@ RPHubSDK.register({
         }
         function transformSetup(source) {
             let s = source;
+            // 在官方创建上下文快照和 apiMessages 前切断协议块源头。
+            const contextInputAnchor = 'const contextViewerInput = { messages,';
+            if (s.includes(contextInputAnchor)) {
+                s = s.replace(contextInputAnchor, 'window.__sakuraSanitizeOfficialMessages?.(messages); ' + contextInputAnchor);
+            }
             s = replaceOne(s, 'fastModel: DEFAULT_API_CONFIG.fastModel,', "fastModel: DEFAULT_API_CONFIG.fastModel,\n            fourthModel: '', fifthModel: '',");
             const start = s.indexOf('        watch(() => [settings.apiUrl, settings.apiKey, settings.model],');
             const end = s.indexOf('        // Watch image gen and model settings for sync',start);
@@ -32,17 +37,45 @@ RPHubSDK.register({
             syncSettingsToGenerator();
         });
 ` + s.slice(end);
-            s = replaceOne(s, "                if (val === 'fast') {\n                    settings.model = settings.fastModel;\n                } else if (val === 'balanced') {\n                    settings.model = settings.balancedModel;\n                } else {\n                    settings.model = settings.qualityModel;\n                }", "                const slot = chatModelSlots.value.find(slot => slot.mode === val);\n                if (slot?.model) settings.model = slot.model;");
+            const oldModeSetter = "                if (val === 'fast') {\n                    settings.model = settings.fastModel;\n                } else if (val === 'balanced') {\n                    settings.model = settings.balancedModel;\n                } else {\n                    settings.model = settings.qualityModel;\n                }";
+            const newerModeSetter = oldModeSetter + "\n                showModelSelector.value = false;\n                showChatModelSelector.value = false;";
+            const newModeSetter = "                const slot = chatModelSlots.value.find(slot => slot.mode === val);\n                if (slot?.model) settings.model = slot.model;";
+            if (s.includes(newerModeSetter)) s = replaceOne(s, newerModeSetter, newModeSetter + "\n                showModelSelector.value = false;\n                showChatModelSelector.value = false;");
+            else if (s.includes(oldModeSetter)) s = replaceOne(s, oldModeSetter, newModeSetter);
+            else throw new Error('找不到官方模型模式选择器');
             s = replaceOne(s,"{ mode: 'fast', model: settings.fastModel }", "{ mode: 'fast', model: settings.fastModel },\n            { mode: 'fourth', model: settings.fourthModel },\n            { mode: 'fifth', model: settings.fifthModel }");
             s = replaceOne(s,'const [qualityModel, balancedModel, fastModel] = models;', 'const [qualityModel, balancedModel, fastModel, fourthModel, fifthModel] = models;');
             s = replaceOne(s,"            settings.fastModel = fastModel || '';", "            settings.fastModel = fastModel || '';\n            settings.fourthModel = fourthModel || '';\n            settings.fifthModel = fifthModel || '';\n            localStorage.setItem('rphub_sakura_chat_extra_slots_v1', JSON.stringify({models:[settings.fourthModel,settings.fifthModel]}));");
             // Restore the native setting while retaining the host's latest request pipeline.
             if (!/inputObfuscation\s*:/.test(s))
                 s = replaceOne(s, 'preventTruncation: false,', 'preventTruncation: false,\n            inputObfuscation: true,');
+            if (!/sakuraStreamEnhanceEnabled\s*:/.test(s)) {
+                const inputSetting = s.match(/inputObfuscation\s*:\s*(?:true|false),/);
+                const streamSetting = "sakuraStreamEnhanceEnabled: (() => { try { return localStorage.getItem('rphub_sakura_stream_enhance_v1') !== 'false'; } catch (_) { return true; } })(),";
+                if (inputSetting) s = replaceOne(s, inputSetting[0], inputSetting[0] + '\n            ' + streamSetting);
+                else s = replaceOne(s, 'preventTruncation: false,', 'preventTruncation: false,\n            inputObfuscation: true,\n            ' + streamSetting);
+            }
             const automatic = "const obfuscateInput = /gemini/i.test(String(requestModel || ''));";
             const controlled = "const obfuscateInput = /gemini/i.test(String(requestModel || '')) && settings.inputObfuscation === true;";
             if (s.includes(automatic)) s = replaceOne(s, automatic, controlled);
             else if (!s.includes(controlled)) throw new Error('找不到官方输入混淆请求条件');
+            // 工坊版在 init 里才重编译官方 API 客户端（见 installSakuraResponseTimeoutPolicy），
+            // 主聊天改成每次从 window 取，去掉固定超时的版本才会被用上。
+            const directCall = 'return requestChatCompletion({';
+            if (s.includes(directCall)) s = replaceOne(s, directCall, 'return window.RPHubApiClient.requestChatCompletion({');
+            const setupReturn = s.lastIndexOf('        return {');
+            if (setupReturn < 0) throw new Error('找不到主组件 setup 返回值');
+            const streamApi = `        const setSakuraStreamEnhanceEnabled = enabled => {
+            settings.sakuraStreamEnhanceEnabled = !!enabled;
+            try { window.__sakuraSetStreamEnhanceEnabled(settings.sakuraStreamEnhanceEnabled); } catch (_) {}
+        };
+        // Sync the request gate when the official reactive setting is hydrated from IndexedDB or changed by the user.
+        watch(() => settings.sakuraStreamEnhanceEnabled, enabled => {
+            try { window.__sakuraSetStreamEnhanceEnabled(enabled !== false); } catch (_) {}
+        }, { immediate: true, flush: 'sync' });
+`;
+            s = s.slice(0, setupReturn) + streamApi + s.slice(setupReturn);
+            s = s.slice(0, setupReturn + streamApi.length) + s.slice(setupReturn + streamApi.length).replace('        return {', '        return {\n            sakuraStreamEnhanceEnabled: computed(() => settings.sakuraStreamEnhanceEnabled !== false), setSakuraStreamEnhanceEnabled,', 1);
             return s;
         }
         // 仅改更新公告组件：取消强制等待，保留官方关闭、已读与远端更新通知。
@@ -108,6 +141,17 @@ RPHubSDK.register({
                     '<input v-model="settings.inputObfuscation" type="checkbox" class="settings-toggle-input sr-only">' +
                     '<span class="settings-toggle settings-toggle--compact settings-toggle--solid"></span></span></label>';
                 s = s.slice(0,end + 8) + toggle + s.slice(end + 8);
+            }
+            if (!s.includes('v-sakura-stream-enhance')) {
+                const inputToggle = '<input v-model="settings.inputObfuscation" type="checkbox" class="settings-toggle-input sr-only">';
+                const inputIndex = s.indexOf(inputToggle);
+                const labelEnd = inputIndex >= 0 ? s.indexOf('</label>', inputIndex) : -1;
+                if (inputIndex < 0 || labelEnd < 0) throw new Error('找不到快捷面板输入混淆开关');
+                const streamToggle = '<label v-sakura-stream-enhance class="flex cursor-pointer items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-xs font-semibold text-gray-600 transition-colors hover:bg-gray-100">' +
+                    '<span title="开启后主聊天不设前端固定响应超时，支持非流式长等待；可随时手动停止，接口及网络错误仍正常报告">响应增强</span><span class="relative inline-flex flex-none items-center">' +
+                    '<input type="checkbox" v-model="settings.sakuraStreamEnhanceEnabled" @change="setSakuraStreamEnhanceEnabled($event.target.checked)" class="settings-toggle-input sr-only">' +
+                    '<span class="settings-toggle settings-toggle--compact settings-toggle--solid"></span></span></label>';
+                s = s.slice(0,labelEnd + '</label>'.length) + streamToggle + s.slice(labelEnd + '</label>'.length);
             }
             return s;
         }
@@ -209,6 +253,44 @@ RPHubSDK.register({
     const SPLIT_API_KEY = 'rphub_split_apis_v2';
     const USER_TEMP_KEY = 'rphub_user_temperature_pref';
     const USER_STREAM_KEY = 'rphub_user_stream_pref';
+    const SAKURA_STREAM_ENHANCE_KEY = 'rphub_sakura_stream_enhance_v1';
+    let sakuraStreamEnhanceRuntimeEnabled;
+    let sakuraMonitorReady = false;
+    function sakuraClearResponseDecorations() {
+        try {
+            document.documentElement.style.removeProperty('--sakura-status-text');
+            const style = document.getElementById('sakura-response-monitor-style');
+            if (style) style.remove();
+            document.querySelectorAll('.typing-bubble, .active-tool-waiting').forEach(node => {
+                node.classList.remove('sakura-model-waiting', 'sakura-model-responding', 'sakura-model-stalled');
+            });
+        } catch (_) {}
+    }
+    function sakuraStreamEnhanceEnabled() {
+        if (typeof sakuraStreamEnhanceRuntimeEnabled === 'boolean') return sakuraStreamEnhanceRuntimeEnabled;
+        try { return pluginStorage.getItem(SAKURA_STREAM_ENHANCE_KEY) !== 'false'; }
+        catch (_) { return true; }
+    }
+    function sakuraSetStreamEnhanceEnabled(enabled) {
+        sakuraStreamEnhanceRuntimeEnabled = !!enabled;
+        try { pluginStorage.setItem(SAKURA_STREAM_ENHANCE_KEY, String(sakuraStreamEnhanceRuntimeEnabled)); } catch (_) {}
+        try { document.documentElement?.toggleAttribute('data-sakura-stream-enhance', sakuraStreamEnhanceRuntimeEnabled); } catch (_) {}
+        window.__sakuraStreamEnhanceDebug = Object.assign(window.__sakuraStreamEnhanceDebug || {}, { enabled: sakuraStreamEnhanceRuntimeEnabled, syncedAt: Date.now() });
+        if (!sakuraStreamEnhanceRuntimeEnabled) {
+            sakuraClearResponseDecorations();
+            if (sakuraMonitorReady) sakuraDisableResponseEnhance();
+            try {
+                if (chatBubbleObserver) { chatBubbleObserver.disconnect(); chatBubbleObserver = null; }
+                if (contextViewerDomObserver) { contextViewerDomObserver.disconnect(); contextViewerDomObserver = null; }
+                window.__sakuraNextResponseGuard = false;
+            } catch (_) {}
+        }
+        window.dispatchEvent(new CustomEvent('sakura-stream-enhance-change', { detail: { enabled: sakuraStreamEnhanceRuntimeEnabled } }));
+    }
+    window.__sakuraSetStreamEnhanceEnabled = sakuraSetStreamEnhanceEnabled;
+    // 工坊版 init 在页面挂载后才运行：官方设置已水合时以它为准，否则用本机缓存。
+    const hydratedStreamEnhance = getRuntimeValue(getVueState()?.settings)?.sakuraStreamEnhanceEnabled;
+    sakuraSetStreamEnhanceEnabled(typeof hydratedStreamEnhance === 'boolean' ? hydratedStreamEnhance : sakuraStreamEnhanceEnabled());
     const USER_CHARVIEW_KEY = 'rphub_user_characterview_pref';
     // 官方经典记忆有两条请求提示词：逐轮分片总结与五轮二次压缩。
     // 两者必须使用同一套 memory 分流 API，否则二次压缩会误走主对话的地址和密钥。
@@ -235,6 +317,120 @@ RPHubSDK.register({
         }) || isUiTemplateAnalysisMessages(messages));
     }
 
+    // 响应增强：主聊天不设固定超时。工坊版在 init 里重编译官方 API 客户端（见本函数末尾）。
+    (function installSakuraResponseTimeoutPolicy() {
+        function exempt(options) {
+            const body = options?.body;
+            return sakuraStreamEnhanceEnabled()
+                && /chat\/completions(?:[?#]|$)/i.test(String(options?.url || ''))
+                && Array.isArray(body?.messages)
+                && !isAuxiliaryModelMessages(body.messages);
+        }
+        window.__sakuraResponseHasNoDeadline = exempt;
+        // Read known HTTP failures once, preserving partial diagnostics without waiting forever for EOF.
+        async function readHttpError(response, controller, signal) {
+            const limit = 65536;
+            let text = '', bytes = 0, complete = false, reader = null, timer = null;
+            let onAbort = null, incomplete = false;
+            const abortError = () => Object.assign(new Error('生成已中止'), { name: 'AbortError' });
+            if (signal?.aborted) throw abortError();
+            const read = (async () => {
+                try {
+                    if (response.body === null) { complete = true; return; }
+                    if (response.body && typeof response.body.getReader === 'function') {
+                        reader = response.body.getReader();
+                        const decoder = new TextDecoder();
+                        while (bytes < limit) {
+                            const chunk = await reader.read();
+                            if (chunk.done) { text += decoder.decode(); complete = true; return; }
+                            const take = chunk.value.subarray(0, limit - bytes);
+                            bytes += take.byteLength;
+                            text += decoder.decode(take, { stream: true });
+                        }
+                        text += decoder.decode();
+                        incomplete = true;
+                    } else {
+                        const raw = await response.text();
+                        text = raw.slice(0, limit);
+                        incomplete = raw.length > limit;
+                        complete = !incomplete;
+                    }
+                } catch (error) {
+                    if (signal?.aborted) throw abortError();
+                    incomplete = true;
+                }
+            })();
+            const deadline = new Promise(resolve => {
+                timer = setTimeout(() => { incomplete = true; resolve(); }, 5000);
+            });
+            const cancelled = new Promise((resolve, reject) => {
+                if (!signal) return;
+                onAbort = () => reject(abortError());
+                signal.addEventListener('abort', onAbort, { once: true });
+                if (signal.aborted) onAbort();
+            });
+            try {
+                await Promise.race([read, deadline, cancelled]);
+                if (signal?.aborted) throw abortError();
+                return { text, incomplete: incomplete || !complete };
+            } finally {
+                clearTimeout(timer);
+                if (onAbort) signal.removeEventListener('abort', onAbort);
+                if (!complete) {
+                    if (reader) { try { Promise.resolve(reader.cancel()).catch(() => {}); } catch (_) {} }
+                    try { controller.abort(); } catch (_) {}
+                }
+                const release = () => { if (reader) { try { reader.releaseLock(); } catch (_) {} } };
+                read.then(release, release);
+            }
+        }
+        window.__sakuraReadHttpError = readHttpError;
+        function transform(source) {
+            const pattern = /timer = setTimeout\(\(\) => \{ timedOut = true; controller\.abort\(\); \}, (?:options\.timeoutMs \?\? )?120000\);/g;
+            const hits = source.match(pattern);
+            if (hits?.length !== 1) throw new Error('官方超时计时器结构不匹配');
+            const entry = 'const withApiResponse = async (options, read) => {';
+            if (source.split(entry).length !== 2) throw new Error('官方请求生命周期结构不匹配');
+            const errorStart = source.indexOf('            if (!response.ok) {');
+            const errorEnd = source.indexOf('            return await read(response, touch);', errorStart);
+            if (errorStart < 0 || errorEnd < 0) throw new Error('官方错误响应结构不匹配');
+            source = source.slice(0, errorStart) + `            if (!response.ok && sakuraNoDeadline) {
+                const diagnostic = await window.__sakuraReadHttpError(response, controller, options.signal);
+                const text = diagnostic.text;
+                try { options.onErrorResponse?.(text); } catch (_) {}
+                let payload, detail = '';
+                try { payload = JSON.parse(text); } catch (_) {}
+                try { detail = extractApiErrorMessage(payload, response.status) || formatApiErrorMessage(response.status, text); }
+                catch (_) { detail = text || response.statusText || ''; }
+                const suffix = diagnostic.incomplete ? '（错误正文未完整读取）' : '';
+                const failure = new Error('HTTP ' + response.status + (detail ? ' · ' + detail : '') + suffix);
+                failure.status = response.status;
+                failure.responseBodyIncomplete = diagnostic.incomplete;
+                throw failure;
+            }
+` + source.slice(errorStart);
+            return source.replace(entry, entry + '\n        const sakuraNoDeadline = window.__sakuraResponseHasNoDeadline(options);')
+                .replace(pattern, 'if (!sakuraNoDeadline) $&');
+        }
+        window.__sakuraTransformResponseTimeout = transform;
+        // 工坊版 init 在官方脚本都执行完后才运行：取回 api-utils.js 源码，去掉固定超时后重新执行，
+        // 新客户端挂回 window.RPHubApiClient；主聊天已在 beforeMount 改成每次从 window 上取。
+        (async () => {
+            const originalUtils = window.RPHubApiUtils, originalClient = window.RPHubApiClient;
+            try {
+                if (!originalClient) throw new Error('官方 API 客户端未加载');
+                const response = await fetch('assets/js/api-utils.js?v=' + Date.now());
+                if (!response.ok) throw new Error('读取 API 客户端失败：' + response.status);
+                (0, eval)(transform(await response.text()));
+                window.__sakuraResponseTimeoutPolicyInstalled = true;
+            } catch (error) {
+                window.RPHubApiUtils = originalUtils;
+                window.RPHubApiClient = originalClient;
+                window.__sakuraResponseTimeoutPolicyInstalled = false;
+                console.error('[苏萝萝] 响应增强解除超时未安装，仍沿用官方限制', error);
+            }
+        })();
+    })();
     // 内置供应商预设列表
     const PROVIDER_PRESETS = [
         { id: 'sta1n', name: 'STA1N API', apiUrl: 'https://cdn.sta1n.cn/v1', defaultModel: 'deepseek-chat', icon: 'https://img.cdn1.vip/i/69c18cc07538b_1774292160.webp' },
@@ -288,12 +484,30 @@ RPHubSDK.register({
         if (Array.isArray(value)) return value.map(stripNextResponseDeep);
         if (value && typeof value === 'object') {
             const out = Object.assign({}, value);
-            if (typeof value.text === 'string') out.text = stripNextResponseProtocol(value.text);
-            if (typeof value.content === 'string') out.content = stripNextResponseProtocol(value.content);
+            Object.keys(out).forEach(key => {
+                const item = value[key];
+                if (typeof item === 'string') out[key] = stripNextResponseProtocol(item);
+                else if (item && typeof item === 'object') out[key] = stripNextResponseDeep(item);
+            });
             return out;
         }
         return value;
     }
+
+    // 这是协议块的硬隔离：无论响应增强开关状态、主通道还是副通道，
+    // 只要是 chat/completions 的 messages，就绝不允许该块进入序列化请求体。
+    function sanitizeNextResponseMessages(messages) {
+        if (!Array.isArray(messages)) return messages;
+        messages.forEach(message => {
+            if (!message || typeof message !== 'object') return;
+            if (typeof message.content === 'string') message.content = stripNextResponseProtocol(message.content);
+            else if (Array.isArray(message.content)) message.content = stripNextResponseDeep(message.content);
+            if (typeof message.reasoning === 'string') message.reasoning = stripNextResponseProtocol(message.reasoning);
+            if (typeof message.reasoning_content === 'string') message.reasoning_content = stripNextResponseProtocol(message.reasoning_content);
+        });
+        return messages;
+    }
+    window.__sakuraSanitizeOfficialMessages = sanitizeNextResponseMessages;
 
     function scrubChatHistoryNextResponse() {
         try {
@@ -374,6 +588,7 @@ RPHubSDK.register({
             scrubChatBubblesDom();
             if (chatBubbleObserver || !document.documentElement) return;
             chatBubbleObserver = new MutationObserver(mutations => {
+                if (!sakuraStreamEnhanceEnabled()) return;
                 if (_cbScrubPending) return;
                 let relevant = false;
                 for (let i = 0; i < mutations.length; i++) {
@@ -475,9 +690,8 @@ RPHubSDK.register({
                         } else {
                             textNode.nodeValue = '';
                         }
-                    } else if (/完整承接最新用户输入中已经发生的言行/i.test(value)) {
-                        textNode.nodeValue = stripNextResponseProtocol(value);
                     }
+
                 });
             });
         } catch (_) {}
@@ -490,6 +704,7 @@ RPHubSDK.register({
         // 🚀 性能：characterData 监听在流式打字时每字符触发一次；rAF 合并同帧多次变更，
         // 弹窗不存在时 scrubContextViewerDom 内部零成本短路——视觉行为完全不变。
         contextViewerDomObserver = new MutationObserver(() => {
+            // 协议清理常驻运行，与响应增强开关无关。
             // 上下文查看器未打开时不排队 rAF；流式渲染会产生大量 DOM 变更，但与此功能无关。
             if (!document.querySelector('.ctx-viewer, .app-modal-panel, [role="dialog"]')) return;
             if (_cvScrubPending) return;
@@ -558,8 +773,8 @@ RPHubSDK.register({
     }
 
     // ================= 向量缓存仓库：换 API 站不再重复付向量钱 =================
-    // 原理：向量结果只由「embedding 模型 + 输入内容」决定，跟你在哪个 API 站请求无关。
-    // 所以缓存键不绑定站点地址——换对话站、换记忆分流站，只要模型名一致，直接复用旧向量。
+    // 缓存按来源接口、模型和完整输入共同隔离。
+    // 不同来源的同名模型不能假定使用同一个向量空间。
     const EMBEDDING_CACHE_DB = 'SakuraEmbeddingCacheV1';
     const EMBEDDING_CACHE_STORE = 'vectors';
     let _embeddingCacheDbPromise = null;
@@ -618,6 +833,22 @@ RPHubSDK.register({
         return null;
     }
 
+    function isValidEmbeddingPayload(payload, expectedCount) {
+        try {
+            const data = JSON.parse(String(payload || ''));
+            if (!Array.isArray(data?.data) || data.data.length !== expectedCount) return false;
+            const indices = new Set();
+            let dimensions = null;
+            return data.data.every(item => {
+                if (!item || !Number.isInteger(item.index) || item.index < 0 || item.index >= expectedCount
+                    || indices.has(item.index) || !Array.isArray(item.embedding) || !item.embedding.length
+                    || !item.embedding.every(Number.isFinite)) return false;
+                indices.add(item.index);
+                if (dimensions === null) dimensions = item.embedding.length;
+                return item.embedding.length === dimensions;
+            });
+        } catch (_) { return false; }
+    }
     function makeCachedJsonResponse(payload) {
         return new Response(payload, {
             status: 200,
@@ -637,11 +868,14 @@ RPHubSDK.register({
 
     // 网络层向量缓存：同一向量模型 + 同一输入 → 必然同一结果。
     // 命中直接合成响应返回，官方以为补录完成，实际零请求、零计费。
-    async function cachedEmbeddingFetch(modelKey, inputs, doFetch) {
+    async function cachedEmbeddingFetch(modelKey, inputs, doFetch, cacheScope = '') {
         if (!modelKey || !Array.isArray(inputs) || !inputs.length) return doFetch();
-        const key = `emb:${sakuraHash(`${modelKey}\u0000${inputs.join('\u0001')}`)}`;
+        // 向量空间不仅由模型名决定；不同 API 站可能使用不同版本、维度或自定义实现。
+        // 按接口来源隔离，避免把 A 站结果静默喂给 B 站。
+        const identity = JSON.stringify([String(cacheScope || 'official-memory').replace(/\/$/, ''), modelKey, inputs]);
+        const key = `emb:${identity.length}:${sakuraHash(identity)}:${sakuraHash(identity.split('').reverse().join(''))}`;
         const hit = await embeddingCacheRead(key);
-        if (hit) {
+        if (hit && isValidEmbeddingPayload(hit, inputs.length)) {
             console.log(`[苏萝萝] 向量缓存命中（${modelKey}），跳过重复计费`);
             return makeCachedJsonResponse(hit);
         }
@@ -649,7 +883,7 @@ RPHubSDK.register({
         try {
             if (response && response.ok) {
                 const text = await response.clone().text();
-                if (text) await embeddingCacheWrite(key, text);
+                if (isValidEmbeddingPayload(text, inputs.length)) await embeddingCacheWrite(key, text);
             }
         } catch (_) {}
         return response;
@@ -828,9 +1062,11 @@ RPHubSDK.register({
         return chunks.join('');
     }
     function restoreRawAssistantAfterOfficialFilter(rawContent) {
+        if (!sakuraStreamEnhanceEnabled()) return;
         const raw = String(rawContent || '');
         if (!raw) return;
         const restore = () => {
+            if (!sakuraStreamEnhanceEnabled()) return;
             try {
                 const state = getVueState();
                 const history = getRuntimeValue(state?.chatHistory);
@@ -855,143 +1091,119 @@ RPHubSDK.register({
         // 流式响应结束、官方 finally 过滤、Vue 渲染分别可能处于不同微任务中，分层补偿但不循环监听。
         [0, 80, 250, 700, 1400].forEach(delay => setTimeout(restore, delay));
     }
-    // ============ ⏱️ 流保活：破解官方 120s「无数据」硬超时 ============
+    // ============ ⏱️ 响应保活：缓解已建立 SSE 流的官方「无数据」超时 ============
     // 官方 api-utils.js 的 withApiResponse 给每个请求挂了 120s 无数据超时：
     //   timer = setTimeout(() => { timedOut = true; controller.abort(); }, options.timeoutMs ?? 120000)
     // 它只在 reader.read() 返回时重置计时器。慢模型（如 gemini-4-argon，首字 23s、长思考段
     // 常 >120s 无 chunk）会被前端误判超时 abort，但服务端其实已生成完并计费（日志完整、费用照扣）。
-    // 这里在原生 SSE 流外包一层「保活流」：真数据长时间不来时注入 SSE 注释行 ": keep-alive"，
-    // 使 read() 定期返回、官方计时器持续重置，永不误超时。注释行不是 data:，官方 readLine
+    // 仅对 fetch 已返回、且已识别为 SSE 的成功响应体注入注释行 ": keep-alive"；
+    // 使 read() 定期返回、官方计时器持续重置，降低流式空闲超时风险；不构成对所有超时边界的豁免。注释行不是 data:，官方 readLine
     // 直接忽略 → 对正文 / 工具调用 / 用量统计零影响；用户点停止（abort）时照常中断。
     const SAKURA_KEEP_ALIVE_INTERVAL_MS = 15000;
     const SAKURA_KEEP_ALIVE_IDLE_MS = 10000;
     async function wrapSseKeepAlive(response, monitor, forceSse = false) {
-        try {
-            if (!response || !response.body) return response;
-            const contentType = response.headers.get('content-type') || '';
-            if (!forceSse && !/text\/event-stream/i.test(contentType)) { monitor && monitor.onEnd && monitor.onEnd(); return response; }
-            if (forceSse && !/text\/event-stream/i.test(contentType)) {
-                // 不使用 response.clone()：部分移动端/代理对 tee 背压处理不稳定，会让正式流读不到首块。
-                // 预读结果统一通过回放流送回，避免首块丢失；首字节慢时也不取消底层 read。
-                if (typeof TextDecoder !== 'function') return response;
-                const sourceReader = response.body.getReader?.();
-                if (!sourceReader) return response;
-                try {
-                    const firstRead = sourceReader.read();
-                    const probe = await Promise.race([
-                        firstRead,
-                        new Promise(resolve => setTimeout(() => resolve({ probeTimedOut: true }), 1500))
-                    ]);
-                    const hasFirstChunk = !probe?.probeTimedOut && !probe?.done && probe?.value;
-                    const probeText = hasFirstChunk
-                        ? new TextDecoder().decode(probe.value, { stream: true }) : '';
-                    const isSse = hasFirstChunk && /^\s*(?::|data:)/m.test(probeText);
-                    const headers = new Headers(response.headers);
-                    if (isSse) headers.set('content-type', 'text/event-stream');
-                    let firstSent = false;
-                    let pendingFirst = hasFirstChunk ? Promise.resolve(probe) : firstRead;
-                    const replay = new ReadableStream({
-                        async pull(controller) {
-                            try {
-                                if (!firstSent) {
-                                    firstSent = true;
-                                    const first = await pendingFirst;
-                                    if (first.done) {
-                                        try { sourceReader.releaseLock(); } catch (_) {}
-                                        controller.close();
-                                    } else controller.enqueue(first.value);
-                                    return;
-                                }
-                                const next = await sourceReader.read();
-                                if (next.done) {
-                                    try { sourceReader.releaseLock(); } catch (_) {}
-                                    controller.close();
-                                } else controller.enqueue(next.value);
-                            } catch (error) {
-                                try { sourceReader.releaseLock(); } catch (_) {}
-                                controller.error(error);
-                            }
-                        },
-                        cancel(reason) {
-                            try { sourceReader.cancel(reason); } catch (_) {}
-                            try { sourceReader.releaseLock(); } catch (_) {}
-                        }
-                    });
-                    return wrapSseKeepAlive(new Response(replay, {
-                        status: response.status, statusText: response.statusText, headers
-                    }), monitor, isSse);
-                } catch (_) {
-                    try { await sourceReader.cancel(); } catch (_) {}
-                    try { sourceReader.releaseLock(); } catch (_) {}
-                    return response;
-                }
-            }
-            if (typeof ReadableStream !== 'function' || typeof TextEncoder !== 'function') return response;
-            if (typeof response.body.getReader !== 'function') return response;
-            const nativeReader = response.body.getReader();
-            const keepAliveChunk = new TextEncoder().encode(': keep-alive\n\n');
-            const monitorDecoder = new TextDecoder();
-            let lastDataAt = Date.now();
-            let finished = false;
-            let controllerRef = null;
-            // 边界安全位：只有上一个 chunk 以换行(\n / \r)结尾时，才允许注入注释行。
-            // 否则上游可能正停在一个「不完整的 data 行」中间（如只发了半段 JSON），
-            // 此时插入 ': keep-alive' 会被官方 readLine 当成该行的一部分 → 污染 JSON。
-            // 初始为 true：流刚建立时必然处于事件边界。
-            let tailSafe = true;
-            const timer = setInterval(() => {
-                if (finished || !controllerRef) return;
-                if (!tailSafe) return; // 处于半个事件中间：宁可不注入，也绝不污染数据
-                if (Date.now() - lastDataAt < SAKURA_KEEP_ALIVE_IDLE_MS) return;
-                try {
-                    controllerRef.enqueue(keepAliveChunk);
-                    lastDataAt = Date.now();
-                } catch (_) {}
-            }, SAKURA_KEEP_ALIVE_INTERVAL_MS);
-            const stopTimer = () => {
-                if (finished) return;
-                finished = true;
-                clearInterval(timer);
-            };
-            const stream = new ReadableStream({
-                start(controller) { controllerRef = controller; },
-                async pull(controller) {
-                    try {
-                        const chunk = await nativeReader.read();
-                        if (chunk.done) {
-                            stopTimer();
-                            monitor && monitor.onEnd && monitor.onEnd();
-                            try { controller.close(); } catch (_) {}
-                            return;
-                        }
-                        lastDataAt = Date.now();
-                        try { monitor && monitor.onData && monitor.onData(monitorDecoder.decode(chunk.value, { stream: true })); } catch (_) {}
-                        // 更新边界安全位：本 chunk 最后一个字节是否为换行
-                        if (chunk.value && chunk.value.length) {
-                            const lastByte = chunk.value[chunk.value.length - 1];
-                            tailSafe = (lastByte === 10 || lastByte === 13);
-                        }
-                        controller.enqueue(chunk.value);
-                    } catch (error) {
-                        stopTimer();
-                        monitor && monitor.onError && monitor.onError(error);
-                        try { controller.error(error); } catch (_) {}
-                    }
-                },
-                cancel(reason) {
-                    stopTimer();
-                    monitor && monitor.onEnd && monitor.onEnd();
-                    try { nativeReader.cancel(reason); } catch (_) {}
-                }
-            });
-            return new Response(stream, {
-                status: response.status,
-                statusText: response.statusText,
-                headers: response.headers
-            });
-        } catch (_) {
-            return response;
+        const notify = (name, value) => {
+            try { if (monitor && typeof monitor[name] === 'function') monitor[name](value); } catch (_) {}
+        };
+        if (!response || !response.body || !response.ok) { notify('onEnd'); return response; }
+        if (typeof ReadableStream !== 'function' || typeof TextEncoder !== 'function' || typeof TextDecoder !== 'function') {
+            notify('onEnd'); return response;
         }
+        const contentType = response.headers.get('content-type') || '';
+        let isSse = /text\/event-stream/i.test(contentType);
+        if (!isSse && !forceSse) { notify('onEnd'); return response; }
+        let reader;
+        try { reader = response.body.getReader(); } catch (_) { notify('onEnd'); return response; }
+        const buffered = [];
+        let pendingRead = null;
+        // 探测最多等待 1.5 秒、检查前 1KB；仅保留读过的块，不另开消费链。
+        // 超时后原样回放，不猜测类型，不取消尚未完成的 read。
+        if (!isSse) {
+            let timer;
+            const deadline = new Promise(resolve => { timer = setTimeout(() => resolve(null), 1500); });
+            const decoder = new TextDecoder();
+            let prefix = '';
+            try {
+                while (prefix.length < 1024) {
+                    pendingRead = reader.read();
+                    const chunk = await Promise.race([pendingRead, deadline]);
+                    if (chunk === null) break;
+                    pendingRead = null;
+                    buffered.push(chunk);
+                    if (chunk.done) break;
+                    prefix += decoder.decode(chunk.value.subarray(0, 1024 - prefix.length), { stream: true });
+                    const text = prefix.replace(/^\uFEFF/, '').trimStart();
+                    if (/^(?::|data:|event:|id:|retry:)/.test(text)) { isSse = true; break; }
+                    if (text && !['data:', 'event:', 'id:', 'retry:'].some(key => key.startsWith(text))) break;
+                }
+            } catch (error) {
+                clearTimeout(timer);
+                notify('onError', error);
+                try { reader.releaseLock(); } catch (_) {}
+                throw error;
+            } finally { clearTimeout(timer); }
+        }
+        if (!isSse) notify('onEnd');
+        const headers = new Headers(response.headers);
+        if (isSse) headers.set('content-type', 'text/event-stream');
+        // 浏览器交给脚本的 body 已解压；包装后的流不再适用原来的传输长度/编码。
+        headers.delete('content-length');
+        headers.delete('content-encoding');
+        const decoder = new TextDecoder();
+        const heartbeat = new TextEncoder().encode(': keep-alive\n\n');
+        let ended = false, controllerRef = null, timer = null;
+        let lastDataAt = Date.now(), tailSafe = true;
+        const finish = (error) => {
+            if (ended) return;
+            ended = true;
+            if (timer !== null) clearInterval(timer);
+            notify(error ? 'onError' : 'onEnd', error);
+        };
+        const release = () => { try { reader.releaseLock(); } catch (_) {} };
+        const stream = new ReadableStream({
+            start(controller) {
+                controllerRef = controller;
+                if (isSse) timer = setInterval(() => {
+                    if (ended || !tailSafe || controller.desiredSize <= 0 || Date.now() - lastDataAt < SAKURA_KEEP_ALIVE_IDLE_MS) return;
+                    try { controller.enqueue(heartbeat); lastDataAt = Date.now(); } catch (_) {}
+                }, SAKURA_KEEP_ALIVE_INTERVAL_MS);
+            },
+            async pull(controller) {
+                try {
+                    let chunk;
+                    if (buffered.length) chunk = buffered.shift();
+                    else {
+                        const nextRead = pendingRead || reader.read();
+                        pendingRead = null;
+                        chunk = await nextRead;
+                    }
+                    if (ended) return;
+                    if (chunk.done) {
+                        if (isSse) notify('onData', decoder.decode());
+                        finish(); release(); controller.close(); return;
+                    }
+                    lastDataAt = Date.now();
+                    // 先把原始字节交给正文通道；监视器异常只影响状态显示。
+                    controller.enqueue(chunk.value);
+                    if (chunk.value && chunk.value.length) {
+                        const last = chunk.value[chunk.value.length - 1];
+                        // CRLF 中间不可插入；只在 LF 后允许心跳。
+                        tailSafe = last === 10;
+                    }
+                    if (isSse) notify('onData', decoder.decode(chunk.value, { stream: true }));
+                } catch (error) {
+                    if (ended) return;
+                    finish(error); release();
+                    try { controller.error(error); } catch (_) {}
+                }
+            },
+            async cancel(reason) {
+                finish();
+                try { await reader.cancel(reason); } catch (_) {}
+                finally { release(); }
+            }
+        });
+        return new Response(stream, { status: response.status, statusText: response.statusText, headers });
     }
 
     // ===== 状态可视化（V20.1.11）：全部内聚到官方思考气泡，零独立浮层 =====
@@ -1083,7 +1295,7 @@ RPHubSDK.register({
         } else {
             const silent = now - s.lastDataAt;
             if (silent > 30000) sakuraSetStatusText('静默 ' + sakuraFmtDuration(silent) + ' · 可能在长思考');
-            else sakuraSetStatusText('模型响应中 · 累计 ' + s.chars + ' 字 · 静默 ' + sakuraFmtDuration(silent));
+            else sakuraSetStatusText('模型响应中 · 内容 ' + s.chars + ' 字符 · 静默 ' + sakuraFmtDuration(silent));
         }
         sakuraSyncTypingIndicator();
     }
@@ -1095,11 +1307,34 @@ RPHubSDK.register({
             sakuraRenderMonitor();
         });
     }
+    function sakuraDisableResponseEnhance() {
+        try {
+            sakuraMonitorReady = false;
+            if (sakuraMonitorTimer) { clearInterval(sakuraMonitorTimer); sakuraMonitorTimer = null; }
+            if (sakuraMonitorRaf) {
+                const cancel = window.cancelAnimationFrame;
+                if (typeof cancel === 'function') cancel.call(window, sakuraMonitorRaf);
+                else clearTimeout(sakuraMonitorRaf);
+                sakuraMonitorRaf = 0;
+            }
+            if (sakuraMonitorState) sakuraMonitorState.ended = true;
+            sakuraMonitorState = null;
+            sakuraSetStatusText('');
+            document.querySelectorAll('.typing-bubble, .active-tool-waiting').forEach(node => {
+                node.classList.remove('sakura-model-waiting', 'sakura-model-responding', 'sakura-model-stalled');
+            });
+            if (!sakuraStreamEnhanceEnabled()) {
+                const style = document.getElementById(SAKURA_MONITOR_STYLE_ID);
+                if (style) style.remove();
+            }
+        } catch (_) {}
+    }
     function sakuraStartResponseMonitor() {
         try {
+            sakuraMonitorReady = true;
             sakuraEnsureMonitorStyles();
             if (sakuraMonitorTimer) { clearInterval(sakuraMonitorTimer); sakuraMonitorTimer = null; }
-            sakuraMonitorState = { startAt: Date.now(), lastDataAt: Date.now(), received: false, chars: 0, ended: false };
+            sakuraMonitorState = { startAt: Date.now(), lastDataAt: Date.now(), received: false, chars: 0, ended: false, line: '', skipLine: false };
             sakuraRenderMonitor();
             sakuraMonitorTimer = setInterval(sakuraRenderMonitor, 500);
         } catch (_) {}
@@ -1111,15 +1346,37 @@ RPHubSDK.register({
             },
             onData(text) {
                 const s = state;
-                if (sakuraMonitorState !== state || !s || s.ended) return;
+                if (sakuraMonitorState !== state || !s || s.ended || typeof text !== 'string' || !text) return;
                 s.lastDataAt = Date.now();
-                if (typeof text === 'string') {
-                    s.chars += text.length;
-                    // 仅在出现「实质增量」(正文 / 工具参数 / 推理内容) 时才判定为已响应，
-                    // 避免上游空心跳帧(仅 role 声明或空 delta)被误报成「正在吐字」。
-                    if (!s.received && /"(?:arguments|content|reasoning_content|reasoning|thinking|thinking_content|thought|thoughts|reasoning_text|refusal|text)":\s*"(?!")/.test(text)) {
-                        s.received = true;
+                // 只保留一条未结束的 SSE 行，上限 256KB；不积累整份模型输出。
+                for (const part of text.split(/(?<=\n)/)) {
+                    if (!s.skipLine) {
+                        if (s.line.length + part.length > 262144) { s.line = ''; s.skipLine = true; }
+                        else s.line += part;
                     }
+                    if (!part.endsWith('\n')) continue;
+                    if (!s.skipLine) {
+                        const line = s.line.trim();
+                        if (line.startsWith('data:')) {
+                            const raw = line.slice(5).trim();
+                            if (raw && raw !== '[DONE]') {
+                                try {
+                                    const data = JSON.parse(raw);
+                                    const choice = data?.choices?.[0];
+                                    const delta = choice?.delta || choice?.message || {};
+                                    const values = [delta.content, delta.reasoning_content, delta.reasoning,
+                                        delta.thinking, delta.thinking_content, delta.thought, delta.thoughts,
+                                        delta.reasoning_text, delta.refusal, choice?.text,
+                                        delta.function_call?.arguments,
+                                        ...(Array.isArray(delta.tool_calls) ? delta.tool_calls.map(t => t?.function?.arguments) : [])];
+                                    const count = values.reduce((n, value) => n + (typeof value === 'string' ? value.length : 0), 0);
+                                    s.chars += count;
+                                    if (count > 0) s.received = true;
+                                } catch (_) {}
+                            }
+                        }
+                    }
+                    s.line = ''; s.skipLine = false;
                 }
                 sakuraScheduleRenderMonitor();
             },
@@ -1127,6 +1384,7 @@ RPHubSDK.register({
                 const s = state;
                 if (sakuraMonitorState !== state || !s || s.ended) return;
                 s.ended = true;
+                s.line = "";
                 if (sakuraMonitorTimer) { clearInterval(sakuraMonitorTimer); sakuraMonitorTimer = null; }
                 sakuraSetStatusText('');
                 sakuraSyncTypingIndicator(true);
@@ -1135,6 +1393,7 @@ RPHubSDK.register({
                 const s = state;
                 if (sakuraMonitorState !== state || !s || s.ended) return;
                 s.ended = true;
+                s.line = "";
                 if (sakuraMonitorTimer) { clearInterval(sakuraMonitorTimer); sakuraMonitorTimer = null; }
                 sakuraSetStatusText('');
                 sakuraSyncTypingIndicator(true);
@@ -1144,7 +1403,7 @@ RPHubSDK.register({
     function observeMainChatCompletionResponse(response, isStreaming = false) {
         // 流式响应不能再开第二条 text() 消费链；部分代理对 Response.clone() 的 tee 背压处理会卡住正式 reader。
         // 非流式响应仍保留旁路观察，用于恢复官方后处理可能误删的正文。
-        if (isStreaming) return response;
+        if (isStreaming || !response || !response.ok) return response;
         try {
             if (!response || typeof response.clone !== 'function') return response;
             response.clone().text().then(raw => {
@@ -1174,6 +1433,7 @@ RPHubSDK.register({
     });
     const hookedFetch = async function(input, init) {
         let isAuxiliaryRequest = false;
+        let mainRequestStarted = false;
         try {
             const allConf = loadSplitApis();
             const memConf = getActiveChannelConfig(allConf.memory);
@@ -1181,14 +1441,35 @@ RPHubSDK.register({
             const newInit = Object.assign({}, init);
             const url = typeof input === 'string' ? input : (input && input.url) || '';
             let parsedBody = null;
-            const rawBody = typeof newInit.body === 'string' ? newInit.body : '';
+            let rawBody = typeof newInit.body === 'string' ? newInit.body : '';
+            // 官方有时把最终请求体放在 Request 对象里；必须在放行前读副本，不能只拦 init.body。
+            if (!rawBody && typeof Request !== 'undefined' && input instanceof Request) {
+                try { rawBody = await input.clone().text(); } catch (_) { rawBody = ''; }
+            }
             try { parsedBody = rawBody ? JSON.parse(rawBody) : null; } catch (_) { parsedBody = null; }
             const isChatCompletionRequest = /chat\/completions/i.test(url);
+            if (parsedBody && Array.isArray(parsedBody.messages) && isChatCompletionRequest) {
+                sanitizeNextResponseMessages(parsedBody.messages);
+                newInit.body = JSON.stringify(parsedBody);
+            }
             const isOfficialMemoryEmbeddingRequest = /embeddings/i.test(url) && isOfficialApiEndpoint(url);
             const detectedAuxiliaryRequest = isAuxiliaryModelMessages(parsedBody?.messages);
             isAuxiliaryRequest = detectedAuxiliaryRequest || isOfficialMemoryEmbeddingRequest;
             const isMainChatRequest = isChatCompletionRequest && !isAuxiliaryRequest;
-
+            if (isMainChatRequest && !sakuraStreamEnhanceEnabled()) {
+                // 关闭响应增强也不能恢复协议块：请求和当前界面都先做永久剥离。
+                scrubChatHistoryNextResponse();
+                scrubContextViewerNextResponse();
+                scrubChatBubblesDom();
+                scrubContextViewerDom();
+                // 真正的关闭旁路必须早于响应监控和 SSE 包装。
+                sakuraDisableResponseEnhance();
+                window.__sakuraStreamEnhanceDebug = Object.assign(window.__sakuraStreamEnhanceDebug || {}, {
+                    enabled: false, lastRoute: 'native-bypass', lastRequestAt: Date.now(), lastUrl: url,
+                    requestStream: parsedBody?.stream === true
+                });
+                return _nativeFetch.call(this, input, newInit);
+            }
             if (parsedBody && Array.isArray(parsedBody.messages) && isMainChatRequest) {
                 // 只有主聊天允许插件清洗；记忆/UI副模型请求保持官方原始消息。
                 parsedBody.messages.forEach(msg => {
@@ -1258,10 +1539,11 @@ RPHubSDK.register({
                     return runMemoryRoute(() => reroute(buildCustomEndpoint(memConf.url, 'embeddings'), memConf.key, { retryTransient: true }));
                 };
                 // 🧠 向量缓存：同模型 + 同输入 → 直接复用，换 API 站不再重复计费。
-                return cachedEmbeddingFetch(modelKey, inputs, doFetch);
+                const vectorScope = (memConf.url && memConf.key) ? `memory:${String(memConf.url).replace(/\/$/, '')}` : 'official-memory-follow-main';
+                return cachedEmbeddingFetch(modelKey, inputs, doFetch, vectorScope);
             }
 
-            if (parsedBody && Array.isArray(parsedBody.messages)) {
+            if (parsedBody && Array.isArray(parsedBody.messages) && isMainChatRequest) {
                 newInit.body = JSON.stringify(parsedBody);
                 // 请求体采用同一清理结果后，再同步上下文查看器显示层与聊天历史/气泡显示层。
                 scrubContextViewerNextResponse();
@@ -1316,10 +1598,20 @@ RPHubSDK.register({
             // V4：网络层零改写。温度由 UI 层 Vue 同步 watch 守护（installPreferenceGuards），
             // 官方请求体读的就是 settings.temperature，天然正确；流式同理跟随 settings.stream。
             if (isMainChatRequest) {
-                // 请求发出前就点亮监视胶囊，让用户立刻知道「已发出、正在等模型」。
+                if (!sakuraStreamEnhanceEnabled()) {
+                    // 关闭响应增强时严格回归官方：清理旧状态后，不监视、不读 body、不包 SSE、不做后处理。
+                    sakuraDisableResponseEnhance();
+                    return _nativeFetch.call(this, input, init);
+                }
+                // 请求发出前就点亮监视状态。将实际分支暴露给本机调试，避免把静态按钮误当成有效开关。
+                window.__sakuraStreamEnhanceDebug = Object.assign(window.__sakuraStreamEnhanceDebug || {}, {
+                    enabled: true, lastRoute: 'enhanced', lastRequestAt: Date.now(), lastUrl: url,
+                    requestStream: parsedBody?.stream === true
+                });
                 const monitor = sakuraStartResponseMonitor();
                 let response;
                 try {
+                    mainRequestStarted = true;
                     response = await _nativeFetch.call(this, input, newInit);
                 } catch (error) {
                     monitor.onError(error);
@@ -1336,6 +1628,8 @@ RPHubSDK.register({
 
             return _nativeFetch.call(this, input, newInit);
         } catch (e) {
+            // 已发送的主请求及用户取消绝不自动重发，避免重复生成/计费。
+            if (mainRequestStarted || e?.name === 'AbortError' || init?.signal?.aborted || input?.signal?.aborted) throw e;
             // 分流如果配置了但网络/密钥报错，明确报错给用户查看，绝不偷偷跑回主 API 扣钱！
             if (isAuxiliaryRequest) {
                 console.error('[苏萝萝分流] 副通道调用失败 (已阻止回退主通道):', e);
@@ -1650,6 +1944,8 @@ function getCharKey() {
     }
 
     function openClassicMemoryEditor(memory) {
+        const editorScopeId = sakuraMemScopeId();
+        const originalSummary = String(memory.summary || '');
         const exist = document.getElementById('sakura-mem-editor');
         if (exist) exist.remove();
         const mask = document.createElement('div');
@@ -1681,6 +1977,9 @@ function getCharKey() {
         const saveBtn = mkBtn('保存', true, async () => {
             const newVal = ta.value.trim();
             if (!newVal) { alert('内容不能为空'); return; }
+            if (!editorScopeId || sakuraMemScopeId() !== editorScopeId) {
+                alert('角色或分支已切换，请重新打开记忆编辑器'); return;
+            }
             const st = getVueState();
             const scopeId = (typeof sakuraMemScopeId === 'function') ? sakuraMemScopeId() : null;
             // 1.9.5 官方不再导出 classicMemories / saveClassicMemoriesNow（1.9.4 有），
@@ -1692,11 +1991,19 @@ function getCharKey() {
                     const arr = Array.isArray(list) ? list : [];
                     const idx = arr.findIndex(m => String(m.id) === String(memory.id));
                     if (idx === -1) { alert('未找到该记忆，可能已删除'); mask.remove(); return; }
-                    arr[idx] = { ...arr[idx], summary: newVal };
-                    await window.RPHubStorage.setScopedStoredValue('classic_memories', scopeId, arr);
+                    if (sakuraMemScopeId() !== editorScopeId) {
+                        alert('角色或分支已切换，未保存'); return;
+                    }
+                    if (String(arr[idx].summary || '') !== originalSummary) {
+                        alert('这条记忆已被其他操作更新，请重新打开编辑器'); return;
+                    }
+                    const next = arr.slice();
+                    next[idx] = { ...arr[idx], summary: newVal };
+                    await window.RPHubStorage.setScopedStoredValue('classic_memories', scopeId, next);
                     ok = true;
                 } catch (err) {
                     console.warn('[苏萝萝] 记忆保存写库失败:', err);
+                    alert('保存失败，未报告成功，请重试'); return;
                 }
             }
             // 兼容旧版（1.9.4 及以前）：真 ref 可写时优先走内存改 + 官方保存
@@ -1704,13 +2011,16 @@ function getCharKey() {
                 const arr = unref(st.classicMemories);
                 const idx = arr.findIndex(m => String(m.id) === String(memory.id));
                 if (idx === -1) { alert('未找到该记忆，可能已删除'); mask.remove(); return; }
+                if (String(arr[idx].summary || '') !== originalSummary) { alert('记忆已更新，请重新打开编辑器'); return; }
+                if (typeof st.saveClassicMemoriesNow !== 'function') { alert('无法可靠保存记忆'); return; }
+                const previous = arr[idx].summary;
                 arr[idx].summary = newVal;
-                if (typeof st.saveClassicMemoriesNow === 'function') {
-                    try { await st.saveClassicMemoriesNow(); } catch (_) {}
-                }
+                try { await st.saveClassicMemoriesNow(); }
+                catch (error) { if (arr[idx].summary === newVal) arr[idx].summary = previous; alert('保存失败，请重试'); return; }
                 ok = true;
             }
             if (!ok) { alert('无法访问记忆数据'); return; }
+            if (sakuraMemScopeId() !== editorScopeId) { alert('已保存到原分支；当前分支未刷新'); mask.remove(); return; }
             // 走官方正门重载，把新数据灌进真 ref（面板/对话立即生效）
             if (typeof sakuraMemHotReload === 'function') {
                 try { await sakuraMemHotReload(); } catch (_) {}
@@ -3820,15 +4130,6 @@ function injectGramophoneButton() {
             openFullscreenComposer();
             return;
         }
-        const vol = t.closest('.sakura-bk-vol');
-        if (vol) {
-            e.preventDefault();
-            e.stopImmediatePropagation();
-            e.stopPropagation();
-            doExportVolumes(vol);
-            return;
-        }
-
         const modelBtn = t.closest('.settings-model-button');
         if (modelBtn) {
             const allConf = loadSplitApis();
@@ -3983,8 +4284,6 @@ function injectGramophoneButton() {
     .sidebar-nav-button.bg-primary-50::before,.advanced-nav.is-open .advanced-nav-trigger::before{content:''!important;display:block!important;position:absolute!important;left:.35rem!important;top:50%!important;width:3.5px!important;height:1.25rem!important;border-radius:999px!important;background:linear-gradient(180deg,#ff8da8,#ff4d79)!important;transform:translateY(-50%)!important;box-shadow:0 0 8px rgba(255,77,121,.6)!important}
     .advanced-nav-chevron{color:#ff6b95!important;transition:transform .28s cubic-bezier(.22,1,.36,1)!important}
     .advanced-nav-item.bg-primary-50{background:rgba(255,235,242,.75)!important;color:#b03a68!important;border-radius:12px!important}
-    .sakura-bk-vol{background:linear-gradient(135deg,#c9a7ff 0%,#a06bff 100%)!important;color:#ffffff!important;border:1px solid #a06bff!important;box-shadow:inset 0 1px 0 rgba(255,255,255,.3),0 4px 14px rgba(160,107,255,.35)!important;text-shadow:0 1px 2px rgba(0,0,0,.18)!important;transition:all .15s cubic-bezier(.34,1.56,.64,1)!important}
-    .sakura-bk-vol:active{transform:scale(.94)!important}
     .item-action-button{color:#c79cab!important;border-radius:0.6rem!important;transition:all .18s cubic-bezier(.34,1.56,.64,1)!important}
     .item-action-button--edit:hover,.item-action-button--edit:active{background:rgba(255,240,245,.95)!important;color:#ff4d80!important;transform:scale(1.1)!important;box-shadow:0 2px 8px rgba(255,107,149,.2)!important}
     .item-action-button--delete:hover,.item-action-button--delete:active{background:#fff0f2!important;color:#e83a5e!important;transform:scale(1.1)!important}
@@ -4584,20 +4883,85 @@ function injectGramophoneButton() {
     .sakura-note-hint{color:#d46d8c!important}
     @media(max-width:767px){.sakura-box,.modal-content,[role=dialog]{border-radius:18px!important}.sakura-title-with-icon:after{font-size:10px!important}}
 
-    /* 🌸 设置页「樱花个性化」分区：完全对齐官方原生分区质感 */
-    .sakura-personal-card{position:relative;display:block;width:100%;text-align:left;padding:16px;border-radius:0.75rem;border:1px solid rgba(240,168,189,.45);background:linear-gradient(145deg,rgba(255,250,252,.96),rgba(255,241,246,.9));box-shadow:0 2px 10px rgba(183,99,128,.06);cursor:pointer;transition:border-color .18s ease,box-shadow .18s ease,transform .18s ease,background .18s ease;-webkit-tap-highlight-color:transparent}
-    .sakura-personal-card:hover{border-color:#e98eaa!important;background:linear-gradient(145deg,#fff7fa,#ffeef5)!important;box-shadow:0 4px 14px rgba(200,93,125,.14)!important;transform:translateY(-1px)!important}
-    .sakura-personal-card:active{transform:scale(.98)!important}
-    .sakura-personal-card-title{font-size:14px;font-weight:800;color:#c2255c;letter-spacing:.2px}
-    .sakura-personal-card-desc{margin-top:5px;font-size:11.5px;color:#a27b89;line-height:1.5}
-    .sakura-personal-card::after{content:'›';position:absolute;right:14px;top:50%;transform:translateY(-50%);font-size:18px;color:#dfa4b8;font-weight:700}
-    @media (prefers-color-scheme: dark){
-        .sakura-personal-card{border-color:rgba(255,140,170,.32)!important;background:linear-gradient(145deg,rgba(56,38,48,.96),rgba(42,28,36,.92))!important;box-shadow:0 2px 10px rgba(0,0,0,.25)!important}
-        .sakura-personal-card:hover{border-color:#ff8da8!important;background:linear-gradient(145deg,rgba(66,44,56,.98),rgba(52,34,44,.95))!important}
-        .sakura-personal-card-title{color:#ffa3b8!important}
-        .sakura-personal-card-desc{color:#c79cab!important}
-        .sakura-personal-card::after{color:#a06a80!important}
+
+    /* 三个个性化面板：统一的中性色底、主题色点缀与清晰操作区。 */
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog{--pd-text:var(--c-text,#242832);--pd-muted:var(--c-text-3,#7b8190);--pd-line:rgba(127,127,127,.18);--pd-bg:var(--c-surface,#fff);display:flex!important;flex-direction:column!important;max-width:540px!important;box-sizing:border-box!important;width:min(540px,calc(100vw - 24px))!important;max-height:calc(100dvh - 32px)!important;border:1px solid var(--pd-line)!important;border-radius:22px!important;background:var(--pd-bg)!important;box-shadow:0 24px 80px rgba(0,0,0,.2)!important;overflow:hidden!important;color:var(--pd-text)!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-head{padding:22px 22px 16px!important;background:transparent!important;border-bottom:1px solid var(--pd-line)!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-title-with-icon{color:var(--pd-text)!important;font-size:17px!important;font-weight:650!important;letter-spacing:.01em}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-title-with-icon:after{content:none!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-sub{margin-top:7px!important;color:var(--pd-muted)!important;font-size:12px!important;line-height:1.65}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-body{min-height:0!important;flex:1 1 auto!important;background:var(--pd-bg)!important;padding:20px 22px!important;overflow-y:auto!important;overscroll-behavior:contain}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-foot{padding:14px 22px!important;gap:8px!important;flex-wrap:wrap;background:var(--pd-bg)!important;border-top:1px solid var(--pd-line)!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-btn{min-height:38px;padding:8px 13px!important;border-radius:10px!important;box-shadow:none!important;font-size:12px!important;font-weight:550!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-close-btn{width:34px!important;height:34px!important;border-radius:10px!important;color:var(--pd-muted)!important;background:transparent!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-theme-current{padding:10px 12px;margin-bottom:16px!important;border-radius:10px;background:color-mix(in srgb,var(--sakura-theme-color,#ff6b95) 7%,transparent);color:var(--pd-text)!important;font-size:12px!important;font-weight:500!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-theme-grid{gap:10px!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-theme-grid>button{min-height:92px;border-radius:12px!important;background:var(--pd-bg)!important;border-color:var(--pd-line)!important;color:var(--pd-text)!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-theme-grid>button>span:last-child{color:var(--pd-text)!important;font-weight:500!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-theme-custom{flex-wrap:wrap;gap:8px!important;margin-top:20px!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-theme-custom input[type=text]{background:var(--pd-bg)!important;color:var(--pd-text)!important;border:1px solid var(--pd-line)!important;border-radius:10px!important;font-family:ui-monospace,monospace;min-height:40px}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog input[aria-invalid=true]{border-color:#dc5164!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-splash-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-splash-grid>div{border:1px solid var(--pd-line)!important;background:var(--pd-bg)!important;border-radius:12px!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-splash-add{border-color:var(--pd-line)!important;background:transparent!important;color:var(--pd-muted)!important;font-size:12px!important;min-height:88px}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-janitor-stat{padding:18px!important;border:1px solid var(--pd-line)!important;border-radius:14px!important;background:transparent!important;margin-bottom:16px}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-janitor-total{font-size:30px!important;font-weight:600!important;letter-spacing:-.04em;color:var(--pd-text)!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-janitor-hint,:is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-janitor-cachehint,:is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-janitor-real,:is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-janitor-note{color:var(--pd-muted)!important;font-size:11px!important;line-height:1.7}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-janitor-row{padding:14px 0!important;gap:12px;border:0!important;border-bottom:1px solid var(--pd-line)!important;background:transparent!important;border-radius:0!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-janitor-label{color:var(--pd-text)!important;font-size:12px!important;font-weight:600!important}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-janitor-desc{display:block!important;margin:4px 0!important;color:var(--pd-muted)!important;font-size:11px!important;font-weight:400!important;line-height:1.6}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-janitor-key{font-size:10px!important;color:var(--pd-muted)!important;overflow-wrap:anywhere}
+    :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-janitor-clean{flex-shrink:0!important;min-height:36px!important}
+    :root[data-sakura-night="1"] :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog,:root[data-app-theme="dark"] :is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog{--pd-bg:#292b30;--pd-text:#eeeef1;--pd-muted:#a1a5af;--pd-line:rgba(255,255,255,.1)}
+    @media(max-width:380px){:is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-head,:is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-body,:is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-foot{padding-left:15px!important;padding-right:15px!important}:is(#sakura-theme-mask,#sakura-splash-mask,#sakura-janitor-mask) .sakura-personal-dialog .sakura-theme-custom .sakura-btn{width:100%}}
+
+    /* 个性化：单一视觉定义；所有选择器限定当前分区。 */
+    #sakura-personal-section{--personal-accent:var(--sakura-theme-color,#ff6b95);--personal-text:var(--c-text,#262b33);--personal-muted:var(--c-text-3,#858b96);--personal-line:rgba(127,127,127,.15);--personal-surface:rgba(127,127,127,.035);padding-top:24px!important;margin-top:24px!important;border-top-color:var(--personal-line)!important}
+    #sakura-personal-section>.settings-subheading{display:flex;align-items:center;gap:9px;margin:0 0 16px!important;color:var(--personal-text)!important;font-size:15px!important;line-height:1.5;font-weight:650!important;letter-spacing:.02em}
+    #sakura-personal-section>.settings-subheading svg{width:17px;height:17px;margin:0!important;color:var(--personal-accent)!important;opacity:.85}
+    #sakura-personal-section>.grid{display:flex!important;flex-direction:column!important;gap:0!important;padding:0 16px;border:1px solid var(--personal-line);border-radius:16px;background:var(--personal-surface);overflow:hidden}
+    #sakura-personal-section .sakura-personal-card{position:relative;display:grid!important;grid-template-columns:34px minmax(0,1fr) 14px;align-items:center!important;gap:13px;width:100%;min-width:0;min-height:82px!important;margin:0!important;padding:17px 0!important;text-align:left;border:0!important;border-radius:0!important;background:transparent!important;box-shadow:none!important;transform:none!important;cursor:pointer;transition:background .16s ease;-webkit-tap-highlight-color:transparent;contain:none}
+    #sakura-personal-section .sakura-personal-card+.sakura-personal-card{border-top:1px solid var(--personal-line)!important}
+    #sakura-personal-section .sakura-personal-card:before,#sakura-personal-section .sakura-personal-card-title:after{content:none!important;display:none!important}
+    #sakura-personal-section .sakura-personal-card:after{content:''!important;position:static!important;display:block;width:6px;height:6px;margin-left:1px;border:solid var(--personal-muted);border-width:1.3px 1.3px 0 0;transform:rotate(45deg)!important;opacity:.65;background:none!important}
+    #sakura-personal-section .sakura-personal-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:10px;color:var(--personal-accent);background:color-mix(in srgb,var(--personal-accent) 9%,transparent)}
+    #sakura-personal-section .sakura-personal-icon svg{display:block;width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+    #sakura-personal-section .sakura-personal-copy{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-width:0}
+    #sakura-personal-section .sakura-personal-card-title{display:block;padding:0!important;margin:0!important;color:var(--personal-text)!important;font-size:13px!important;font-weight:600!important;line-height:1.45;letter-spacing:.01em;white-space:normal;overflow:visible}
+    #sakura-personal-section .sakura-personal-card-desc{display:block;padding:0!important;margin:0!important;color:var(--personal-muted)!important;font-size:11px!important;font-weight:400!important;line-height:1.55;white-space:normal;overflow-wrap:anywhere;overflow:visible}
+    #sakura-personal-section .sakura-personal-card:hover{background:color-mix(in srgb,var(--personal-accent) 4%,transparent)!important}
+    #sakura-personal-section .sakura-personal-card:active{background:color-mix(in srgb,var(--personal-accent) 8%,transparent)!important}
+    #sakura-personal-section .sakura-personal-card:focus-visible{outline:2px solid var(--personal-accent)!important;outline-offset:-3px;border-radius:9px!important}
+    #sakura-personal-section>div[style*="margin-top"]{display:grid!important;grid-template-columns:repeat(2,minmax(0,1fr));gap:0!important;padding:0!important;margin-top:16px!important;border:0!important;background:transparent!important}
+    #sakura-personal-section>div[style*="margin-top"]>span{display:flex!important;align-items:center;justify-content:center;min-width:0;min-height:20px;padding:0 8px!important;border:0!important;border-radius:0!important;background:transparent!important;color:var(--personal-muted)!important;font-size:10px!important;font-weight:400!important;line-height:1.6;font-variant-numeric:tabular-nums;white-space:normal;text-align:center}
+    #sakura-personal-section>div[style*="margin-top"]>span+span{border-left:1px solid var(--personal-line)!important}
+    :root[data-sakura-night="1"] #sakura-personal-section,:root[data-app-theme="dark"] #sakura-personal-section{--personal-text:#eeeef0;--personal-muted:#a0a3ac;--personal-line:rgba(255,255,255,.085);--personal-surface:rgba(255,255,255,.018)}
+    @media(prefers-reduced-motion:reduce){#sakura-personal-section .sakura-personal-card{transition:none!important}}
+    /* V20.5.6 主题色补全：官方记忆组件不再依赖固定 primary/blue 边框 */
+    :root:root .memory-item{
+        --memory-accent:var(--sakura-theme-color,#ff6b95)!important;
+        --memory-accent-soft:color-mix(in srgb,var(--memory-accent) 10%,transparent)!important;
+        --memory-accent-border:color-mix(in srgb,var(--memory-accent) 28%,transparent)!important;
     }
+    :root:root .memory-item::before{border:2px solid var(--memory-accent)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--memory-accent) 12%,transparent)!important}
+    :root:root .memory-item:not(:last-child)::after{background:color-mix(in srgb,var(--memory-accent) 30%,transparent)!important}
+    :root:root .memory-compression{--memory-accent:var(--sakura-theme-color,#ff6b95)!important;--saved:repeating-linear-gradient(-45deg,color-mix(in srgb,var(--memory-accent) 28%,transparent) 0 3px,color-mix(in srgb,var(--memory-accent) 12%,transparent) 3px 6px)!important}
+    :root:root .memory-compression__track::after{background:color-mix(in srgb,var(--memory-accent) 58%,transparent)!important}
+    :root:root .memory-compression__fill,
+    :root:root .memory-compression__labels .is-kept{background:var(--memory-accent)!important}
+    :root:root .memory-compression__fill::after{background:color-mix(in srgb,var(--memory-accent) 76%,#111)!important}
+
+    :root:root .memory-item:hover{border-color:color-mix(in srgb,var(--memory-accent) 48%,transparent)!important;background:var(--memory-accent-soft)!important}
+    :root:root .memory-item__turn,.memory-item__chars b{color:var(--memory-accent)!important}
+    :root:root .memory-item__retry:hover,
+    :root:root .memory-item__retry:focus-visible,
+    :root:root .memory-item__head > .sakura-mem-edit:hover{color:var(--memory-accent)!important;border-color:color-mix(in srgb,var(--memory-accent) 42%,transparent)!important;background:color-mix(in srgb,var(--memory-accent) 10%,transparent)!important}
+    :root:root .settings-view .settings-toggle-row:focus-within,
+    :root:root .settings-view .settings-field:focus-within{border-color:color-mix(in srgb,var(--sakura-theme-color,#ff6b95) 38%,transparent)!important}
+    :root:root .settings-view .settings-toggle-input:checked + .settings-toggle{background:var(--sakura-theme-color,#ff6b95)!important;border-color:var(--sakura-theme-color,#ff6b95)!important}
+    :root[data-app-theme="dark"] .memory-item{border-color:color-mix(in srgb,var(--sakura-theme-color,#ff8fb0) 34%,#4a4a4a)!important;background:color-mix(in srgb,var(--sakura-theme-color,#ff8fb0) 5%,#343434)!important}
+    :root[data-app-theme="dark"] .memory-item:hover{border-color:color-mix(in srgb,var(--sakura-theme-color,#ff8fb0) 56%,#4a4a4a)!important}
+    :root[data-app-theme="dark"] .memory-item__chars,:root[data-app-theme="dark"] .memory-item__text{color:#d8d0d3!important}
     /* 🌸 V20 原生派记忆按钮：官方 2.0.0 重构为 li.memory-item 后，
        插件编辑/删除按钮直接嵌入 .memory-item__head，与官方 .memory-item__retry 同盖同尺寸。
        同时兼容旧版 .sakura-mem-actions 容器结构（保留后向兼容）。 */
@@ -4628,7 +4992,7 @@ function injectGramophoneButton() {
     .memory-item__retry{margin-left:0!important}
     /* v17.4：全站轻量收口层。只补交互反馈与边界层次，不新增全局模糊、动画或监听。 */
     :where(button,input,textarea,select,[role="button"]){-webkit-tap-highlight-color:transparent}
-    :where(button,select,[role="button"]):focus-visible{outline:2px solid #ffb3c6!important;outline-offset:2px}
+    :where(button,select,[role="button"]):focus-visible{outline:2px solid color-mix(in srgb,var(--sakura-theme-color,#ffb3c6) 72%,white)!important;outline-offset:2px}
     /* ===== V20.0.1 修复①：输入框聚焦框不再是生硬直角 =====
        旧规则对 input/textarea 通配了 outline，而 outline 天生是直角矩形、不随圆角、还外扩 2px，
        又画在 .island-input（textarea 自身无圆角）上，于是生出一条硬边紫框，与官方玻璃岛 1.375rem 圆角
@@ -4771,7 +5135,7 @@ function injectGramophoneButton() {
     }
     #sakura-moment-toast.is-out{opacity:0;transform:translateX(-50%) translateY(8px)}
     @keyframes smToastIn{from{opacity:0;transform:translateX(-50%) translateY(10px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
-    /* 🧹 存储管家：全部改用类 + 粉色 hex，主题引擎换色时自动重映射（不再固定粉红） */
+    /* 存储管家：全部改用类 + 粉色 hex，主题引擎换色时自动重映射（不再固定粉红） */
     .sakura-janitor-stat{text-align:center;padding:6px 0 12px}
     .sakura-janitor-total{font-size:30px;font-weight:800}
     .sakura-janitor-hint{font-size:11.5px;color:#b07a8c;margin-top:2px}
@@ -5044,7 +5408,7 @@ function injectGramophoneButton() {
     .choice-card:hover .choice-card__icon{transform:scale(1.1)!important}
     .choice-card__icon svg,.choice-card .choice-card__icon svg{color:#ff6b95!important}
     @media (prefers-color-scheme: dark){.choice-card:hover{border-color:rgba(255,140,170,.4)!important;background:rgba(80,42,58,.95)!important;color:#ffa3b8!important}.choice-card__icon svg,.choice-card .choice-card__icon svg{color:#ff7597!important}}
-    :root{--sakura-theme-color:#ff6b95!important}
+    :root{--sakura-theme-color-fallback:#ff6b95!important}
     .sakura-clean-view-btn{background:transparent!important;color:rgba(255,255,255,.7)!important;box-shadow:none!important;transform:none!important}
     .sakura-clean-view-btn:hover,.sakura-clean-view-btn:focus-visible{background:rgba(255,255,255,.1)!important;color:#fff!important;box-shadow:none!important;outline:none!important}
     .sakura-clean-view-btn:active{background:rgba(255,255,255,.1)!important;color:#fff!important;transform:none!important}
@@ -5124,12 +5488,7 @@ function injectGramophoneButton() {
     :root[data-sakura-night="1"] .sakura-provider-option{color:#e6e6e6!important}
     :root[data-sakura-night="1"] .sakura-provider-option:hover{background:#454545!important}
 
-    /* —— 设置页「樱花个性化」卡片：标题跟随主题色 —— */
-    :root[data-sakura-night="1"] .sakura-personal-card{background:linear-gradient(145deg,#3b3b3b,#333)!important;border-color:#4d4d4d!important}
-    :root[data-sakura-night="1"] .sakura-personal-card:hover{background:linear-gradient(145deg,#454545,#3b3b3b)!important;border-color:var(--sakura-theme-color,#ff8ab0)!important}
-    :root[data-sakura-night="1"] .sakura-personal-card-title{color:var(--sakura-theme-color,#ffa9c0)!important}
-    :root[data-sakura-night="1"] .sakura-personal-card-desc{color:#c0a8b2!important}
-    :root[data-sakura-night="1"] .sakura-personal-card::after{color:#8d6d7a!important}
+
 
     /* —— 记忆区操作按钮 / 导入导出 —— */
     /* V20 原生派：记忆按钮夜间跟随官方变量，去掉硬编码深灰 */
@@ -5491,7 +5850,7 @@ function injectGramophoneButton() {
         if (slotIndex >= 0) return themeSlotLabel(slotIndex);
         return '自定义 ' + cur.toUpperCase();
     }
-    // [已移除] 统计栏旁的旧「🎨 主题」按钮入口：功能已迁入设置页「樱花个性化」分区，不再重复注入。
+    // [已移除] 统计栏旁的旧「主题」按钮入口：功能已迁入设置页「樱花个性化」分区，不再重复注入。
 
     // ================= 🌸 设置页「樱花个性化」独立分区 =================
     // 位置：官方「高级参数」和「空间管理」之间；样式完全对齐官方原生分区骨架。
@@ -5563,127 +5922,224 @@ function injectGramophoneButton() {
         });
     }
     function openSplashPanel() {
-        const exist = document.getElementById('sakura-splash-mask');
-        if (exist) return;
+        if (document.getElementById('sakura-splash-mask')) return;
+        const previousFocus = document.activeElement;
+        const previousOverflow = document.documentElement.style.overflow;
         const mask = document.createElement('div');
-        mask.id = 'sakura-splash-mask';
-        mask.className = 'sakura-mask';
-        const prevOverflow = document.documentElement.style.overflow;
-        document.documentElement.style.overflow = 'hidden';
-        const unlockScroll = () => { document.documentElement.style.overflow = prevOverflow; };
+        mask.id = 'sakura-splash-mask'; mask.className = 'sakura-mask';
+        mask.setAttribute('role', 'dialog'); mask.setAttribute('aria-modal', 'true');
+        mask.setAttribute('aria-label', '开屏图设置');
         const box = document.createElement('div');
-        box.className = 'sakura-box';
-        const head = document.createElement('div');
-        head.className = 'sakura-head';
-        head.innerHTML = '<div class="sakura-modal-topbar"><div class="sakura-title-with-icon"><span>🖼️ 开屏图设置</span></div><button type="button" class="sakura-close-btn" title="关闭">✕</button></div><div class="sakura-sub">最多 8 张 · 每次启动随机展示一张</div>';
-        const body = document.createElement('div');
-        body.className = 'sakura-body';
-        // —— 缩略图九宫格：每张可单独删除，未满 8 张时显示「+」继续添加 ——
-        const gridWrap = document.createElement('div');
-        gridWrap.style.cssText = 'display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px;';
-        const fileInput = document.createElement('input');
-        fileInput.type = 'file';
-        fileInput.accept = 'image/*';
-        fileInput.style.display = 'none';
-        let splashBusy = false;
-        const statusLine = document.createElement('div');
-        statusLine.style.cssText = 'margin-top:10px;font-size:11.5px;font-weight:700;color:#c2255c;min-height:16px;';
-        const hint = document.createElement('div');
-        hint.style.cssText = 'margin-top:10px;font-size:11.5px;color:#a27b89;line-height:1.6;';
-        hint.textContent = '支持 JPG / PNG / WEBP，自动压缩。每次启动从列表里随机抽一张展示；删光则回到默认开屏图。';
-        const renderGrid = () => {
-            gridWrap.innerHTML = '';
-            const list = getSplashList();
-            list.forEach((url, idx) => {
-                const cell = document.createElement('div');
-                cell.style.cssText = 'position:relative;border-radius:12px;overflow:hidden;border:1.5px solid rgba(255,204,213,.8);aspect-ratio:16/9;background:linear-gradient(135deg,#fff5f8,#ffe9f0);';
-                const im = document.createElement('img');
-                im.src = url;
-                im.style.cssText = 'width:100%;height:100%;object-fit:cover;display:block;';
-                const del = document.createElement('button');
-                del.type = 'button';
-                del.textContent = '✕';
-                del.title = '删除这张';
-                del.style.cssText = 'position:absolute;top:3px;right:3px;width:26px;height:26px;border:none;border-radius:50%;background:rgba(0,0,0,.55);color:#fff;font-size:13px;line-height:1;display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.3);';
-                del.addEventListener('click', () => {
-                    const arr = getSplashList();
-                    if (idx < 0 || idx >= arr.length) { renderGrid(); return; }
-                    arr.splice(idx, 1);
-                    const saved = setSplashList(arr);
-                    if (!saved) { statusLine.textContent = '⚠️ 删除失败：浏览器存储被锁定或已满，请刷新页面后重试'; return; }
-                    renderGrid();
-                    statusLine.textContent = '✅ 已删除 1 张，剩余 ' + saved.length + ' 张';
-                });
-                cell.appendChild(im);
-                cell.appendChild(del);
-                gridWrap.appendChild(cell);
-            });
-            if (list.length < SPLASH_MAX) {
-                const addCell = document.createElement('button');
-                addCell.type = 'button';
-                addCell.style.cssText = 'border:1.5px dashed rgba(224,138,166,.7);border-radius:12px;aspect-ratio:16/9;background:rgba(255,241,246,.55);color:#c2255c;font-size:26px;font-weight:300;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center;';
-                addCell.textContent = '+';
-                addCell.addEventListener('click', () => { if (!splashBusy) fileInput.click(); });
-                gridWrap.appendChild(addCell);
+        box.className = 'sakura-box sakura-personal-dialog';
+        const style = document.createElement('style');
+        style.textContent = `
+#sakura-splash-mask .sakura-photo-stage{position:relative;overflow:hidden;border-radius:15px;background:#14181f;touch-action:pan-y}
+#sakura-splash-mask .sakura-photo-stage img{display:block;width:100%;height:clamp(170px,36vh,360px);height:clamp(170px,36dvh,360px);object-fit:contain;cursor:zoom-in;user-select:none;-webkit-user-drag:none}
+#sakura-splash-mask .sakura-photo-nav{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:12px 0}
+#sakura-splash-mask .sakura-photo-counter{color:var(--pd-muted);font-size:12px;font-variant-numeric:tabular-nums;text-align:center;line-height:1.6}
+#sakura-splash-mask .sakura-photo-nav button{min-height:44px!important;min-width:44px;padding:8px!important;display:grid;place-items:center}
+#sakura-splash-mask .sakura-photo-nav svg,#sakura-splash-mask .sakura-photo-viewer svg{width:20px;height:20px;display:block}
+#sakura-splash-mask .sakura-splash-grid{display:flex!important;grid-template-columns:none!important;gap:9px!important;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:thin;padding:4px 2px 10px!important}
+#sakura-splash-mask .sakura-photo-thumb{flex:0 0 76px;display:block;position:relative;padding:3px;border:1px solid var(--pd-line);border-radius:10px;background:transparent;cursor:pointer;overflow:hidden}
+#sakura-splash-mask .sakura-photo-thumb img{display:block;width:68px;height:54px;object-fit:cover;border-radius:6px;pointer-events:none}
+#sakura-splash-mask .sakura-photo-thumb[aria-pressed=true]{border-color:var(--sakura-theme-color,#ff6b95);box-shadow:0 0 0 1px var(--sakura-theme-color,#ff6b95)}
+#sakura-splash-mask .sakura-photo-toolbar{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:10px}
+#sakura-splash-mask .sakura-photo-toolbar button{min-height:44px!important}
+#sakura-splash-mask .sakura-photo-delete{color:var(--c-danger,#bc3e56)!important;background:transparent!important;margin-left:auto}
+#sakura-splash-mask .sakura-photo-status{margin-top:12px;min-height:18px;color:var(--pd-muted);font-size:12px;line-height:1.65;overflow-wrap:anywhere}
+#sakura-splash-mask .sakura-photo-status[data-error=true]{color:var(--c-danger,#bc3e56)}
+#sakura-splash-mask .sakura-photo-hint{margin:8px 0 0;color:var(--pd-muted);font-size:11.5px;line-height:1.7}
+#sakura-splash-mask button:disabled{opacity:.4;cursor:default}
+#sakura-splash-mask button:focus-visible,#sakura-splash-mask img:focus-visible{outline:2px solid var(--sakura-theme-color,#ff6b95);outline-offset:3px}
+#sakura-splash-mask .sakura-photo-viewer{position:fixed;inset:0;z-index:2;background:rgba(10,13,18,.97);color:#fff;display:flex;flex-direction:column;padding:max(16px,env(safe-area-inset-top)) max(14px,env(safe-area-inset-right)) max(16px,env(safe-area-inset-bottom)) max(14px,env(safe-area-inset-left));box-sizing:border-box;touch-action:pan-y}
+#sakura-splash-mask .sakura-photo-viewer[hidden]{display:none!important}
+#sakura-splash-mask .sakura-photo-viewer-head{display:flex;align-items:center;justify-content:space-between;flex:0 0 auto;gap:12px}
+#sakura-splash-mask .sakura-photo-viewer-head span{font-size:13px;color:#c5cad3}
+#sakura-splash-mask .sakura-photo-viewer button{color:#fff;background:rgba(255,255,255,.09);border:1px solid rgba(255,255,255,.14);border-radius:12px;min-width:44px;min-height:44px;display:grid;place-items:center;cursor:pointer}
+#sakura-splash-mask .sakura-photo-viewer-image{display:block;flex:1 1 0;min-height:0;width:100%;height:0;object-fit:contain;user-select:none;-webkit-user-drag:none;cursor:zoom-out}
+#sakura-splash-mask .sakura-photo-viewer .sakura-photo-nav{margin:10px 0 0}
+#sakura-splash-mask .sakura-photo-viewer .sakura-photo-counter{color:#bcc3cf}
+@media(prefers-reduced-motion:reduce){#sakura-splash-mask .sakura-box{animation:none!important}}
+`;
+        const head = document.createElement('div'); head.className = 'sakura-head';
+        head.innerHTML = '<div class="sakura-modal-topbar"><div class="sakura-title-with-icon"><span>开屏图设置</span></div><button type="button" class="sakura-close-btn" title="关闭" aria-label="关闭开屏图设置">✕</button></div><div class="sakura-sub">你的开屏相册 · 最多 8 张，每次启动随机展示</div>';
+        const body = document.createElement('div'); body.className = 'sakura-body';
+        const stage = document.createElement('div'); stage.className = 'sakura-photo-stage';
+        const preview = document.createElement('img'); preview.alt = '开屏图大图预览'; preview.tabIndex = 0;
+        preview.draggable = false; preview.setAttribute('role', 'button'); preview.setAttribute('aria-label', '放大查看当前开屏图');
+        stage.appendChild(preview);
+        const gridWrap = document.createElement('div'); gridWrap.className = 'sakura-splash-grid';
+        gridWrap.setAttribute('role', 'group'); gridWrap.setAttribute('aria-label', '选择预览图片');
+        const fileInput = document.createElement('input'); fileInput.type = 'file'; fileInput.accept = 'image/*'; fileInput.multiple = true; fileInput.hidden = true;
+        const statusLine = document.createElement('div'); statusLine.className = 'sakura-photo-status';
+        statusLine.setAttribute('role', 'status'); statusLine.setAttribute('aria-live', 'polite');
+        const hint = document.createElement('p'); hint.className = 'sakura-photo-hint';
+        hint.textContent = '左右滑动翻图，点击大图放大；缩略图仅切换预览。图片自动压缩并保存在本机，删光后恢复默认开屏图。';
+        let photos = getSplashList(), selected = 0, splashBusy = false, closed = false, expanded = false;
+        const notify = (message, error = false) => { statusLine.textContent = message; statusLine.dataset.error = String(error); };
+        const icon = direction => '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="' + (direction < 0 ? 'm14 6-6 6 6 6' : 'm10 6 6 6-6 6') + '"/></svg>';
+        const makeNavigation = () => {
+            const nav = document.createElement('div'); nav.className = 'sakura-photo-nav';
+            const previous = document.createElement('button'); previous.type = 'button'; previous.className = 'sakura-btn';
+            previous.innerHTML = icon(-1); previous.setAttribute('aria-label', '上一张'); previous.title = '上一张';
+            const counter = document.createElement('span'); counter.className = 'sakura-photo-counter'; counter.setAttribute('aria-live', 'polite');
+            const next = document.createElement('button'); next.type = 'button'; next.className = 'sakura-btn';
+            next.innerHTML = icon(1); next.setAttribute('aria-label', '下一张'); next.title = '下一张';
+            previous.onclick = () => selectPhoto(selected - 1); next.onclick = () => selectPhoto(selected + 1);
+            nav.append(previous, counter, next); return { nav, previous, next, counter };
+        };
+        const navigation = makeNavigation(), viewerNavigation = makeNavigation();
+        const toolbar = document.createElement('div'); toolbar.className = 'sakura-photo-toolbar';
+        const addButton = document.createElement('button'); addButton.type = 'button'; addButton.className = 'sakura-btn sakura-btn--main sakura-photo-add'; addButton.textContent = '添加图片';
+        const deleteButton = document.createElement('button'); deleteButton.type = 'button'; deleteButton.className = 'sakura-btn sakura-photo-delete'; deleteButton.textContent = '删除这张';
+        toolbar.append(addButton, deleteButton);
+        const viewer = document.createElement('div'); viewer.className = 'sakura-photo-viewer'; viewer.hidden = true;
+        viewer.setAttribute('role', 'dialog'); viewer.setAttribute('aria-modal', 'true'); viewer.setAttribute('aria-label', '开屏图大图查看');
+        const viewerHead = document.createElement('div'); viewerHead.className = 'sakura-photo-viewer-head';
+        const viewerTitle = document.createElement('span'); viewerTitle.textContent = '开屏相册';
+        const viewerClose = document.createElement('button'); viewerClose.type = 'button'; viewerClose.title = '收起大图'; viewerClose.setAttribute('aria-label', '收起大图');
+        viewerClose.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>';
+        viewerHead.append(viewerTitle, viewerClose);
+        const viewerImage = document.createElement('img'); viewerImage.className = 'sakura-photo-viewer-image'; viewerImage.alt = '当前开屏图完整预览'; viewerImage.draggable = false;
+        viewer.append(viewerHead, viewerImage, viewerNavigation.nav);
+        // Keep the viewer outside the animated, overflow-clipped dialog box.
+        const setExpanded = value => {
+            expanded = !!value; viewer.hidden = !expanded; box.inert = expanded;
+            box.setAttribute('aria-hidden', String(expanded)); stage.classList.toggle('is-expanded', expanded);
+            if (expanded) { viewerImage.src = preview.src; viewerClose.focus(); }
+            else if (!closed) preview.focus({ preventScroll: true });
+        };
+        viewerClose.onclick = () => setExpanded(false);
+        function selectPhoto(index, scroll = true) {
+            selected = photos.length ? ((index % photos.length) + photos.length) % photos.length : 0;
+            const url = photos[selected] || SPLASH_IMG_URL;
+            if (preview.getAttribute('src') !== url) preview.src = url;
+            preview.alt = photos.length ? '开屏图 ' + (selected + 1) + '，点击查看完整大图' : '默认开屏图，点击查看大图';
+            if (expanded && viewerImage.getAttribute('src') !== url) viewerImage.src = url;
+            for (const item of [navigation, viewerNavigation]) {
+                item.counter.textContent = photos.length ? (selected + 1) + ' / ' + photos.length : '默认开屏图';
+                item.previous.disabled = item.next.disabled = photos.length < 2;
             }
+            deleteButton.disabled = splashBusy || !photos.length;
+            deleteButton.setAttribute('aria-label', photos.length ? '删除开屏图 ' + (selected + 1) : '没有可删除的自定义图片');
+            addButton.disabled = splashBusy || photos.length >= SPLASH_MAX;
+            addButton.textContent = splashBusy ? '正在处理…' : photos.length >= SPLASH_MAX ? '已满 8 张' : '添加图片';
+            Array.from(gridWrap.children).forEach((thumb, i) => thumb.setAttribute('aria-pressed', String(i === selected)));
+            const thumb = gridWrap.children[selected];
+            if (scroll && thumb) {
+                const left = thumb.offsetLeft - gridWrap.offsetLeft, right = left + thumb.offsetWidth;
+                if (left < gridWrap.scrollLeft) gridWrap.scrollLeft = left;
+                else if (right > gridWrap.scrollLeft + gridWrap.clientWidth) gridWrap.scrollLeft = right - gridWrap.clientWidth;
+            }
+        }
+        function renderGrid() {
+            photos = getSplashList(); selected = Math.min(selected, Math.max(0, photos.length - 1));
+            gridWrap.replaceChildren();
+            photos.forEach((url, index) => {
+                const thumb = document.createElement('button'); thumb.type = 'button'; thumb.className = 'sakura-photo-thumb';
+                thumb.setAttribute('aria-label', '预览开屏图 ' + (index + 1));
+                const image = document.createElement('img'); image.src = url; image.alt = ''; image.draggable = false;
+                thumb.appendChild(image); thumb.onclick = () => selectPhoto(index); gridWrap.appendChild(thumb);
+            });
+            selectPhoto(selected, false);
+        }
+        function bindPhotoGestures(surface, image, onTap) {
+            let start = null, suppressUntil = 0;
+            surface.addEventListener('touchstart', event => {
+                if (event.touches.length !== 1 || event.target !== image) { start = null; return; }
+                start = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+            }, { passive: true });
+            surface.addEventListener('touchend', event => {
+                if (!start || !event.changedTouches.length) return;
+                const dx = event.changedTouches[0].clientX - start.x, dy = event.changedTouches[0].clientY - start.y;
+                start = null;
+                if (Math.max(Math.abs(dx), Math.abs(dy)) > 12) suppressUntil = Date.now() + 700;
+                if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.3) selectPhoto(selected + (dx < 0 ? 1 : -1));
+            }, { passive: true });
+            surface.addEventListener('touchcancel', () => { start = null; suppressUntil = Date.now() + 700; }, { passive: true });
+            image.addEventListener('click', event => { if (Date.now() < suppressUntil) { event.preventDefault(); return; } onTap(); });
+            image.addEventListener('dragstart', event => event.preventDefault());
+        }
+        bindPhotoGestures(stage, preview, () => setExpanded(!expanded));
+        bindPhotoGestures(viewer, viewerImage, () => setExpanded(false));
+        preview.addEventListener('keydown', event => {
+            if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setExpanded(true); }
+        });
+        preview.addEventListener('error', () => notify('这张图片暂时无法显示，可以切换到其他图片或删除后重新添加。', true));
+        addButton.onclick = () => { if (!splashBusy && photos.length < SPLASH_MAX) fileInput.click(); };
+        deleteButton.onclick = () => {
+            if (splashBusy || !photos.length) return;
+            const url = photos[selected], list = getSplashList();
+            const index = list[selected] === url ? selected : list.indexOf(url);
+            if (index < 0) { renderGrid(); notify('相册已更新，请重新选择图片。'); return; }
+            list.splice(index, 1);
+            const saved = setSplashList(list);
+            if (!saved) { notify('删除失败：浏览器存储不可写，请稍后重试。', true); return; }
+            renderGrid(); notify(saved.length ? '已删除，剩余 ' + saved.length + ' 张。' : '已恢复默认开屏图。');
         };
         fileInput.addEventListener('change', async () => {
-            const file = fileInput.files && fileInput.files[0];
-            fileInput.value = '';
-            if (!file || splashBusy) return;
-            if (!/^image\//.test(file.type || '')) { statusLine.textContent = '⚠️ 请选择图片文件'; return; }
-            splashBusy = true;
-            statusLine.textContent = '⏳ 正在压缩图片…';
+            const files = Array.from(fileInput.files || []); fileInput.value = '';
+            if (!files.length || splashBusy || closed) return;
+            splashBusy = true; selectPhoto(selected, false);
+            let added = 0, skipped = 0; const failures = [];
             try {
-                const dataUrl = await compressSplashImage(file, 1600);
-                let writable = false;
-                try { pluginStorage.setItem(SPLASH_LIST_KEY + '.probe', dataUrl); pluginStorage.removeItem(SPLASH_LIST_KEY + '.probe'); writable = true; } catch (_) {}
-                if (!writable) { statusLine.textContent = '⚠️ 图片过大保存失败，请换一张小一点的'; return; }
-                const list = getSplashList();
-                if (list.length >= SPLASH_MAX) { statusLine.textContent = '⚠️ 最多只能存 ' + SPLASH_MAX + ' 张'; return; }
-                list.push(dataUrl);
-                const saved = setSplashList(list);
-                if (!saved) { statusLine.textContent = '⚠️ 保存失败，存储空间可能已满'; return; }
-                renderGrid();
-                const kb = Math.round(dataUrl.length * 0.75 / 1024);
-                statusLine.textContent = '✅ 已添加（约 ' + kb + ' KB），共 ' + saved.length + ' 张';
-            } catch (e) {
-                statusLine.textContent = '⚠️ 处理失败：' + (e?.message || '未知错误');
+                for (let i = 0; i < files.length; i++) {
+                    if (closed) return;
+                    if (getSplashList().length >= SPLASH_MAX) { skipped += files.length - i; break; }
+                    const file = files[i];
+                    if (!/^image\//.test(file.type || '') && !/\.(?:jpe?g|png|webp|gif|avif|bmp)$/i.test(file.name || '')) { failures.push('请选择图片文件'); continue; }
+                    notify('正在处理第 ' + (i + 1) + ' / ' + files.length + ' 张…');
+                    try {
+                        const dataUrl = await compressSplashImage(file, 1600);
+                        if (closed) return;
+                        const list = getSplashList();
+                        if (list.length >= SPLASH_MAX) { skipped += files.length - i; break; }
+                        list.push(dataUrl);
+                        const saved = setSplashList(list);
+                        if (!saved) { failures.push('存储空间不足或不可写'); break; }
+                        selected = saved.length - 1; added++; renderGrid();
+                    } catch (error) { failures.push(error?.message || '图片处理失败'); }
+                }
             } finally {
                 splashBusy = false;
+                if (!closed) {
+                    renderGrid();
+                    const parts = [added ? '已添加 ' + added + ' 张。' : '未添加图片。'];
+                    if (skipped) parts.push('最多 8 张，其余 ' + skipped + ' 张未添加。');
+                    if (failures.length) parts.push(failures[0] + '。');
+                    notify(parts.join(' '), failures.length > 0);
+                }
             }
         });
-        renderGrid();
-        body.appendChild(gridWrap);
-        body.appendChild(fileInput);
-        body.appendChild(statusLine);
-        body.appendChild(hint);
-        const foot = document.createElement('div');
-        foot.className = 'sakura-foot';
-        const doneBtn = document.createElement('button');
-        doneBtn.type = 'button';
-        doneBtn.className = 'sakura-btn sakura-btn--main';
-        doneBtn.style.marginLeft = 'auto';
-        doneBtn.textContent = '完成';
-        doneBtn.addEventListener('click', () => { unlockScroll(); mask.remove(); });
-        foot.appendChild(doneBtn);
-        box.appendChild(head);
-        box.appendChild(body);
-        box.appendChild(foot);
-        mask.appendChild(box);
-        head.querySelector('.sakura-close-btn').onclick = () => { unlockScroll(); mask.remove(); };
-        let pressStartedOnMask = false;
-        const markPressStart = e => { pressStartedOnMask = (e.target === mask); };
-        mask.addEventListener('touchstart', markPressStart, { passive: true });
-        mask.addEventListener('mousedown', markPressStart);
-        mask.addEventListener('click', e => {
-            if (e.target !== mask) return;
-            if (!pressStartedOnMask) return;
-            if (!e.isTrusted) return;
-            unlockScroll();
+        const closePanel = () => {
+            if (closed) return; closed = true;
+            document.documentElement.style.overflow = previousOverflow;
             mask.remove();
+            if (previousFocus?.isConnected && typeof previousFocus.focus === 'function') previousFocus.focus({ preventScroll: true });
+        };
+        const foot = document.createElement('div'); foot.className = 'sakura-foot';
+        const done = document.createElement('button'); done.type = 'button'; done.className = 'sakura-btn sakura-btn--main'; done.style.marginLeft = 'auto'; done.textContent = '完成'; done.onclick = closePanel;
+        foot.appendChild(done); head.querySelector('.sakura-close-btn').onclick = closePanel;
+        let pressStartedOnMask = false;
+        const markPress = event => { pressStartedOnMask = event.target === mask; };
+        mask.addEventListener('touchstart', markPress, { passive: true }); mask.addEventListener('mousedown', markPress);
+        mask.addEventListener('click', event => { if (event.target === mask && pressStartedOnMask && event.isTrusted && !expanded) closePanel(); });
+        mask.addEventListener('keydown', event => {
+            if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); if (expanded) setExpanded(false); else closePanel(); return; }
+            if (event.target === fileInput || event.target.isContentEditable) return;
+            if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); selectPhoto(selected + (event.key === 'ArrowLeft' ? -1 : 1)); }
+            if (event.key === 'Tab') {
+                const root = expanded ? viewer : box;
+                const targets = Array.from(root.querySelectorAll('button:not(:disabled),[tabindex="0"]')).filter(node => !node.hidden);
+                const first = targets[0], last = targets[targets.length - 1];
+                if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+                else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+            }
         });
-        document.body.appendChild(mask);
+        body.append(stage, navigation.nav, gridWrap, toolbar, fileInput, statusLine, hint);
+        box.append(style, head, body, foot); mask.append(box, viewer);
+        document.documentElement.style.overflow = 'hidden';
+        renderGrid(); document.body.appendChild(mask); head.querySelector('.sakura-close-btn').focus({ preventScroll: true });
     }
     function injectSakuraSettingsSection() {
         if (document.getElementById('sakura-personal-section')) return;
@@ -5715,7 +6171,7 @@ function injectGramophoneButton() {
         const section = document.createElement('div');
         section.id = 'sakura-personal-section';
         section.className = 'pt-6 border-t border-gray-100 mt-6';
-        section.innerHTML = '<h4 class="settings-subheading"><svg class="w-4 h-4 mr-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3l1.9 5.8a2 2 0 001.3 1.3L21 12l-5.8 1.9a2 2 0 00-1.3 1.3L12 21l-1.9-5.8a2 2 0 00-1.3-1.3L3 12l5.8-1.9a2 2 0 001.3-1.3L12 3z"></path></svg>樱花个性化</h4><div class="grid grid-cols-1 md:grid-cols-3 gap-4"><button type="button" id="sakura-entry-theme" class="sakura-personal-card" data-entry="theme"><div class="sakura-personal-card-title">🎨 主题换色</div><div class="sakura-personal-card-desc">全站配色自定义，预设与 HEX 任选</div></button><button type="button" id="sakura-entry-splash" class="sakura-personal-card" data-entry="splash"><div class="sakura-personal-card-title">🖼️ 开屏图</div><div class="sakura-personal-card-desc">上传多张开屏图，启动时随机展示</div></button><button type="button" id="sakura-entry-janitor" class="sakura-personal-card" data-entry="janitor"><div class="sakura-personal-card-title">🧹 存储管家</div><div class="sakura-personal-card-desc">透视空间占用 · 一键瘦身与清理</div></button></div>';
+        section.innerHTML = '<h4 class="settings-subheading"><svg class="w-4 h-4 mr-2 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3l1.9 5.8a2 2 0 001.3 1.3L21 12l-5.8 1.9a2 2 0 00-1.3 1.3L12 21l-1.9-5.8a2 2 0 00-1.3-1.3L3 12l5.8-1.9a2 2 0 001.3-1.3L12 3z"></path></svg>樱花个性化</h4><div class="grid grid-cols-1 md:grid-cols-3 gap-4"><button type="button" id="sakura-entry-theme" class="sakura-personal-card" data-entry="theme"><span class="sakura-personal-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 3.5a8.5 8.5 0 0 0 0 17c2 0 2-2 1-3s-1-3 1-3h3a3.5 3.5 0 0 0 3.5-3.5"/><path d="M7.5 10h.01M10 6.8h.01M15 7.5h.01"/></svg></span><span class="sakura-personal-copy"><div class="sakura-personal-card-title">主题换色</div><div class="sakura-personal-card-desc">全站配色自定义，预设与 HEX 任选</div></span></button><button type="button" id="sakura-entry-splash" class="sakura-personal-card" data-entry="splash"><span class="sakura-personal-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><circle cx="9" cy="9.5" r="1.5"/><path d="m4 17 5-5 3 3 3.5-4 5 6"/></svg></span><span class="sakura-personal-copy"><div class="sakura-personal-card-title">开屏图</div><div class="sakura-personal-card-desc">上传多张开屏图，启动时随机展示</div></span></button><button type="button" id="sakura-entry-janitor" class="sakura-personal-card" data-entry="janitor"><span class="sakura-personal-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7c0-2 16-2 16 0s-16 2-16 0Zm0 0v10c0 3 16 3 16 0V7M4 12c0 2 16 2 16 0"/></svg></span><span class="sakura-personal-copy"><div class="sakura-personal-card-title">存储管家</div><div class="sakura-personal-card-desc">透视空间占用 · 一键瘦身与清理</div></span></button></div>';
         // —— 沉浸时长徽章：今天 + 近 7 天滚动累计，实时刷新 ——
         const badgeRow = document.createElement('div');
         badgeRow.style.cssText = 'margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;';
@@ -5732,8 +6188,8 @@ function injectGramophoneButton() {
         const refreshBadges = () => {
             if (!todayBadge.isConnected || !weekBadge.isConnected) return false;
             try {
-                todayBadge.textContent = '⏳ 今日沉浸 ' + formatDuration(presenceTodayLive());
-                weekBadge.textContent = '🌸 本周累计 ' + formatDuration(presenceWeekLive());
+                todayBadge.textContent = '今日沉浸 ' + formatDuration(presenceTodayLive());
+                weekBadge.textContent = '本周累计 ' + formatDuration(presenceWeekLive());
             } catch (_) {}
             return true;
         };
@@ -5866,11 +6322,14 @@ function injectGramophoneButton() {
         const mask = document.createElement('div');
         mask.id = 'sakura-janitor-mask';
         mask.className = 'sakura-mask';
+        mask.setAttribute('role', 'dialog');
+        mask.setAttribute('aria-modal', 'true');
+        mask.setAttribute('aria-label', '存储管家');
         const box = document.createElement('div');
-        box.className = 'sakura-box';
+        box.className = 'sakura-box sakura-personal-dialog';
         const head = document.createElement('div');
         head.className = 'sakura-head';
-        head.innerHTML = '<div class="sakura-modal-topbar"><div class="sakura-title-with-icon"><span>🧹 存储管家</span></div><button type="button" class="sakura-close-btn" title="关闭">✕</button></div><div class="sakura-sub">透视浏览器给本站的 localStorage 占用 · 只清可再生缓存，不碰角色卡与聊天</div>';
+        head.innerHTML = '<div class="sakura-modal-topbar"><div class="sakura-title-with-icon"><span>存储管家</span></div><button type="button" class="sakura-close-btn" title="关闭">✕</button></div><div class="sakura-sub">查看插件本地数据 · 缓存与个人内容分开管理</div>';
         const body = document.createElement('div');
         body.className = 'sakura-body';
         const foot = document.createElement('div');
@@ -5884,7 +6343,7 @@ function injectGramophoneButton() {
                 try { size = (pluginStorage.getItem(t.key) || '').length; } catch (_) {}
                 const kb = Math.round(size / 1024 * 10) / 10;
                 if (t.kind === 'cache') cacheKB += kb;
-                rows.push({ ...t, kb });
+                rows.push({ ...t, kb, hasData: size > 0 });
             });
             rows.sort((a, b) => b.kb - a.kb);
             const pct = Math.min(100, Math.round(totalKB / 5120 * 100));
@@ -5892,7 +6351,7 @@ function injectGramophoneButton() {
             let html = `
                 <div class="sakura-janitor-stat">
                     <div class="sakura-janitor-total" style="color:${pctColor}">${totalKB} KB</div>
-                    <div class="sakura-janitor-hint">当前总占用（浏览器配额通常 5MB 左右，已用约 ${pct}%）</div>
+                    <div class="sakura-janitor-hint">localStorage 字符量估算 · 相对 5120 KB 参考值 ${pct}%（非实际配额）</div>
                     <div class="sakura-janitor-bar">
                         <div class="sakura-janitor-bar-fill" style="width:${pct}%"></div>
                     </div>
@@ -5900,17 +6359,17 @@ function injectGramophoneButton() {
                     <div class="sakura-janitor-real"></div>
                 </div>`;
             rows.forEach(r => {
-                const canClean = r.kb > 0;
+                const canClean = r.hasData;
                 html += `
                     <div class="sakura-janitor-row">
                         <div class="sakura-janitor-rowmain">
                             <div class="sakura-janitor-label">${r.label} <span class="sakura-janitor-desc">${r.desc}</span></div>
                             <div class="sakura-janitor-key">${r.key} · ${r.kb} KB</div>
                         </div>
-                        ${canClean ? `<button type="button" class="sakura-btn sakura-janitor-clean" data-key="${r.key}">清理</button>` : '<span class="sakura-janitor-empty">空</span>'}
+                        ${canClean ? `<button type="button" class="sakura-btn sakura-janitor-clean" data-key="${r.key}">${r.kind === 'cache' ? '清理缓存' : '删除数据'}</button>` : '<span class="sakura-janitor-empty">空</span>'}
                     </div>`;
             });
-            html += '<div class="sakura-janitor-note">⚠️ 官方角色卡、聊天记录、世界书存在 IndexedDB 里，这里看不到也动不到，随便清都安全。若总占用长期高于 4500KB，建议先「全站灾备」备份，再清理最大的几项。</div>';
+            html += '<div class="sakura-janitor-note">这里只管理列出的 localStorage 项，不清理官方 IndexedDB。便签、配色、歌单与 API 配置属于个人数据，删除前请备份；空间条为参考估算。</div>';
             body.innerHTML = html;
             // 真实占用：navigator.storage.estimate 能拿到浏览器层面的实际用量与总配额（含 IndexedDB）。
             try {
@@ -5928,14 +6387,14 @@ function injectGramophoneButton() {
                     const key = btn.dataset.key;
                     const target = SAKURA_JANITOR_TARGETS.find(t => t.key === key);
                     if (!target) return;
-                    openMomentConfirmDialog(`确认清理「${target.label}」？${target.kind === 'media' ? '该项含你的自定义内容，清理后不可恢复。' : '该项为可再生缓存，清理无损失。'}`, () => {
-                        try { pluginStorage.removeItem(key); } catch (_) {}
+                    openMomentConfirmDialog(`确认清理「${target.label}」？${target.kind !== 'cache' ? '该项包含个人内容或配置，删除后不可恢复，请先备份。' : '该项为可再生缓存，将在需要时重新建立。'}`, () => {
+                        try { pluginStorage.removeItem(key); } catch (_) { showMomentToast('删除失败：浏览器未允许写入'); return; }
                         render();
                     });
                 };
             });
         };
-        foot.appendChild(mkBtn('🧨 一键清空可再生缓存', false, () => {
+        foot.appendChild(mkBtn('清理可再生缓存', false, () => {
             openMomentConfirmDialog('一键清理所有可再生缓存（图片锁定缓存/旧版开屏遗留）？\n角色卡、聊天、手记、主题全部不受影响。', () => {
                 let freed = 0;
                 SAKURA_JANITOR_TARGETS.filter(t => t.kind === 'cache').forEach(t => {
@@ -5967,17 +6426,19 @@ function injectGramophoneButton() {
         const mask = document.createElement('div');
         mask.id = 'sakura-theme-mask';
         mask.className = 'sakura-mask';
+        mask.setAttribute('role', 'dialog');
+        mask.setAttribute('aria-modal', 'true');
+        mask.setAttribute('aria-label', '主题换色');
         // 面板打开期间冻结整页滚动：手指滑动只作用于面板内部，不再产生页面级滚动/惯性，
         // 从根上杜绝“滚动几下后面板自己消失”的误关闭链路。
         const prevOverflow = document.documentElement.style.overflow;
         document.documentElement.style.overflow = 'hidden';
         const unlockScroll = () => { document.documentElement.style.overflow = prevOverflow; };
         const box = document.createElement('div');
-        box.className = 'sakura-box';
+        box.className = 'sakura-box sakura-personal-dialog';
         const head = document.createElement('div');
         head.className = 'sakura-head';
-        head.innerHTML = '<div class="sakura-modal-topbar"><div class="sakura-title-with-icon"><span>🎨 主题换色</span></div><div style="display:flex;align-items:center;gap:6px"><button type="button" class="sakura-btn sakura-theme-janitor-btn" style="padding:4px 9px;font-size:11.5px;border-radius:8px" title="打开存储管家">🧹 存储管家</button><button type="button" class="sakura-close-btn" title="关闭">✕</button></div></div><div class="sakura-sub">全站配色实时生效 · 自动适配深浅模式</div>';
-        const storageEntry = mkBtn('🧹 存储管家', false, () => { mask.remove(); unlockScroll(); openStorageJanitor(); });
+        head.innerHTML = '<div class="sakura-modal-topbar"><div class="sakura-title-with-icon"><span>主题换色</span></div><div style="display:flex;align-items:center;gap:6px"><button type="button" class="sakura-close-btn" title="关闭">✕</button></div></div><div class="sakura-sub">选择预设，或输入你喜欢的颜色</div>';
         const body = document.createElement('div');
         body.className = 'sakura-body';
                 const grid = document.createElement('div');
@@ -5987,7 +6448,8 @@ function injectGramophoneButton() {
         let pendingSlotIndex = null;
         const curLabel = document.createElement('div');
         curLabel.style.cssText = 'margin-bottom:10px;font-size:12px;font-weight:700;color:#805064;';
-        const refreshCurrentLabel = () => { curLabel.textContent = '当前主题：' + themeCurrentLabel(); };
+        curLabel.className = 'sakura-theme-current';
+        const refreshCurrentLabel = () => { curLabel.textContent = '当前主题 · ' + themeCurrentLabel(); };
         refreshCurrentLabel();
         const isCurrent = hex => hex && (themeNormalizeHex(document.documentElement.getAttribute('data-sakura-accent') || '') || THEME_DEFAULT) === themeNormalizeHex(hex);
         // 九宫格：六预设 + 三个 HEX 直输槽。空槽点击聚焦输入框；输入合法色值回车即存即用。
@@ -6089,6 +6551,10 @@ function injectGramophoneButton() {
         picker.style.cssText = 'width:46px;height:38px;border:1.5px solid rgba(255,204,213,.8);border-radius:11px;background:#fff;padding:3px;cursor:pointer;';
         hexInput = document.createElement('input');
         hexInput.type = 'text';
+        hexInput.setAttribute('aria-label', '主题 HEX 色值');
+        picker.setAttribute('aria-label', '选择主题颜色');
+        grid.className = 'sakura-theme-grid';
+        customRow.className = 'sakura-theme-custom';
         hexInput.value = current.toUpperCase();
         hexInput.placeholder = '#ff6b95';
         hexInput.spellcheck = false;
@@ -6125,12 +6591,12 @@ function injectGramophoneButton() {
         doneBtn.textContent = '完成';
         doneBtn.addEventListener('click', () => {
             const v = themeNormalizeHex(hexInput.value);
+            if (!v && hexInput.value.trim()) { hint.textContent = '请输入有效 HEX 色值，例如 #58A6F5。'; hexInput.focus(); return; }
             applyThemeColor(v || '');
             refreshCurrentLabel();
             unlockScroll();
             mask.remove();
         });
-        foot.appendChild(storageEntry);
         foot.appendChild(resetBtn);
         foot.appendChild(doneBtn);
         picker.addEventListener('input', () => {
@@ -6142,9 +6608,12 @@ function injectGramophoneButton() {
         const commitHex = () => {
             const v = themeNormalizeHex(hexInput.value);
             if (!v && hexInput.value.trim()) {
-                hexInput.value = (themeNormalizeHex(document.documentElement.getAttribute('data-sakura-accent') || '') || THEME_DEFAULT).toUpperCase();
+                hint.textContent = '请输入有效 HEX 色值，例如 #58A6F5。';
+                hexInput.setAttribute('aria-invalid', 'true');
                 return;
             }
+            hexInput.removeAttribute('aria-invalid');
+            hint.textContent = '已应用。自定义颜色会保存到下方选定槽位。';
             picker.value = v || THEME_DEFAULT;
             applyThemeColor(v || '');
             refreshCurrentLabel();
@@ -6164,6 +6633,8 @@ function injectGramophoneButton() {
                 renderGrid();
             }
         };
+        const applyBtn = mkBtn('应用色值', true, commitHex);
+        customRow.appendChild(applyBtn);
         hexInput.addEventListener('change', commitHex);
         hexInput.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); commitHex(); } });
         body.insertBefore(curLabel, body.firstChild);
@@ -6172,8 +6643,6 @@ function injectGramophoneButton() {
         box.appendChild(foot);
         mask.appendChild(box);
         head.querySelector('.sakura-close-btn').onclick = () => { unlockScroll(); mask.remove(); };
-        const jtrHeadBtn = head.querySelector('.sakura-theme-janitor-btn');
-        if (jtrHeadBtn) jtrHeadBtn.onclick = () => { unlockScroll(); mask.remove(); openStorageJanitor(); };
         // 点空白关闭：只信任真实用户手势，且按下起点必须在遮罩空白处。
         // 防止：打开面板的那次点击的迟到合成事件、系统取色器收起后的穿透点击、
         // 滚动惯性结束等被误判成“点击外部”，导致面板几秒后自己消失。
@@ -6528,13 +6997,23 @@ function injectGramophoneButton() {
         } catch (_) {}
         return '';
     }
+    // 返回实际向量通道的稳定身份：记忆分流启用时绝不读取主聊天 API。
     function sakuraMemApiUrl() {
         try {
+            const mem = getActiveChannelConfig(loadSplitApis().memory);
+            if (mem.url && mem.key) return String(mem.url).replace(/\/+$/, '');
             const st = getVueState();
-            const s = st && getRuntimeValue(st.settings);
-            return String((s && s.apiUrl) || '').trim();
-        } catch (_) {}
-        return '';
+            const settings = st && getRuntimeValue(st.settings);
+            return String((settings && settings.apiUrl) || '').replace(/\/+$/, '');
+        } catch (_) {
+            return '';
+        }
+    }
+    function sakuraMemChannelMode() {
+        try {
+            const mem = getActiveChannelConfig(loadSplitApis().memory);
+            return mem.url && mem.key ? 'split' : 'main';
+        } catch (_) { return 'main'; }
     }
     function sakuraMemUUID() {
         try {
@@ -6734,7 +7213,7 @@ function injectGramophoneButton() {
                 if (depth > 0 || elemActive) elem.push(c);
                 i++;
             }
-            await bkSleep(0);
+            await new Promise(resolve => setTimeout(resolve));
         }
         try { reader.releaseLock(); } catch (_) {}
         let meta = {};
@@ -6809,7 +7288,8 @@ function injectGramophoneButton() {
             vectorCount,
             // 记录导出时的向量配置，供导入端/用户核对是否一致
             embeddingModel: sakuraMemEmbeddingModel(),
-            apiUrl: sakuraMemApiUrl()
+            apiUrl: sakuraMemApiUrl(),
+            embeddingRoute: sakuraMemChannelMode()
         };
         // —— [V20.1.0] 流式拼接：头部 + 逐条 memories + 收尾，绝不整体 stringify ——
         // 每条记忆单独 JSON.stringify（峰值=单条），片段累积到阈值即转 Blob 释放字符串堆。
@@ -6880,8 +7360,17 @@ function injectGramophoneButton() {
             if (stat.meta && stat.meta.type && stat.meta.type !== 'rp-hub-summary-memories') {
                 throw new Error('这不是总结模式记忆文件');
             }
+            if (sakuraMemScopeId() !== scopeId) throw new Error('角色或分支已切换，未导入');
+            const latest = await sakuraMemRead('classic_memories', scopeId);
+            const latestList = Array.isArray(latest) ? latest : [];
+            if (latestList.length !== current.length || latestList.some((entry, index) =>
+                JSON.stringify(entry) !== JSON.stringify(current[index]))) {
+                throw new Error('记忆在导入期间已变化，请重新导入，避免覆盖新数据');
+            }
+            if (sakuraMemScopeId() !== scopeId) throw new Error('角色或分支已切换，未导入');
             const withVec = normalized.filter(m => m.embeddingQ).length;
             await sakuraMemWrite('classic_memories', scopeId, [...current, ...normalized]);
+            if (sakuraMemScopeId() !== scopeId) { sakuraToast('已导入原分支；当前分支未刷新', 'warning'); return; }
             sakuraToast(`写入 ${normalized.length} 条记忆完成`
                 + (withVec ? `（含向量 ${withVec} 条，补录将自动跳过）` : '')
                 + '，正在刷新面板…', 'info');

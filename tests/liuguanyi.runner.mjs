@@ -3,9 +3,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { startHarness, initializeFixture, chromium, chrome, defaultUpstream, root } from './sync-195.helpers.mjs';
 
-// 柳贯一 20.4.3 工坊版：加载器第一次运行它时记下它有 beforeMount，刷新后官方页面挂载前就改成聊天模型五槽、
+// 柳贯一 20.5.7 工坊版：加载器第一次运行它时记下它有 beforeMount，刷新后官方页面挂载前就改成聊天模型五槽、
 // 恢复输入混淆开关；开关关掉后 Gemini 请求不再混淆；插件包的流式保活不影响回复正文。
-const source = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-20.4.3.js'), 'utf8');
+// 响应增强：init 里重编译官方 API 客户端去掉固定超时，主聊天改成每次从 window 取客户端；开关关掉后请求原样直发。
+const source = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-20.5.7.js'), 'utf8');
 const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const page = await (await browser.newContext()).newPage();
@@ -79,10 +80,32 @@ try {
     await page.waitForFunction(() => Object.keys(JSON.parse(localStorage.getItem('rphub_split_apis_v2') || '{}').main?.customUrls || {}).length === 5, null, { timeout: 15000 });
     console.log('PASS after one refresh the page mounts with five chat model slots, the obfuscation toggle and five main API slots');
 
+    await page.waitForFunction(() => window.__sakuraResponseTimeoutPolicyInstalled === true, null, { timeout: 15000 });
+    const enhance = await page.evaluate(() => ({
+        setting: vm().settings.sakuraStreamEnhanceEnabled,
+        lateBound: String(document.querySelector('#app').__vue_app__._component.setup).includes('window.RPHubApiClient.requestChatCompletion('),
+        noDeadline: window.__sakuraTransformResponseTimeout(`const withApiResponse = async (options, read) => {
+            timer = setTimeout(() => { timedOut = true; controller.abort(); }, 120000);
+            if (!response.ok) {
+            }
+            return await read(response, touch);`).includes('if (!sakuraNoDeadline) timer = setTimeout')
+    }));
+    assert.deepEqual(enhance, { setting: true, lateBound: true, noDeadline: true });
+    console.log('PASS the response enhancement rebuilds the API client without the fixed timeout and the chat uses it');
+
     assert.match(JSON.stringify(await send('第一句')), /read_user_input/);
+    assert.equal(await page.evaluate(() => window.__sakuraStreamEnhanceDebug.lastRoute), 'enhanced');
     await page.evaluate(() => { vm().settings.inputObfuscation = false; });
     assert.doesNotMatch(JSON.stringify(await send('第二句')), /read_user_input/);
     console.log('PASS the obfuscation toggle controls Gemini requests and streamed replies arrive intact');
+
+    await page.evaluate(() => { vm().setSakuraStreamEnhanceEnabled(false); });
+    await send('第三句');
+    assert.equal(await page.evaluate(() => window.__sakuraStreamEnhanceDebug.lastRoute), 'native-bypass');
+    await page.evaluate(() => { vm().setSakuraStreamEnhanceEnabled(true); });
+    await send('第四句');
+    assert.equal(await page.evaluate(() => window.__sakuraStreamEnhanceDebug.lastRoute), 'enhanced');
+    console.log('PASS switching the response enhancement off sends the main chat request untouched and on restores it');
 
     // 第 4 槽的模型来自旧版保存的槽位配置，点它就切过去。
     await page.waitForFunction(() => !document.getElementById('custom-splash-screen'), null, { timeout: 15000 });
