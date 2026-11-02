@@ -5,10 +5,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { patchRpHubAppJs } from '../DB/app-patches.mjs';
+import { patchRpHubAppJs, patchRpHubCloudBackupJs, RP_HUB_CLOUD_BACKUP_PATH } from '../DB/app-patches.mjs';
 
 // 发版打包用分发端最新收录的上游（scripts/package.mjs --upstream）：
-// RPH 本体是上游原样文件、只给 app.js 打补丁（和站点「程序更新」相同）；外壳记的内置版本跟着换；上游出现不认识的新目录时停下。
+// RPH 本体是上游原样文件、只给 app.js 和 cloud-backup.js 打补丁（和站点「程序更新」相同）；外壳记的内置版本跟着换；上游出现不认识的新目录时停下。
 // 需要先运行 scripts/prepare-test-fixtures.mjs 下载最新上游。
 const root = fileURLToPath(new URL('../', import.meta.url));
 const upstreamDir = path.join(root, 'evidence/sync-195/upstream/latest');
@@ -34,12 +34,13 @@ try {
     }).map((file) => path.relative(upstreamDir, file).split(path.sep).join('/'));
     for (const file of upstreamFiles) {
         const source = fs.readFileSync(path.join(upstreamDir, file));
-        const expected = file === 'assets/js/app.js' ? Buffer.from(patchRpHubAppJs(source.toString('utf8'), { version: marker.tag }).code) : source;
+        const patch = file === 'assets/js/app.js' ? patchRpHubAppJs : file === RP_HUB_CLOUD_BACKUP_PATH ? patchRpHubCloudBackupJs : null;
+        const expected = patch ? Buffer.from(patch(source.toString('utf8'), { version: marker.tag }).code) : source;
         assert.equal(sha256(fs.readFileSync(path.join(dist, file))), sha256(expected), file);
     }
     for (const skipped of ['README.md', 'README.en.md', 'presence-server']) assert.equal(fs.existsSync(path.join(dist, skipped)), false, skipped);
     for (const ours of ['DB/bootstrap.js', 'DB/image-module.js', 'DB/module-loader.js', 'work.js', 'wrangler.toml']) assert.ok(fs.existsSync(path.join(dist, ours)), ours);
-    console.log(`PASS the package carries upstream ${marker.tag} as published, with only app.js patched, plus our shell`);
+    console.log(`PASS the package carries upstream ${marker.tag} as published, with only app.js and cloud-backup.js patched, plus our shell`);
 
     // 装上这个包、没用过「程序更新」的站点：面板显示内置版本，分发端最新也是它时不提示更新。
     const workerSource = fs.readFileSync(path.join(dist, '_worker.js'), 'utf8');

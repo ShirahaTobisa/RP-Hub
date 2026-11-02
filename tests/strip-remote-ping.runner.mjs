@@ -1,7 +1,8 @@
-// Verifies the serve-time strip of upstream phone-home metas
-// (rphub-presence-api / rphub-update-api) against real workerd via
-// `wrangler pages dev`, since the HTMLRewriter selector semantics only
-// exist there. The synthetic index.html stands in for an applied
+// Verifies the serve-time handling of upstream phone-home metas against
+// real workerd via `wrangler pages dev`, since the HTMLRewriter selector
+// semantics only exist there: rphub-presence-api is stripped, rphub-update-api
+// is renamed so only the patched cloud-backup.js (2.0.4+) sees the address.
+// The synthetic index.html stands in for an applied
 // app-update slot page (upstream 1.8.4/1.8.5 styles carry these metas).
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
@@ -98,7 +99,9 @@ async function main() {
         for (const pathname of ['/', '/index.html']) {
             const html = await (await fetch(baseUrl + pathname)).text();
             assert(!html.includes('rphub-presence-api'), `${pathname}: presence meta must be stripped`);
-            assert(!html.includes('rphub-update-api'), `${pathname}: update meta must be stripped`);
+            assert(!html.includes('rphub-update-api'), `${pathname}: update meta must be renamed`);
+            assert(/<meta name="rphub-cloud-backup-api" content="https:\/\/rphub-presence\.zeabur\.app">/.test(html),
+                `${pathname}: cloud backup meta must keep the address under its new name`);
             assert(html.includes('name="keep-me"'), `${pathname}: unrelated meta must survive`);
             assert(html.includes('/DB/bootstrap.js?v=r2-rebuild-1'), `${pathname}: overlay injection must still run`);
         }

@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { patchRpHubAppJs } from '../DB/app-patches.mjs';
+import { patchRpHubAppJs, patchRpHubCloudBackupJs, RP_HUB_CLOUD_BACKUP_PATH } from '../DB/app-patches.mjs';
 
 const DEPLOY_ENTRIES = [
     '_worker.js',
@@ -23,7 +23,11 @@ const DEPLOY_ENTRIES = [
     'DB/module-loader.js'
 ];
 
-const APP_PATCH_IMPORT = /^import\s*\{\s*patchRpHubAppJs\s*,\s*RpHubAppPatchError\s*,\s*RP_HUB_APP_PATCH_REVISION\s*\}\s*from\s*['"]\.\/DB\/app-patches\.mjs['"]\s*;\s*/;
+const APP_PATCH_IMPORT_NAMES = [
+    'patchRpHubAppJs', 'patchRpHubCloudBackupJs', 'RpHubAppPatchError',
+    'RP_HUB_APP_PATCH_REVISION', 'RP_HUB_CLOUD_BACKUP_PATH', 'RP_HUB_CLOUD_BACKUP_META_NAME'
+];
+const APP_PATCH_IMPORT = new RegExp(`^import\\s*\\{\\s*${APP_PATCH_IMPORT_NAMES.join('\\s*,\\s*')}\\s*\\}\\s*from\\s*['"]\\.\\/DB\\/app-patches\\.mjs['"]\\s*;\\s*`);
 const MODULE_EXPORT = /^export\s+(const|class|function)\s+([A-Za-z_$][A-Za-z0-9_$]*)\b/gm;
 const EXPECTED_MODULE_EXPORTS = [
     'const:RP_HUB_APP_PATH',
@@ -31,7 +35,10 @@ const EXPECTED_MODULE_EXPORTS = [
     'const:APP_PATCH_MODES',
     'class:RpHubAppPatchError',
     'function:verifyRpHubAppJs',
-    'function:patchRpHubAppJs'
+    'function:patchRpHubAppJs',
+    'const:RP_HUB_CLOUD_BACKUP_PATH',
+    'const:RP_HUB_CLOUD_BACKUP_META_NAME',
+    'function:patchRpHubCloudBackupJs'
 ];
 const STATIC_IMPORT = /^\s*import\b/m;
 const ANY_EXPORT = /^\s*export\s+/gm;
@@ -118,6 +125,10 @@ function copyUpstream(upstream, stageRoot) {
     }
     const appPath = path.join(stageRoot, 'assets', 'js', 'app.js');
     fs.writeFileSync(appPath, patchRpHubAppJs(fs.readFileSync(appPath, 'utf8'), { version: upstream.tag }).code, 'utf8');
+    const cloudBackupPath = path.join(stageRoot, RP_HUB_CLOUD_BACKUP_PATH);
+    if (fs.existsSync(cloudBackupPath)) {
+        fs.writeFileSync(cloudBackupPath, patchRpHubCloudBackupJs(fs.readFileSync(cloudBackupPath, 'utf8'), { version: upstream.tag }).code, 'utf8');
+    }
 }
 
 // 外壳里记的内置上游版本和提交号换成实际打进去的，「程序更新」面板据此判断是否已是最新。
@@ -152,9 +163,9 @@ function inlineAppPatcher(workerSource, patcherSource) {
 
     const inlinedModule = [
         '// Inlined from DB/app-patches.mjs by scripts/package.mjs.',
-        'const { patchRpHubAppJs, RpHubAppPatchError, RP_HUB_APP_PATCH_REVISION } = (() => {',
+        `const { ${APP_PATCH_IMPORT_NAMES.join(', ')} } = (() => {`,
         patcherBody,
-        'return { patchRpHubAppJs, RpHubAppPatchError, RP_HUB_APP_PATCH_REVISION };',
+        `return { ${APP_PATCH_IMPORT_NAMES.join(', ')} };`,
         '})();',
         ''
     ].join('\n');

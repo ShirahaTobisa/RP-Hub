@@ -26,11 +26,11 @@ function normalizedWorkerSegment(source, startMarker, endMarker) {
 
 const protectedFiles = new Map([
     ['DB/image-module.js', '5ABA6CD6E4491512BF8832778FF3B1A3B258D17FEEEED91D7BC71ECF00708925'],
-    ['_worker.js', 'E866A815FB5BB5F4D43E0F6DC6ED6FC27733540919BFBBCC82470AC789BC0BE4'],
+    ['_worker.js', '055B751AF0A01F173A1F6D2CB1C2216CA60C1CE89511DF05A71E3C27D77E648F'],
     ['DB/char-store.js', '572888C71A656871438D4D7ED61212F46F99DCEAB561A1A07264961CBD66B9E3'],
-    ['DB/bootstrap.js', 'DE9B7BA49AED47998B9EF8FB9F04B62732703B078E4B684352E2147EB417560D'],
+    ['DB/bootstrap.js', 'DD77496338AF82744C616F748DB0C136C2F9906D44D32FF9ADE383AD94907D65'],
     ['DB/styles.css', '87E4E5F49F1D6155AAA430B3CA3CFC8878057D5269A2C938D6E887509FB280BC'],
-    ['DB/app-patches.mjs', '55629DF1E0888F027863F2A618A72300BB03DDBF938F2119EAF520421C57AC53'],
+    ['DB/app-patches.mjs', 'E2251ABF702975AC3CC1B4ABA9713917C4F269BDCCE476265B36E067FE4E2A00'],
     ['assets/js/app.js', '2A966442F7E937A5229FE093C97336C152A8153B38E8B335CDC680D06781430C'],
     ['scripts/rebuild.mjs', 'BFD59ECA2596E37C55583146FFB8CFE48656B9C4AF81E9ACA606B833C02302DC']
 ]);
@@ -45,14 +45,14 @@ assert.equal(workerSource.split(workshopInjection).length - 1, 1, 'workshop load
 const workerWithoutWorkshopInjection = workerSource.replace(/<script src="\/DB\/nav-adapter\.js\?v=sync-195"><\/script>\r?\n/, '').replace(`${workshopInjection}${workerSource.includes(`${workshopInjection}\r\n`) ? '\r\n' : '\n'}`, '');
 assert.equal(
     sha256Bytes(Buffer.from(workerWithoutWorkshopInjection, 'utf8')),
-    'DBF40D4A4E451EC89432AB85D9390B33300DAB8FA99F9903EDC45D25172DB26B',
+    '1A829A9F64F4C2570F14D40DA4B63DBF22823EFDC1F12DA30EC0902F25FDDF98',
     '_worker.js differs from the current img baseline by more than the workshop injection line'
 );
 const stableWorkerSegments = [
     ['sync CAS/history/GC core', 'function getChunkLength', 'function buildRemoteInfo', '249EB45190B0DB34C3BFB46D3467AE217E1E2F4A60C5CF592FBFAC49DF8DEC53'],
     ['pull-json-part handler', 'async function handlePullJsonPart', 'async function handleUploadCreate', '652B0707538D3C91BD9F1522A055C566086AEDEDEE0DF33B0E33B91E7D6065FB'],
     ['upload-part handler', 'async function handleUploadPart', 'async function handleUploadComplete', '279F7F19B8B0F47180D9D4D65A343A1BC013C52AF7D00AD7F7A035FA79FA296E'],
-    ['app-update implementation', 'function buildGitHubHeaders', 'async function handleJsonApi', 'CBB4F0D29DBF2A6647F46B8D2122F866E797ABEA117403E7415697D4C5B43BAA']
+    ['app-update implementation', 'function buildGitHubHeaders', 'async function handleJsonApi', '644ED6634BE64B68577FAC595432AD1A9BBF1FEA9DDBF785464C0357DC634590']
 ];
 
 for (const [label, startMarker, endMarker, expectedHash] of stableWorkerSegments) {

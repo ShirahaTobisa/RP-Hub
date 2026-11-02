@@ -175,7 +175,7 @@ async function buildMirrorVersion(reference, tag) {
             name: `RP-Hub ${tag}`,
             date: '2026-08-12T00:00:00Z',
             publishedAt: 1786464000000,
-            precheckPatchRevision: 'r2-character-split-e2b-v3',
+            precheckPatchRevision: 'r2-character-split-e2b-v4',
             files
         },
         blobs

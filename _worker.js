@@ -1,7 +1,10 @@
 import {
     patchRpHubAppJs,
+    patchRpHubCloudBackupJs,
     RpHubAppPatchError,
-    RP_HUB_APP_PATCH_REVISION
+    RP_HUB_APP_PATCH_REVISION,
+    RP_HUB_CLOUD_BACKUP_PATH,
+    RP_HUB_CLOUD_BACKUP_META_NAME
 } from './DB/app-patches.mjs';
 
 // 测试版版本号，打包时由 scripts/package.mjs --version 写入；本地源码保持 dev。
@@ -179,6 +182,14 @@ async function skipUpdateNoticeCountdown(response) {
 const remotePingMetaRewriter = {
     element(element) {
         element.remove();
+    }
+};
+
+// 2.0.4 起 cloud-backup.js 也从 rphub-update-api 这个 meta 拿服务地址。改个名留给它（打过补丁的 cloud-backup.js
+// 读新名字），update-check.js 照旧找不到、不心跳。只有用户自己输入密钥点「下载备份」时才会连原作者的服务器。
+const cloudBackupMetaRewriter = {
+    element(element) {
+        element.setAttribute('name', RP_HUB_CLOUD_BACKUP_META_NAME);
     }
 };
 
@@ -2691,12 +2702,13 @@ async function fetchConfiguredUpstreamFile(path, version, env, requestBudget = n
 }
 
 function patchUpstreamTextFile(path, text, version = 'unknown') {
+    if (path === RP_HUB_CLOUD_BACKUP_PATH) return patchRpHubCloudBackupJs(text, { version }).code;
     if (path !== 'assets/js/app.js') return text;
     return patchRpHubAppJs(text, { version }).code;
 }
 
 function shouldPatchAsText(path) {
-    return path === 'assets/js/app.js';
+    return path === 'assets/js/app.js' || path === RP_HUB_CLOUD_BACKUP_PATH;
 }
 
 function encodeText(text) {
@@ -3338,7 +3350,7 @@ async function serveStatic(request, env) {
         })
         .on('button', updateNoticeButtonRewriter)
         .on('meta[name="rphub-presence-api"]', remotePingMetaRewriter)
-        .on('meta[name="rphub-update-api"]', remotePingMetaRewriter)
+        .on('meta[name="rphub-update-api"]', cloudBackupMetaRewriter)
         .transform(response);
 }
 

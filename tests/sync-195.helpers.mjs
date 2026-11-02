@@ -3,7 +3,7 @@ import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
-import { patchRpHubAppJs } from '../DB/app-patches.mjs';
+import { patchRpHubAppJs, patchRpHubCloudBackupJs, RP_HUB_CLOUD_BACKUP_PATH, RP_HUB_CLOUD_BACKUP_META_NAME } from '../DB/app-patches.mjs';
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const { chromium } = createRequire(import.meta.url)('playwright');
@@ -64,9 +64,10 @@ export async function startHarness({ upstream, assets = process.env.RPH_PACKAGE_
             if (url.pathname === '/' || url.pathname === '/index.html') {
                 response.setHeader('content-type', 'text/html; charset=utf-8');
                 if (upstream) {
-                    // 和外壳一样去掉原作者的在线心跳、检测新版本地址：测试不去问原作者的服务器，他发新版也不会弹窗挡住页面。
+                    // 和外壳一样：去掉原作者的在线心跳 meta，检测新版本的 meta 改名只留给云端备份用。测试不去问原作者的服务器，他发新版也不会弹窗挡住页面。
                     const html = (await fs.readFile(path.join(upstream, 'index.html'), 'utf8'))
-                        .replace(/<meta name="rphub-(?:presence|update)-api"[^>]*>\s*/g, '');
+                        .replace(/<meta name="rphub-presence-api"[^>]*>\s*/g, '')
+                        .replace('<meta name="rphub-update-api"', `<meta name="${RP_HUB_CLOUD_BACKUP_META_NAME}"`);
                     const scripts = ['ui-kit', 'nav-adapter', 'char-store', 'bootstrap', 'image-module', 'module-loader']
                         .map(name => `<script src="/DB/${name}.js"></script>`).join('');
                     response.end(html.replace('</head>', `<link rel="stylesheet" href="/DB/styles.css">${scripts}</head>`));
@@ -87,6 +88,7 @@ export async function startHarness({ upstream, assets = process.env.RPH_PACKAGE_
             response.setHeader('content-type', file.endsWith('.css') ? 'text/css' : 'text/javascript; charset=utf-8');
             let content = await fs.readFile(file);
             if (upstream && url.pathname === '/assets/js/app.js') content = patchRpHubAppJs(content.toString()).code;
+            if (upstream && url.pathname === `/${RP_HUB_CLOUD_BACKUP_PATH}`) content = patchRpHubCloudBackupJs(content.toString()).code;
             if (instrumented && url.pathname === '/DB/bootstrap.js') content = instrument(content.toString(), metrics);
             response.end(content);
         } catch { response.statusCode = 404; response.end('not found'); }

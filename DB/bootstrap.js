@@ -3643,6 +3643,23 @@
         section.appendChild(row);
     }
 
+    // 上游 2.0.4 起的「备份与转移」是传到原作者服务器的云端备份。只留「下载备份」，给从官方 RP-Hub 搬过来的人用；
+    // 「上传备份」会把这个站的数据送到原作者那里，藏掉。
+    function ensureCloudBackupEntry() {
+        const heading = [...document.querySelectorAll('h4.settings-subheading')].find((node) => node.textContent.trim() === '备份与转移');
+        const grid = heading?.parentElement.querySelector('.grid');
+        if (!grid || grid.dataset.rphCloudRestore) return;
+        grid.dataset.rphCloudRestore = '1';
+        grid.classList.replace('grid-cols-2', 'grid-cols-1');
+        for (const button of grid.children) if (button.textContent.includes('上传备份')) button.hidden = true;
+        grid.insertAdjacentHTML('afterend', '<p class="mt-3 text-xs text-gray-500">从官方 RP-Hub 搬过来：在那边的设置页点「上传备份」拿到密钥，再在这里点「下载备份」输入，角色卡和聊天记录就会合并到本机。</p>');
+    }
+
+    function decorateSettingsView() {
+        ensureForkExportEntry();
+        ensureCloudBackupEntry();
+    }
+
     // 只在设置页打开时观察页面变化，离开就停，不影响聊天时的性能。
     function watchSettingsView() {
         let observer = null;
@@ -3654,8 +3671,8 @@
                 observer?.disconnect();
                 observer = null;
                 if (view !== 'settings') return;
-                ensureForkExportEntry();
-                observer = new MutationObserver(ensureForkExportEntry);
+                decorateSettingsView();
+                observer = new MutationObserver(decorateSettingsView);
                 observer.observe(document.getElementById('app'), { childList: true, subtree: true });
             }, { immediate: true });
         }, 1000);
