@@ -1,7 +1,7 @@
 // Adapted from 柳贯一 RP-Hub 插件 v20.5.7, author 苏萝萝.
 // Workshop edition: no image-generation integration; persistent data supports cloud sync.
 RPHubSDK.register({
-    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.5.7-rph.1', requiresApi: 2,
+    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.5.7-rph.2', requiresApi: 2,
     // 原生五槽：页面挂载前把聊天模型槽位扩到五个，并恢复输入混淆开关。加载器 API 6 起才会调用，
     // 旧外壳或官方代码对不上时保持官方三槽。
     beforeMount({ options, root }) {
@@ -175,6 +175,8 @@ RPHubSDK.register({
     if (globalThis.__rphLiuguanyiInitialized) return;
     if (window.fetch.__sakura_hooked__) throw new Error('请先停用此站点的旧版柳贯一油猴脚本，再刷新启用工坊版');
     globalThis.__rphLiuguanyiInitialized = true;
+    // 原版的提示用浏览器弹窗，改编版统一换成插件自己的提示气泡（层级在它的弹窗之上）。
+    const alert = showMomentToast;
     const pluginStorage = {
         get length() { return localStorage.length; }, key: i => localStorage.key(i),
         getItem: key => localStorage.getItem(key),
@@ -1906,7 +1908,8 @@ function getCharKey() {
     // 官方下次补录可能重新生成该轮记忆（这是官方行为，非插件可控）。
     async function deleteClassicMemoryEntry(memory) {
         const turnLabel = Number(memory.turn) || '?';
-        if (!window.confirm(`确定删除第 ${turnLabel} 轮的总结记忆吗？\n（若该轮对话正文还在，官方补录时可能重新生成）`)) return;
+        // 取消时这里不再往下走。
+        await new Promise(resolve => openMomentConfirmDialog(`确定删除第 ${turnLabel} 轮的总结记忆吗？（若该轮对话正文还在，官方补录时可能重新生成）`, resolve, { heading: '删除总结记忆', action: '删除' }));
         const st = getVueState();
         const scopeId = (typeof sakuraMemScopeId === 'function') ? sakuraMemScopeId() : null;
         let ok = false;
@@ -3062,7 +3065,7 @@ function injectGramophoneButton() {
 
     // 自定义命名弹窗：替代浏览器原生 prompt，暗夜绒面风格与手记展柜统一。
     // onConfirm(title) 在确认时回调；取消/Esc/点遮罩均静默关闭。
-    function openMomentNamingDialog(defaultTitle, onConfirm) {
+    function openMomentNamingDialog(defaultTitle, onConfirm, { heading = '收录至名场面手记', sub = '为这段高光时刻取个名字吧', placeholder = '名场面名称', action = '收录', maxLength = 40, fallback = defaultTitle || '名场面' } = {}) {
         const exist = document.getElementById('sakura-moment-naming');
         if (exist) exist.remove();
         const mask = document.createElement('div');
@@ -3073,15 +3076,15 @@ function injectGramophoneButton() {
         box.className = 'sakura-box';
         box.innerHTML = `
             <div class="sn-head">
-                <div class="sn-title">收录至名场面手记</div>
-                <div class="sn-sub">为这段高光时刻取个名字吧</div>
+                <div class="sn-title">${heading}</div>
+                <div class="sn-sub">${sub}</div>
             </div>
             <div class="sn-body">
-                <input class="sn-input" type="text" maxlength="40" placeholder="名场面名称">
+                <input class="sn-input" type="text" maxlength="${maxLength}" placeholder="${placeholder}">
             </div>
             <div class="sn-foot">
                 <button type="button" class="sn-btn sn-btn-cancel">取消</button>
-                <button type="button" class="sn-btn sn-btn-ok">收录</button>
+                <button type="button" class="sn-btn sn-btn-ok">${action}</button>
             </div>
         `;
         mask.appendChild(box);
@@ -3090,7 +3093,7 @@ function injectGramophoneButton() {
         input.value = defaultTitle || '';
         const close = () => { document.removeEventListener('keydown', onKey, true); mask.remove(); };
         const confirm = () => {
-            const title = input.value.trim() || defaultTitle || '名场面';
+            const title = input.value.trim() || fallback;
             close();
             onConfirm(title);
         };
@@ -3108,7 +3111,7 @@ function injectGramophoneButton() {
 
     // 自定义确认弹窗：替代浏览器原生 confirm，暗夜绒面风格与命名弹窗同血统。
     // onConfirm() 仅在点击"移除"时回调；取消/Esc/点遮罩静默关闭。
-    function openMomentConfirmDialog(message, onConfirm) {
+    function openMomentConfirmDialog(message, onConfirm, { heading = '移除名场面', action = '移除' } = {}) {
         const exist = document.getElementById('sakura-moment-confirm');
         if (exist) exist.remove();
         const mask = document.createElement('div');
@@ -3119,7 +3122,7 @@ function injectGramophoneButton() {
         box.className = 'sakura-box';
         box.innerHTML = `
             <div class="sn-head">
-                <div class="sn-title">移除名场面</div>
+                <div class="sn-title">${heading}</div>
                 <div class="sn-sub">此操作不可撤销</div>
             </div>
             <div class="sn-body">
@@ -3127,7 +3130,7 @@ function injectGramophoneButton() {
             </div>
             <div class="sn-foot">
                 <button type="button" class="sn-btn sn-btn-cancel">取消</button>
-                <button type="button" class="sn-btn sn-btn-danger">移除</button>
+                <button type="button" class="sn-btn sn-btn-danger">${action}</button>
             </div>
         `;
         mask.appendChild(box);
@@ -3155,7 +3158,7 @@ function injectGramophoneButton() {
         setTimeout(() => {
             toast.classList.add('is-out');
             setTimeout(() => toast.remove(), 450);
-        }, 1800);
+        }, Math.max(1800, String(text || '').length * 150));
     }
 
     // 在官方每条消息底部的操作按钮组追加一个“收录名场面”书签按钮
@@ -6513,12 +6516,12 @@ function injectGramophoneButton() {
                     rename.addEventListener('click', e => {
                         e.stopPropagation();
                         const names = themeLoadNames();
-                        const next = window.prompt('给这个主题起个名字（最多 12 字，留空恢复「自定义」）：', names[c.slotIndex] || '');
-                        if (next === null) return;
-                        names[c.slotIndex] = String(next).trim().slice(0, 12);
-                        themeSaveNames(names);
-                        refreshCurrentLabel();
-                        renderGrid();
+                        openMomentNamingDialog(names[c.slotIndex] || '', next => {
+                            names[c.slotIndex] = next;
+                            themeSaveNames(names);
+                            refreshCurrentLabel();
+                            renderGrid();
+                        }, { heading: '给这个主题起个名字', sub: '最多 12 字，留空恢复「自定义」', placeholder: '主题名称', action: '保存', maxLength: 12, fallback: '' });
                     });
                     cell.appendChild(rename);
                     const del = document.createElement('span');

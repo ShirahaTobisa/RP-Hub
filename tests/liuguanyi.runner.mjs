@@ -120,6 +120,44 @@ try {
     await page.evaluate(() => { vm().currentView = 'settings'; });
     await page.locator('#sakura-personal-section').waitFor({ timeout: 15000 });
     console.log('PASS the settings page shows the sakura personalization section');
+
+    // 浏览器自带的弹窗不该再出现（出现就记成错误）：主题改名、删除记忆都走插件自己的框，提示走气泡。
+    page.on('dialog', (dialog) => { errors.push('browser dialog: ' + dialog.message()); dialog.dismiss(); });
+    await page.locator('.sakura-personal-card[data-entry="theme"]').click();
+    const theme = page.locator('#sakura-theme-mask');
+    await theme.waitFor();
+    await theme.locator('button').filter({ hasText: '#' }).first().click();
+    await theme.getByLabel('主题 HEX 色值').fill('#58a6f5');
+    await theme.getByLabel('主题 HEX 色值').press('Enter');
+    // 输入框失焦时面板会重画一次，先失焦再点，不然这一下会点在被换掉的按钮上。
+    await theme.getByLabel('主题 HEX 色值').blur();
+    await theme.getByTitle('重命名该主题').first().click();
+    const naming = page.locator('#sakura-moment-naming');
+    assert.equal(await naming.locator('.sn-title').innerText(), '给这个主题起个名字');
+    await naming.locator('.sn-input').fill('海蓝');
+    await naming.locator('.sn-btn-ok').click();
+    await naming.waitFor({ state: 'detached' });
+    await theme.getByText('海蓝').first().waitFor();
+    await page.evaluate(() => document.getElementById('sakura-theme-mask').remove());
+    console.log('PASS renaming a theme uses the plugin dialog instead of the browser prompt');
+
+    await page.evaluate(() => window.RPHubStorage.setScopedStoredValue('classic_memories', vm().currentCharacter.uuid, [{ id: 'mem-1', classicMemory: true, turn: 1, summary: '第一轮的总结' }]));
+    await open();
+    await page.waitForFunction(() => !document.getElementById('custom-splash-screen'), null, { timeout: 15000 });
+    await page.evaluate(() => { vm().memorySettings.enabled = true; vm().currentView = 'memory'; });
+    const deleteMemory = page.locator('.sakura-mem-del').first();
+    await deleteMemory.waitFor({ timeout: 15000 });
+    const storedMemories = () => page.evaluate(async () => (await window.RPHubStorage.getScopedStoredValue('classic_memories', vm().currentCharacter.uuid)).length);
+    await deleteMemory.click();
+    const memoryConfirm = page.locator('#sakura-moment-confirm');
+    assert.equal(await memoryConfirm.locator('.sn-title').innerText(), '删除总结记忆');
+    await memoryConfirm.locator('.sn-btn-cancel').click();
+    assert.equal(await storedMemories(), 1, 'cancel keeps the memory');
+    await deleteMemory.click();
+    await memoryConfirm.locator('.sn-btn-danger').click();
+    await page.locator('#sakura-moment-toast').filter({ hasText: '已删除第 1 轮' }).waitFor({ timeout: 5000 });
+    assert.equal(await storedMemories(), 0);
+    console.log('PASS deleting a memory uses the plugin dialog and toast instead of browser popups');
     assert.deepEqual(errors, []);
 } finally {
     await browser.close();

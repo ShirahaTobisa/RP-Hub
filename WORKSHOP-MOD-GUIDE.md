@@ -119,13 +119,17 @@ await ctx.persistence.track('import', async () => {
 | `rph-ui-actions` | 按钮行，靠右排列 |
 | `rph-ui-field` | 一个表单项（`label` 包住说明文字和输入框） |
 | `rph-ui-input` | 输入框、多行文本框 |
-| `rph-ui-check`，里面放 `input.settings-toggle-input.sr-only` 和 `span.settings-toggle` | 原生样式的开关 |
+| `rph-ui-check`，里面放 `input.settings-toggle-input.sr-only` 和 `span.settings-toggle` | 原生样式的开关（别用没加类名的勾选框） |
 | `rph-ui-muted` | 次要说明文字 |
 | `rph-ui-note` | 带色条的提示块 |
 | `rph-ui-section` | 分组，里面的 `h3` 是小标题 |
 | `rph-ui-row` / `rph-ui-row-main` / `rph-ui-row-actions` | 列表行：左边信息，右边操作 |
 
 完整写法见 `DB/modules/advice-inject.js` 和 `examples/api-demo-module.js`。
+
+下拉框用 RPH 自己的组件 `window.RPHubCustomSelect`，浏览器自带的 `select` 展开是系统样式。写法见 `DB/modules/tts-reader.js` 的 `styledSelect`；外面用 `div.rph-ui-field`，不要用 `label` 包。
+
+提示用 `ctx.ui.toast`，确认用 `window.RPHubUI.confirm`，不要用浏览器的 `alert`、`confirm`、`prompt`。
 
 ### `ctx.events`
 
