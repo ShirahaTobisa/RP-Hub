@@ -1,7 +1,7 @@
-// Adapted from 柳贯一 RP-Hub 插件 v20.5.7, author 苏萝萝.
+// Adapted from 柳贯一 RP-Hub 插件 v20.5.9, author 苏萝萝.
 // Workshop edition: no image-generation integration; persistent data supports cloud sync.
 RPHubSDK.register({
-    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.5.7-rph.2', requiresApi: 2,
+    id: 'liuguanyi', name: '柳贯一增强（无生图）', version: '20.5.9-rph.1', requiresApi: 2,
     // 原生五槽：页面挂载前把聊天模型槽位扩到五个，并恢复输入混淆开关。加载器 API 6 起才会调用，
     // 旧外壳或官方代码对不上时保持官方三槽。
     beforeMount({ options, root }) {
@@ -16,7 +16,12 @@ RPHubSDK.register({
             if (s.includes(contextInputAnchor)) {
                 s = s.replace(contextInputAnchor, 'window.__sakuraSanitizeOfficialMessages?.(messages); ' + contextInputAnchor);
             }
-            s = replaceOne(s, 'fastModel: DEFAULT_API_CONFIG.fastModel,', "fastModel: DEFAULT_API_CONFIG.fastModel,\n            fourthModel: '', fifthModel: '',");
+            // 2.0.6 删除独立识图模型后，fastModel 成为 settings 的最后一项。
+            // 仅匹配对象属性所在行，兼容有/无尾逗号，避免误改其他引用。
+            const fastSetting = s.match(/^[ \t]*fastModel:[ \t]*DEFAULT_API_CONFIG\.fastModel,?[ \t]*(?=\r?$)/gm);
+            if (fastSetting?.length !== 1) throw new Error('找不到唯一的官方快捷模型配置');
+            const indent = fastSetting[0].match(/^[ \t]*/)[0];
+            s = replaceOne(s, fastSetting[0], indent + "fastModel: DEFAULT_API_CONFIG.fastModel,\n" + indent + "fourthModel: '', fifthModel: '',");
             const start = s.indexOf('        watch(() => [settings.apiUrl, settings.apiKey, settings.model],');
             const end = s.indexOf('        // Watch image gen and model settings for sync',start);
             if (start < 0 || end < 0) throw new Error('找不到官方模型回写监听');
@@ -281,11 +286,7 @@ RPHubSDK.register({
         if (!sakuraStreamEnhanceRuntimeEnabled) {
             sakuraClearResponseDecorations();
             if (sakuraMonitorReady) sakuraDisableResponseEnhance();
-            try {
-                if (chatBubbleObserver) { chatBubbleObserver.disconnect(); chatBubbleObserver = null; }
-                if (contextViewerDomObserver) { contextViewerDomObserver.disconnect(); contextViewerDomObserver = null; }
-                window.__sakuraNextResponseGuard = false;
-            } catch (_) {}
+            // 协议隔离是独立常驻功能，关闭响应增强不能解除它的监听。
         }
         window.dispatchEvent(new CustomEvent('sakura-stream-enhance-change', { detail: { enabled: sakuraStreamEnhanceRuntimeEnabled } }));
     }
@@ -315,7 +316,8 @@ RPHubSDK.register({
     function isAuxiliaryModelMessages(messages) {
         return Array.isArray(messages) && (messages.some(message => {
             const content = String(message?.content || '');
-            return content.includes(FP_MEMORY) || content.includes(FP_MEMORY_SECONDARY);
+            // 加载器 ctx.ai.complete 发出的请求带这个标记，不是主聊天。
+            return content.includes(FP_MEMORY) || content.includes(FP_MEMORY_SECONDARY) || content.includes('（插件附带请求）');
         }) || isUiTemplateAnalysisMessages(messages));
     }
 
@@ -435,7 +437,7 @@ RPHubSDK.register({
     })();
     // 内置供应商预设列表
     const PROVIDER_PRESETS = [
-        { id: 'sta1n', name: 'STA1N API', apiUrl: 'https://cdn.sta1n.cn/v1', defaultModel: 'deepseek-chat', icon: 'https://img.cdn1.vip/i/69c18cc07538b_1774292160.webp' },
+        { id: 'sta1n', name: 'STA1N API', apiUrl: 'https://sta1n.ai/v1', defaultModel: 'deepseek-chat', icon: 'https://img.cdn1.vip/i/69c18cc07538b_1774292160.webp' },
         { id: 'deepseek', name: 'DeepSeek', apiUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-chat', icon: 'https://www.deepseek.com/favicon.ico' },
         { id: 'openrouter', name: 'OpenRouter', apiUrl: 'https://openrouter.ai/api/v1', defaultModel: 'deepseek/deepseek-chat', icon: 'https://openrouter.ai/favicon.ico' },
         { id: 'siliconflow', name: 'SiliconFlow', apiUrl: 'https://api.siliconflow.cn/v1', defaultModel: 'deepseek-ai/DeepSeek-V3', icon: 'https://siliconflow.cn/favicon.ico' },
@@ -590,7 +592,6 @@ RPHubSDK.register({
             scrubChatBubblesDom();
             if (chatBubbleObserver || !document.documentElement) return;
             chatBubbleObserver = new MutationObserver(mutations => {
-                if (!sakuraStreamEnhanceEnabled()) return;
                 if (_cbScrubPending) return;
                 let relevant = false;
                 for (let i = 0; i < mutations.length; i++) {
@@ -4074,6 +4075,25 @@ function injectGramophoneButton() {
         }
     }
 
+    // 2.0.6 将四类模型集中展示；优先读取稳定目标 ID，旧页面再按本字段标签识别。
+    function getSplitModelTarget(button) {
+        if (!button) return '';
+        const id = String(button.id || '');
+        if (id.startsWith('model-config-')) {
+            const target = id.slice('model-config-'.length);
+            return ['memoryEmbeddingModel', 'memoryClassicModel', 'uiTemplateModel'].includes(target) ? target : '';
+        }
+        const field = button.closest('.settings-field');
+        const label = (field?.querySelector('label')?.textContent || '').trim();
+        const title = (button.getAttribute('title') || '').trim();
+        const text = label + ' ' + title;
+        if (/向量(?:嵌入)?模型/.test(text)) return 'memoryEmbeddingModel';
+        if (/总结模型/.test(text)) return 'memoryClassicModel';
+        if (/分析模型/.test(text)) return 'uiTemplateModel';
+        const viewText = button.closest('.management-view')?.textContent || '';
+        return /UI模板|UI 模板|变量系统设置/.test(viewText) ? 'uiTemplateModel' : '';
+    }
+
     // ================= 🎯 模块四：事件委托与全通道模型原生持久化 =================
     // 删除消息 / 发送 / AI 生成后的滚动行为全部回归官方原生逻辑，插件零干预。
 
@@ -4133,61 +4153,32 @@ function injectGramophoneButton() {
             openFullscreenComposer();
             return;
         }
-        const modelBtn = t.closest('.settings-model-button');
-        if (modelBtn) {
+        const modelBtn = t.closest('button.settings-model-button, button[id^="model-config-"]');
+        const modelTarget = getSplitModelTarget(modelBtn);
+        if (modelTarget) {
             const allConf = loadSplitApis();
-            const memConf = getActiveChannelConfig(allConf.memory);
-            const uiConf = getActiveChannelConfig(allConf.ui);
+            const isUi = modelTarget === 'uiTemplateModel';
+            const channel = getActiveChannelConfig(isUi ? allConf.ui : allConf.memory);
+            // 未配置分流时让官方处理，主聊天槽位也完全走官方选择器。
+            if (!channel.url || !channel.key) return;
             const st = getVueState();
-            const viewText = modelBtn.closest('.management-view')?.innerText || '';
-
-            // 🎯 按钮级身份判定：只读「这个按钮自己所属 settings-field 的 label」。
-            // 绝不能拿整页文本做 includes —— 增强模式下「总结模型」与「向量模型」两个 label
-            // 同时存在，includes('向量模型') 必然命中，会导致点总结框也弹向量模型（历史 Bug）。
-            const field = modelBtn.closest('.settings-field');
-            const fieldLabel = (field?.querySelector('label')?.textContent || '').trim();
-            // title 兜底：未选模型时官方 title 为「请选择总结模型 / 请选择向量模型」
-            const btnTitle = (modelBtn.getAttribute('title') || '').trim();
-            const isVectorField = fieldLabel.includes('向量模型') || fieldLabel.includes('向量嵌入模型')
-                || btnTitle.includes('向量模型') || btnTitle.includes('向量嵌入模型');
-            const isSummaryField = fieldLabel.includes('总结模型') || btnTitle.includes('总结模型');
-
-            if ((isVectorField || isSummaryField) && memConf.url && memConf.key) {
-                const isVector = isVectorField;
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                e.stopPropagation();
-                openCustomModelModal({
-                    title: isVector ? '向量嵌入模型（已解禁）' : '记忆总结副模型',
-                    subTitle: `从 [${memConf.provider.name}] 实时拉取模型列表`,
-                    url: memConf.url,
-                    key: memConf.key,
-                    currentVal: isVector ? (st?.memorySettings?.embeddingModel || '') : (st?.memorySettings?.classicModel || ''),
-                    onSelect: async (mId) => {
-                        await commitModelSelection(isVector ? 'memoryEmbeddingModel' : 'memoryClassicModel', mId);
-                        updateModelButton(modelBtn, mId);
-                    }
-                });
-                return;
-            }
-
-            if ((viewText.includes('UI模板') || viewText.includes('变量系统设置')) && uiConf.url && uiConf.key) {
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                e.stopPropagation();
-                openCustomModelModal({
-                    title: 'UI 变量分析模型',
-                    subTitle: `从 [${uiConf.provider.name}] 实时拉取模型列表`,
-                    url: uiConf.url,
-                    key: uiConf.key,
-                    currentVal: st?.settings?.uiTemplateModel || '',
-                    onSelect: async (mId) => {
-                        await commitModelSelection('uiTemplateModel', mId);
-                        updateModelButton(modelBtn, mId);
-                    }
-                });
-                return;
-            }
+            const memories = getRuntimeValue(st?.memorySettings);
+            const settings = getRuntimeValue(st?.settings);
+            const isVector = modelTarget === 'memoryEmbeddingModel';
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            e.stopPropagation();
+            openCustomModelModal({
+                title: isUi ? 'UI 变量分析模型' : (isVector ? '向量嵌入模型（已解禁）' : '记忆总结副模型'),
+                subTitle: `从 [${channel.provider.name}] 实时拉取模型列表`,
+                url: channel.url,
+                key: channel.key,
+                currentVal: isUi ? (settings?.uiTemplateModel || '') : (isVector ? (memories?.embeddingModel || '') : (memories?.classicModel || '')),
+                onSelect: async (mId) => {
+                    await commitModelSelection(modelTarget, mId);
+                    updateModelButton(modelBtn, mId);
+                }
+            });
         }
     }, true);
 
@@ -7710,7 +7701,15 @@ console.log(`[苏萝萝] 记忆热重载完成（官方式重载）：总结 ${c
     }
     // 复用统一 MutationObserver 注入调度，不再单独每 1.8 秒扫描一次全页。
     try { injectCleanViewButton(); } catch (_) {};
-    try { startChatBubbleScrubber(); } catch (_) {}
+    const startProtocolDisplayGuards = () => {
+        try { startChatBubbleScrubber(); } catch (_) {}
+        try { startContextViewerDomScrubber(); } catch (_) {}
+        try { scrubChatHistoryNextResponse(); scrubContextViewerNextResponse(); } catch (_) {}
+    };
+    startProtocolDisplayGuards();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', startProtocolDisplayGuards, { once: true });
+    }
     // ============================================================
 
     ctx.ui.addSidebarEntry({ label: '文字名场面', onClick: openMomentsPanel });

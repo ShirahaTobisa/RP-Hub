@@ -3,10 +3,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { startHarness, initializeFixture, chromium, chrome, defaultUpstream, root } from './sync-195.helpers.mjs';
 
-// 柳贯一 20.5.7 工坊版：加载器第一次运行它时记下它有 beforeMount，刷新后官方页面挂载前就改成聊天模型五槽、
+// 柳贯一 20.5.9 工坊版：加载器第一次运行它时记下它有 beforeMount，刷新后官方页面挂载前就改成聊天模型五槽、
 // 恢复输入混淆开关；开关关掉后 Gemini 请求不再混淆；插件包的流式保活不影响回复正文。
 // 响应增强：init 里重编译官方 API 客户端去掉固定超时，主聊天改成每次从 window 取客户端；开关关掉后请求原样直发。
-const source = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-20.5.7.js'), 'utf8');
+const source = await fs.readFile(path.join(root, 'DB/modules/liuguanyi-20.5.9.js'), 'utf8');
 const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const page = await (await browser.newContext()).newPage();
