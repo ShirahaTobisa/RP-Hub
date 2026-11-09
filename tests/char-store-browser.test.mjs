@@ -174,6 +174,62 @@ async function testMigrationRollbackAfterQueuedPut() {
         'aborted migration committed the character index');
 }
 
+async function testAvatarSaveMemory() {
+    await deleteDatabase();
+    const avatar = `data:image/png;base64,${'a'.repeat(64 * 1024)}`;
+    const cards = Array.from({ length: 3 }, (_, index) => ({
+        uuid: `avatar-${index}`, name: `Card ${index}`, avatar
+    }));
+    await seedRecords([
+        ['rp_hub_character_index', { order: cards.map((card) => card.uuid) }],
+        ...cards.map((card) => [`rp_hub_character_${card.uuid}`, card])
+    ]);
+
+    const nativeStringify = JSON.stringify;
+    const nativeParse = JSON.parse;
+    let jsonCharacters = 0;
+    JSON.stringify = function (...args) {
+        const serialized = nativeStringify(...args);
+        jsonCharacters += serialized?.length || 0;
+        return serialized;
+    };
+    JSON.parse = function (text, ...args) {
+        jsonCharacters += text.length;
+        return nativeParse(text, ...args);
+    };
+    try {
+        const loaded = await window.RPHubCharStore.loadAll();
+        const unchanged = await window.RPHubCharStore.saveAll(loaded);
+        assert(unchanged.writtenKeys.length === 0, 'unchanged loaded cards were rewritten');
+
+        loaded[1].recentGenerationTimes = [{ id: 'reply', duration: 100 }];
+        const changed = await window.RPHubCharStore.saveAll(loaded);
+        const key = 'rp_hub_character_avatar-1';
+        assert(changed.writtenKeys.length === 1 && changed.writtenKeys[0] === key,
+            'generation timing update did not write exactly the changed card');
+        const stored = await readRecord(key);
+        assert(stored.avatar === avatar && stored.recentGenerationTimes[0].duration === 100,
+            'generation timing save changed the avatar or lost the update');
+        assert(jsonCharacters < avatar.length,
+            'loading and saving cards copied large avatar strings through JSON');
+
+        loaded[1].avatar = 'data:new-avatar';
+        const avatarChanged = await window.RPHubCharStore.saveAll(loaded);
+        assert(avatarChanged.writtenKeys.length === 1 && (await readRecord(key)).avatar === loaded[1].avatar,
+            'avatar-only change was not saved');
+        delete loaded[1].avatar;
+        const avatarRemoved = await window.RPHubCharStore.saveAll(loaded);
+        assert(avatarRemoved.writtenKeys.length === 1 && !Object.hasOwn(await readRecord(key), 'avatar'),
+            'removed avatar remained in storage');
+        const reloaded = await window.RPHubCharStore.loadAll();
+        assert((await window.RPHubCharStore.saveAll(reloaded)).writtenKeys.length === 0,
+            'reloading cards with and without avatars caused unnecessary writes');
+    } finally {
+        JSON.stringify = nativeStringify;
+        JSON.parse = nativeParse;
+    }
+}
+
 async function testScaledLargeRecordGuard() {
     await deleteDatabase();
     window.__charStoreConsoleErrors.length = 0;
@@ -283,6 +339,7 @@ async function runStorageTests() {
 
     await testMigrationRollbackAfterQueuedPut();
     await testPullRestoreMutationDeferral();
+    await testAvatarSaveMemory();
 }
 
 async function run() {
@@ -319,7 +376,7 @@ async function run() {
         return;
     }
     await runStorageTests();
-    finish('pass', 'migration, incremental save, deletion isolation, queued-put rollback, and pull deferral');
+    finish('pass', 'migration, incremental save, deletion isolation, queued-put rollback, pull deferral, and avatar save memory');
 }
 
 try {

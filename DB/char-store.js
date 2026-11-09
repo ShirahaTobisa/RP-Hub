@@ -122,6 +122,22 @@
         return `${serialized.length}:${fnv1a(serialized)}`;
     }
 
+    function serializeCard(card) {
+        // 头像通常是整张 PNG 的 data URL；直接比较字符串，避免每次保存都复制它。
+        const { avatar, ...content } = card;
+        const serialized = JSON.stringify(content);
+        if (typeof serialized !== 'string') {
+            throw new TypeError(`角色卡 ${card.uuid} 无法序列化。`);
+        }
+        return { serialized, hash: valueHash(serialized), avatar };
+    }
+
+    function cloneCard({ serialized, avatar }) {
+        const value = JSON.parse(serialized);
+        if (avatar !== undefined) value.avatar = avatar;
+        return value;
+    }
+
     function logLargeRecord(key, serializedLength) {
         if (serializedLength <= LARGE_RECORD_LENGTH) return;
         console.error(
@@ -158,18 +174,9 @@
             }
             seen.add(uuid);
             const key = characterKey(uuid);
-            const serialized = JSON.stringify(card);
-            if (typeof serialized !== 'string') {
-                throw new TypeError(`角色卡 ${uuid} 无法序列化。`);
-            }
-            logLargeRecord(key, serialized.length);
-            return {
-                uuid,
-                key,
-                serialized,
-                hash: valueHash(serialized),
-                value: JSON.parse(serialized)
-            };
+            const prepared = serializeCard(card);
+            logLargeRecord(key, prepared.serialized.length + (prepared.avatar?.length || 0));
+            return { uuid, key, ...prepared };
         });
     }
 
@@ -202,7 +209,7 @@
 
     function rememberPrepared(prepared) {
         hashCache.clear();
-        for (const item of prepared) hashCache.set(item.uuid, item.hash);
+        for (const { uuid, hash, avatar } of prepared) hashCache.set(uuid, { hash, avatar });
     }
 
     async function migrateNow() {
@@ -248,9 +255,9 @@
                         throw new TypeError(`旧角色卡记录 ${LEGACY_KEY} 不是数组。`);
                     }
                     prepared = prepareCards(legacyValue);
-                    migratedCards = prepared.map((item) => item.value);
-                    for (const item of prepared) {
-                        trackWrite(store.put(item.value, item.key), item.key);
+                    migratedCards = prepared.map(cloneCard);
+                    for (const [index, item] of prepared.entries()) {
+                        trackWrite(store.put(migratedCards[index], item.key), item.key);
                     }
                     trackWrite(
                         store.put({ order: prepared.map((item) => item.uuid) }, INDEX_KEY),
@@ -299,11 +306,8 @@
                 console.warn(`[RPHubCharStore] 角色卡索引引用了缺失记录：${characterKey(uuid)}`);
                 continue;
             }
-            const serialized = JSON.stringify(card);
-            if (typeof serialized !== 'string') {
-                throw new TypeError(`角色卡 ${uuid} 无法序列化。`);
-            }
-            hashCache.set(uuid, valueHash(serialized));
+            const { hash, avatar } = serializeCard(card);
+            hashCache.set(uuid, { hash, avatar });
             cards.push(card);
         }
         return cards;
@@ -342,10 +346,7 @@
             };
 
             tx.oncomplete = () => {
-                for (const uuid of Array.from(hashCache.keys())) {
-                    if (!newUuidSet.has(uuid)) hashCache.delete(uuid);
-                }
-                for (const item of prepared) hashCache.set(item.uuid, item.hash);
+                rememberPrepared(prepared);
                 resolve(summary);
             };
             tx.onerror = () => rememberError(tx.error || new Error('角色卡保存事务失败。'));
@@ -363,9 +364,10 @@
                         : normalizeIndexOrder(indexValue);
 
                     for (const item of prepared) {
-                        if (indexValue !== undefined && hashCache.get(item.uuid) === item.hash) continue;
+                        const cached = hashCache.get(item.uuid);
+                        if (indexValue !== undefined && cached?.hash === item.hash && cached.avatar === item.avatar) continue;
                         summary.writtenKeys.push(item.key);
-                        trackWrite(store.put(item.value, item.key), item.key);
+                        trackWrite(store.put(cloneCard(item), item.key), item.key);
                     }
 
                     for (const uuid of oldOrder) {
