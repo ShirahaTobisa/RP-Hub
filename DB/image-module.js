@@ -1014,6 +1014,10 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         }
     }
 
+    function characterCatalogEntry({ uuid, name }) {
+        return { uuid, name };
+    }
+
     async function loadCharacterCatalogFromDb() {
         incrementPerformance('directoryDbGets');
         incrementPerformance('catalogReads');
@@ -1022,7 +1026,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             dbGet('rp_hub_last_active_char')
         ]);
         if (Array.isArray(legacy)) {
-            const characters = legacy.filter((item) => item && String(item.uuid || ''));
+            const characters = legacy.filter((item) => item && String(item.uuid || '')).map(characterCatalogEntry);
             const selectedIndex = typeof last === 'string' && last
                 ? characters.findIndex((item) => String(item.uuid || '') === last)
                 : Number(last);
@@ -1033,14 +1037,21 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             };
         }
 
-        // v4 cards are split by UUID. Read the live index and cards for each
-        // attribution attempt; character ownership is never a startup cache.
+        // 角色成员和选中项以数据库为准；归属核对只取 UUID 和名字。
+        // 优先复用页面中的角色，缺少时才逐张读库，避免复制整库头像。
         const indexValue = await dbGet('rp_hub_character_index');
         const order = Array.isArray(indexValue?.order)
             ? indexValue.order.map((value) => String(value || '')).filter(Boolean)
             : [];
-        const characters = (await Promise.all(order.map((uuid) => dbGet(`rp_hub_character_${uuid}`))))
-            .filter((item) => item && String(item.uuid || ''));
+        const liveCards = readLiveAppValue('characters');
+        const liveEntries = new Map((Array.isArray(liveCards) ? liveCards : [])
+            .filter((card) => card && String(card.uuid || ''))
+            .map((card) => [String(card.uuid), card]));
+        const characters = [];
+        for (const uuid of order) {
+            const card = liveEntries.get(uuid) || await dbGet(`rp_hub_character_${uuid}`);
+            if (card && String(card.uuid || '')) characters.push(characterCatalogEntry(card));
+        }
         const selectedUuid = typeof last === 'string' && order.includes(last)
             ? last
             : order[Number.isInteger(Number(last)) ? Number(last) : -1];

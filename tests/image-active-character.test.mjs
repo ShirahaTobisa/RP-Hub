@@ -58,7 +58,7 @@ class FakeElement {
 
 const dbValues = new Map();
 const dbReads = new Map();
-const documentFixture = { headerName: '' };
+const documentFixture = { headerName: '', liveCharacters: null };
 const context = {
     console,
     Element: FakeElement,
@@ -67,6 +67,11 @@ const context = {
     URLSearchParams,
     window: { RPHubNavAdapter: { registerEntry() {} }, location: { origin: 'http://fixture.test' } },
     document: {
+        getElementById(id) {
+            return id === 'app' && documentFixture.liveCharacters
+                ? { __vue_app__: { _instance: { proxy: { characters: documentFixture.liveCharacters } } } }
+                : null;
+        },
         querySelector(selector) {
             if (selector !== 'button[title="清空聊天"]' || !documentFixture.headerName) return null;
             const name = new FakeElement({ text: documentFixture.headerName });
@@ -95,6 +100,7 @@ function resetFixture() {
     dbValues.clear();
     dbReads.clear();
     documentFixture.headerName = '';
+    documentFixture.liveCharacters = null;
     internals.state.chatBuckets.clear();
     internals.state.chatReadAtByUuid.clear();
     internals.state.chatReadEpochByUuid.clear();
@@ -154,6 +160,33 @@ function chatReads(character) {
 async function readCatalog(shape, selected) {
     seedCatalog(shape, selected);
     return internals.readCharacterCatalog({ force: true });
+}
+
+for (const shape of ['legacy', 'v4']) {
+    resetFixture();
+    seedCatalog(shape, A);
+    const fullCard = { ...A, avatar: 'data:image/png;base64,avatar', description: 'card content' };
+    if (shape === 'legacy') dbValues.set('rp_hub_characters', [fullCard, ...characters.slice(1)]);
+    else dbValues.set(`rp_hub_character_${A.uuid}`, fullCard);
+    const catalog = await internals.readCharacterCatalog({ force: true });
+    assert.deepEqual(structuredClone(catalog.characters), characters,
+        `${shape}: attribution catalog retained full character data`);
+}
+
+resetFixture();
+seedCatalog('v4', B);
+// A remains on the page but has been removed from the saved index; B has not loaded yet.
+dbValues.set('rp_hub_character_index', { order: characters.slice(1).map((card) => card.uuid) });
+dbValues.set(`rp_hub_character_${B.uuid}`, { ...B, avatar: 'stored avatar', description: 'stored content' });
+documentFixture.liveCharacters = characters.filter((card) => card !== B)
+    .map((card) => ({ ...card, avatar: 'live avatar', description: 'live content' }));
+const liveCatalog = await internals.readCharacterCatalog({ force: true });
+assert.deepEqual(structuredClone(liveCatalog.characters), characters.slice(1),
+    'live catalog must follow DB membership and retain only UUID/name');
+assert.equal(liveCatalog.selected.uuid, B.uuid, 'live catalog changed the stored selection');
+for (const card of characters) {
+    assert.equal(dbReads.get(`rp_hub_character_${card.uuid}`) || 0, card === B ? 1 : 0,
+        'catalog should read only the card missing from the page');
 }
 
 for (const shape of ['legacy', 'v4']) {
