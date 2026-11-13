@@ -1,0 +1,89 @@
+{
+  "DB/bootstrap.js": [
+    "src/sync/config.js",
+    "src/sync/database.js",
+    "src/sync/snapshot.js",
+    "src/sync/transfer.js",
+    "src/sync/migration.js",
+    "src/sync/restore.js",
+    "src/sync/http.js",
+    "src/sync/panel.js",
+    "src/sync/actions.js"
+  ],
+  "DB/image-module.js": [
+    "src/image/config.js",
+    "src/image/records.js",
+    "src/image/attribution.js",
+    "src/image/render.js",
+    "src/image/requests.js",
+    "src/image/reroll.js",
+    "src/image/settings.js",
+    "src/image/lifecycle.js",
+    "src/image/panel.js"
+  ],
+  "DB/module-loader.js": [
+    "src/workshop/config.js",
+    "src/workshop/management.js",
+    "src/workshop/app.js",
+    "src/workshop/context.js",
+    "src/workshop/runtime.js"
+  ],
+  "_worker.js": [
+    "src/server/config.js",
+    "src/server/images.js",
+    "src/server/image-admin.js",
+    "src/server/sync.js",
+    "src/server/app-updates.js",
+    "src/server/dispatch.js",
+    "src/server/self-updates.js",
+    "src/server/feedback.js",
+    "src/server/routes.js"
+  ],
+  "DB/char-store.js": [
+    "src/DB/char-store.js"
+  ],
+  "DB/ui-kit.js": [
+    "src/diagnostics/recorder.js",
+    "src/DB/ui-kit.js",
+    "src/diagnostics/panel.js"
+  ],
+  "DB/nav-adapter.js": [
+    "src/DB/nav-adapter.js"
+  ],
+  "DB/app-patches.mjs": [
+    "src/DB/app-patches.mjs"
+  ],
+  "DB/styles.css": [
+    "src/DB/styles.css"
+  ],
+  "work.js": [
+    "src/work.js"
+  ],
+  "DB/modules/advice-inject.js": [
+    "src/DB/modules/advice-inject.js"
+  ],
+  "DB/modules/character-voice.js": [
+    "src/DB/modules/character-voice.js"
+  ],
+  "DB/modules/multi-provider.js": [
+    "src/DB/modules/multi-provider.js"
+  ],
+  "DB/modules/nai2api-web.js": [
+    "src/DB/modules/nai2api-web.js"
+  ],
+  "DB/modules/preset-schemes.js": [
+    "src/DB/modules/preset-schemes.js"
+  ],
+  "DB/modules/run-log.js": [
+    "src/DB/modules/run-log.js"
+  ],
+  "DB/modules/site-backup.js": [
+    "src/DB/modules/site-backup.js"
+  ],
+  "DB/modules/storage-manager.js": [
+    "src/DB/modules/storage-manager.js"
+  ],
+  "DB/modules/tts-reader.js": [
+    "src/DB/modules/tts-reader.js"
+  ]
+}

@@ -119,6 +119,54 @@ try {
     assert.deepEqual(probe, { at: '2026-10-17T00:00:00.000Z', blob: ['audio/mpeg', 7, 8, 9], view: [1, 2], note: '柳贯一 20.3.2 的便签' });
     await b.context.close();
     console.log('PASS a version 1.2 backup from the Liuguanyi plugin 20.3.2 restores dates, blobs and typed arrays');
+
+    const bad = await openSite(siteB, { local: { rphub_notes_v1: '保留原便签' }, records: [['rp_hub_character_card-a', { uuid: 'card-a', name: '保留原角色' }]] });
+    await openBackupPanel(bad.page);
+    await initializeFixture(bad.page);
+    const beforeFailure = await readState(bad.page);
+    const zipFailure = async (kind) => Buffer.from(await a.page.evaluate(async (kind) => {
+        const zip = new JSZip();
+        const manifest = { format: 'rphub-backup-zip', totalRecords: 1, databases: [{ name: 'RPHubDB', stores: [
+            { store: 'store', records: 1, chunks: ['records.jsonl'] }
+        ] }], webStorage: { localStorage: kind === 'missing-storage' ? 1 : 0 } };
+        zip.file('manifest.json', JSON.stringify(manifest));
+        if (kind !== 'missing-chunk') zip.file('records.jsonl', kind === 'wrong-count' ? '' : JSON.stringify({ k: 'replacement', v: 'new' }));
+        return [...await zip.generateAsync({ type: 'uint8array' })];
+    }, kind));
+    const invalidJson = (databases) => Buffer.from(JSON.stringify({ __rphub_backup__: 1, version: 8, databases }));
+    const failures = [
+        ['missing.zip', await zipFailure('missing-chunk'), '备份缺少文件：records.jsonl'],
+        ['truncated.zip', await zipFailure('wrong-count'), '备份记录数不符'],
+        ['storage.zip', await zipFailure('missing-storage'), '备份缺少文件：storage/localStorage.json'],
+        ['binary.json', invalidJson({ RPHubDB: { store: [{ k: 'replacement', v: 'new' }] }, Broken: { store: [{ k: 'bad', v: { __rphub_bin__: '%' } }] } }), 'atob'],
+        ['key.json', invalidJson({ RPHubDB: { store: [{ k: 'replacement', v: 'new' }, { v: 'missing key' }] } }), 'key']
+    ];
+    for (const [name, buffer, message] of failures) {
+        const chooser = bad.page.waitForEvent('filechooser');
+        await bad.page.locator('[data-act="import"]').click();
+        await (await chooser).setFiles({ name, mimeType: name.endsWith('.zip') ? 'application/zip' : 'application/json', buffer });
+        await bad.page.locator('[data-rph-ui-confirm] [data-rph-ui-confirm-accept]').click();
+        await bad.page.locator('[data-status]', { hasText: message }).waitFor();
+        assert.deepEqual(await readState(bad.page), beforeFailure, `${name}: rejected import changed local data`);
+        assert.equal(await bad.page.evaluate(() => !!window.RPH_R2_PULL_RESTORE_IN_PROGRESS), false);
+    }
+    console.log('PASS missing ZIP files/counts, invalid binary data and write errors preserve existing records');
+
+    let downloads = 0;
+    bad.page.on('download', () => downloads++);
+    await bad.page.evaluate(() => {
+        const transaction = IDBDatabase.prototype.transaction;
+        IDBDatabase.prototype.transaction = function (...args) {
+            if (args[1] === 'readonly' && new Error().stack.includes('readStore')) throw new Error('simulated backup read failure');
+            return transaction.apply(this, args);
+        };
+    });
+    await bad.page.locator('[data-act="json"]').click();
+    await bad.page.locator('[data-status]', { hasText: 'simulated backup read failure' }).waitFor();
+    assert.equal(downloads, 0, 'a read failure still produced a backup download');
+    assert.deepEqual(await readState(bad.page), beforeFailure);
+    await bad.context.close();
+    console.log('PASS a database read failure stops export instead of creating an empty backup');
     await a.context.close();
     assert.deepEqual(errors, []);
 } finally {

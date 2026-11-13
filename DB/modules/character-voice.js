@@ -5,6 +5,34 @@
 // 分析过的回复里，人物的每句台词画虚线，点一下能看是谁说的、什么语气，能只播这一句或从这句开始；句与句之间按 AI 给的节奏停顿。
 (() => {
     'use strict';
+        // 延迟朗读只属于触发它的角色和回复；切卡、换回复或再次生成就取消。
+    function onReplyReady(ctx, { enabled, latest, run, label }) {
+        let timer, last;
+        const cardId = () => ctx.app.get('currentCharacter')?.uuid || '';
+        const cancel = () => { clearTimeout(timer); };
+        ctx.events.on('generation-start', cancel);
+        ctx.app.watch(cardId, cancel);
+        ctx.events.on('generation-end', () => {
+            cancel();
+            if (!enabled()) return;
+            const card = cardId(), index = latest();
+            const message = ctx.app.get('chatHistory')?.[index];
+            if (!card || !message) return;
+            const id = message.id ?? index, content = String(message.content || '');
+            timer = setTimeout(() => {
+                const history = ctx.app.get('chatHistory') || [];
+                const current = history[index];
+                if (!enabled() || cardId() !== card || !current || (current.id ?? index) !== id
+                    || index !== history.length - 1 || String(current.content || '') !== content
+                    || current.responseError || ctx.app.get('isGenerating')) return;
+                if (last?.card === card && last.id === id && last.content === content) return;
+                last = { card, id, content };
+                try { Promise.resolve(run(index)).catch(error => ctx.log(label, error)); }
+                catch (error) { ctx.log(label, error); }
+            }, 800);
+        });
+    }
+
     const DEFAULTS = { fishKey: '', fishModel: 'fish-audio/s2.1-pro-free', analysisModel: '', analyzeMode: 'click', autoPlay: '0', userLines: '0', widget: '1' };
     const FISH_SPEECH = 'https://api.fish.audio/compat/v1/audio/speech';
     const FISH_LIBRARY = 'https://api.fish.audio/model';
@@ -240,16 +268,17 @@
             const inflight = new Map(); // 同一条回复同时只分析一次
             // 分析失败时：引号里的用 Fish 默认声音念，其余算旁白（不念）。force 为 true 时不用存下的结果，重新分析。
             async function analyze(index, force = false) {
-                const lines = linesOf(index);
+                const card = characterId(), lines = linesOf(index);
                 if (!lines.length) return { lines, labels: [] };
                 await loadStore();
+                if (characterId() !== card) return { lines: [], labels: [] };
                 const cached = force ? null : cachedLabels(lines);
                 if (cached) return { lines, labels: cached };
-                const card = characterId();
-                const key = keyOf(lines);
-                if (!inflight.has(key)) inflight.set(key, requestLabels(index, lines, card, key).finally(() => inflight.delete(key)));
-                return { lines, labels: await inflight.get(key) };
+                const key = keyOf(lines), task = JSON.stringify([card, key]);
+                if (!inflight.has(task)) inflight.set(task, requestLabels(index, lines, card, key).finally(() => inflight.delete(task)));
+                return { lines, labels: await inflight.get(task) };
             }
+
             async function requestLabels(index, lines, card, key) {
                 const fallback = lines.map((line) => ({ speaker: line.quote ? DIALOGUE : NARRATOR, tone: '' }));
                 analyzing = index;
@@ -288,11 +317,12 @@
                     markRows([...document.querySelectorAll(`[data-chat-index="${index}"]`)]);
                     return labels;
                 } catch (error) {
+                    if (characterId() !== card) return fallback;
                     failures.set(index, error?.message || String(error));
                     ctx.ui.toast(`分析说话人失败：${error?.message || error}。这次引号里的话先用 Fish 的默认声音念`, { kind: 'warning' });
                     return fallback;
                 } finally {
-                    if (analyzing === index) analyzing = null;
+                    if (characterId() === card && analyzing === index) analyzing = null;
                     renderWidget();
                 }
             }
@@ -690,27 +720,14 @@
                     ctx.log('停止角色语音失败', error);
                 }
             });
-            // 回复结束：开了自动说就分析并说；只开了自动分析就只分析。同一条只自动处理一次（工具调用续写变长了会再来）。
-            let lastAuto = null;
-            ctx.events.on('generation-end', () => {
-                renderWidget();
-                if (get('autoPlay') !== '1' && get('analyzeMode') !== 'auto') return;
-                setTimeout(() => {
-                    try {
-                        const index = lastReplyIndex();
-                        const history = ctx.app.get('chatHistory') || [];
-                        const message = history[index];
-                        if (index < 0 || index !== history.length - 1 || message.responseError || ctx.app.get('isGenerating')) return;
-                        const key = `${message.id ?? index}:${String(message.content || '').length}`;
-                        if (key === lastAuto) return;
-                        lastAuto = key;
-                        if (get('autoPlay') === '1') speak(index).catch((error) => ctx.log('自动角色语音失败', error));
-                        else analyze(index).catch((error) => ctx.log('自动分析失败', error));
-                    } catch (error) {
-                        ctx.log('自动角色语音失败', error);
-                    }
-                }, 800);
+            ctx.events.on('generation-end', renderWidget);
+            onReplyReady(ctx, {
+                enabled: () => get('autoPlay') === '1' || get('analyzeMode') === 'auto',
+                latest: lastReplyIndex,
+                run: index => get('autoPlay') === '1' ? speak(index) : analyze(index),
+                label: '自动角色语音失败'
             });
+
             // 监听值用字符串：返回数组的话每次都算「变了」。
             ctx.app.watch(() => `${characterId()}\n${ctx.app.get('currentView')}`, (value, previous = '') => {
                 if (session && value.split('\n')[0] !== previous.split('\n')[0]) stop();

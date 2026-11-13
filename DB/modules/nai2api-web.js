@@ -29,6 +29,7 @@
                 },
                 async generate({ params, token }) {
                     if (!token) throw new Error('缺少生图密钥');
+                    const service = base();
                     const auth = { authorization: `Bearer ${token}` };
                     const body = {};
                     for (const key of ['tag', 'model', 'artist', 'size', 'steps', 'scale', 'cfg', 'sampler', 'negative', 'nocache', 'noise_schedule', 'seed']) {
@@ -39,7 +40,7 @@
                         if (!response.ok || !value?.id) throw new Error(`网页任务失败：${value?.error || value?.message || `HTTP ${response.status}`}`);
                         return value;
                     };
-                    let job = await read(await fetch(`${base()}/api/web/jobs`, {
+                    let job = await read(await fetch(`${service}/api/web/jobs`, {
                         method: 'POST',
                         headers: { ...auth, 'content-type': 'application/json' },
                         body: JSON.stringify(body)
@@ -50,9 +51,9 @@
                         if (job.status === 'failed') throw new Error(`网页任务失败：${job.error || '生成失败'}`);
                         if (Date.now() > deadline) throw new Error('网页任务等待超时，请稍后重试');
                         await sleep(POLL_MS);
-                        job = await read(await fetch(`${base()}/api/jobs/${encodeURIComponent(job.id)}`, { headers: auth }));
+                        job = await read(await fetch(`${service}/api/jobs/${encodeURIComponent(job.id)}`, { headers: auth }));
                     }
-                    const image = await fetch(`${base()}/api/jobs/${encodeURIComponent(job.id)}/content`, { headers: auth });
+                    const image = await fetch(`${service}/api/jobs/${encodeURIComponent(job.id)}/content`, { headers: auth });
                     if (!image.ok || image.headers.get('x-error')) throw new Error(`网页任务取图失败：HTTP ${image.status}`);
                     return image.blob();
                 }

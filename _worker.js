@@ -138,14 +138,15 @@ const IMAGE_NON_GENERATION_QUERY_KEYS = new Set([
 ]);
 const IMAGE_GENERATION_PARAM_NAME_PATTERN = /^[A-Za-z0-9_.~-]{1,80}$/;
 
-function buildInjectedBootstrap(updateInfo = null, mirrorBase = '') {
+function buildInjectedBootstrap(updateInfo = null, mirrorBase = '', usage = false) {
     const safeInfo = updateInfo && typeof updateInfo === 'object'
         ? JSON.stringify(updateInfo).replace(/</g, '\\u003c')
         : 'null';
     // 分发端地址给模块管理的“工坊”用；分发端关闭时为空字符串。
     const safeMirrorBase = JSON.stringify(String(mirrorBase || '')).replace(/</g, '\\u003c');
+    const diagnostics = JSON.stringify({ release: RPH_RELEASE_VERSION, upstream: updateInfo?.tag || CURRENT_UPSTREAM_VERSION, usage }).replace(/</g, '\\u003c');
 return `
-<script>window.RPH_R2_UPDATE_INFO=${safeInfo};window.RPH_R2_MIRROR_BASE=${safeMirrorBase};</script>
+<script>window.RPH_R2_UPDATE_INFO=${safeInfo};window.RPH_R2_MIRROR_BASE=${safeMirrorBase};window.RPH_R2_DIAGNOSTICS=${diagnostics};</script>
 <link rel="stylesheet" href="/DB/styles.css?v=r2-rebuild-1">
 <script src="/DB/ui-kit.js?v=r2-ui-1"></script>
 <script src="/DB/nav-adapter.js?v=sync-195"></script>
@@ -3107,29 +3108,25 @@ async function handleJsonApi(request, env, ctx) {
     if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401, { authRequired: true });
 
     const bucket = getBucket(env);
-    if (body.action === 'pull-manifest') return handleStatus(bucket, true);
-    if (body.action === 'status') return handleStatus(bucket, false);
-    if (body.action === 'pull-json-part') return handlePullJsonPart(bucket, body);
-    if (body.action === 'fork-page') return handleForkPage(bucket, body);
-    if (body.action === 'fork-packs') return handleForkPacks(bucket, body);
-    if (body.action === 'fork-export-commit') return handleForkExportCommit(bucket, body);
-    if (body.action === 'upload-create') return handleUploadCreate(bucket, body);
-    if (body.action === 'upload-complete') return handleUploadComplete(bucket, body, ctx);
-    if (body.action === 'app-update-versions') return handleAppUpdateVersions(bucket, env, body);
-    if (body.action === 'app-update-check') return handleAppUpdateCheck(bucket, env);
-    if (body.action === 'app-update-apply') return handleAppUpdateApply(bucket, body, env, ctx);
-    if (body.action === 'app-update-rollback') return handleAppUpdateRollback(bucket);
-    if (typeof body.action === 'string' && body.action.startsWith('self-update-')) {
-        const handlers = {
-            'self-update-status': () => handleSelfUpdateStatus(env),
-            'self-update-apply': () => handleSelfUpdateApply(request, env, body),
-            'self-update-rollback': () => handleSelfUpdateRollback(request, env)
-        };
-        if (handlers[body.action]) {
-            return handlers[body.action]().catch((err) => error(err instanceof Error ? err.message : '测试版更新失败。', getErrorStatus(err)));
-        }
-    }
-    return error('Unsupported action.', 404);
+    const actions = {
+        'pull-manifest': () => handleStatus(bucket, true),
+        status: () => handleStatus(bucket, false),
+        'pull-json-part': () => handlePullJsonPart(bucket, body),
+        'fork-page': () => handleForkPage(bucket, body),
+        'fork-packs': () => handleForkPacks(bucket, body),
+        'fork-export-commit': () => handleForkExportCommit(bucket, body),
+        'upload-create': () => handleUploadCreate(bucket, body),
+        'upload-complete': () => handleUploadComplete(bucket, body, ctx),
+        'app-update-versions': () => handleAppUpdateVersions(bucket, env, body),
+        'app-update-check': () => handleAppUpdateCheck(bucket, env),
+        'app-update-apply': () => handleAppUpdateApply(bucket, body, env, ctx),
+        'app-update-rollback': () => handleAppUpdateRollback(bucket),
+        'self-update-status': () => handleSelfUpdateStatus(env),
+        'self-update-apply': () => handleSelfUpdateApply(request, env, body),
+        'self-update-rollback': () => handleSelfUpdateRollback(request, env)
+    };
+    if (!Object.hasOwn(actions, body.action)) return error('Unsupported action.', 404);
+    return actions[body.action]();
 }
 
 // ---- 测试版自更新：从分发端取发布包，用 CF_API_TOKEN 部署到本站所在的 Pages 项目 ----
@@ -3285,18 +3282,53 @@ async function handleSelfUpdateRollback(request, env) {
     return json({ ok: true, deployment: { id: result.id, url: result.url } });
 }
 
-async function handleApi(request, env, url, ctx) {
-    try {
-        const rawAction = url.searchParams.get('action');
-        if (rawAction === 'upload-part' || rawAction === 'fork-export-pack') {
-            if (request.method !== 'POST') return error('Method not allowed.', 405);
-            if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401, { authRequired: true });
-            return rawAction === 'upload-part' ? handleUploadPart(request, getBucket(env), url) : handleForkExportPack(request, getBucket(env), url);
-        }
-        return await handleJsonApi(request, env, ctx);
-    } catch (err) {
-        return error(err instanceof Error ? err.message : 'Unexpected server error.', 500);
+const FEEDBACK_PATH = '/api/rp-feedback';
+const USAGE_STATE_KEY = '_feedback/usage.json';
+
+async function forwardFeedback(env, path, payload) {
+    const base = getAppUpdateMirrorBase(env);
+    if (!base) throw createHttpError('分发端已关闭，请下载报告文件。', 409);
+    const response = await fetch(base + '/api/feedback/' + path, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload), signal: AbortSignal.timeout(8000), redirect: 'error'
+    });
+    if (!response.ok) throw createHttpError('分发端暂时无法接收，请稍后重试或下载报告文件。', 502);
+    return response.json();
+}
+
+async function handleFeedback(request, env) {
+    if (request.method !== 'POST') return error('Method not allowed.', 405);
+    if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401);
+    const text = await request.text();
+    if (new TextEncoder().encode(text).byteLength > 128 * 1024) return error('报告过大。', 413);
+    let body;
+    try { body = JSON.parse(text); } catch { return error('Invalid JSON body.'); }
+    if (body?.action === 'report') {
+        if (body.report?.schema !== 1) return error('报告格式无效。');
+        return json(await forwardFeedback(env, 'reports', body.report));
     }
+    if (body?.action !== 'usage') return error('Unsupported action.', 404);
+    if (!getAppUpdateMirrorBase(env)) return json({ ok: true, counted: false });
+    const configuredAccount = String(env.CF_ACCOUNT_ID || '').trim();
+    if (!configuredAccount && !String(env.CF_API_TOKEN || '').trim()) return json({ ok: true, counted: false });
+    const bucket = getBucket(env), day = new Date().toISOString().slice(0, 10);
+    const previous = await bucket.get(USAGE_STATE_KEY);
+    if (previous && JSON.parse(await previous.text()).day === day) return json({ ok: true, counted: true });
+    const account = configuredAccount || (await resolvePagesTarget(env, new URL(request.url).hostname)).account;
+    const manifest = await getAppliedAppUpdateManifest(bucket);
+    const current = getActiveManifestCurrent(manifest);
+    await forwardFeedback(env, 'usage', { account: await sha256Text('rph-usage-v1:' + account),
+        release: RPH_RELEASE_VERSION, upstream: current?.upstreamTag || CURRENT_UPSTREAM_VERSION });
+    await bucket.put(USAGE_STATE_KEY, JSON.stringify({ day }));
+    return json({ ok: true, counted: true });
+}
+async function handleApi(request, env, url, ctx) {
+    const action = url.searchParams.get('action');
+    if (action !== 'upload-part' && action !== 'fork-export-pack') return handleJsonApi(request, env, ctx);
+    if (request.method !== 'POST') return error('Method not allowed.', 405);
+    if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401, { authRequired: true });
+    const handler = action === 'upload-part' ? handleUploadPart : handleForkExportPack;
+    return handler(request, getBucket(env), url);
 }
 
 async function serveStatic(request, env) {
@@ -3363,7 +3395,7 @@ async function serveStatic(request, env) {
             element(element) {
                 let mirrorBase = '';
                 try { mirrorBase = getAppUpdateMirrorBase(env); } catch (_) { /* 地址配置无效时工坊不可用 */ }
-                element.append(buildInjectedBootstrap(appUpdateInfo, mirrorBase), { html: true });
+                element.append(buildInjectedBootstrap(appUpdateInfo, mirrorBase, Boolean(mirrorBase && (env.CF_ACCOUNT_ID || env.CF_API_TOKEN))), { html: true });
             }
         })
         .on('button', updateNoticeButtonRewriter)
@@ -3375,29 +3407,16 @@ async function serveStatic(request, env) {
 export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
-        if (url.pathname === IMAGE_API_PATH) {
-            try {
-                return await handleImageRender(request, env);
-            } catch (err) {
-                return error(err instanceof Error ? err.message : 'Unexpected server error.', getErrorStatus(err));
-            }
-        }
-        if (url.pathname === IMAGE_THUMB_API_PATH) {
-            try {
-                return await handleImageThumbUpload(request, env);
-            } catch (err) {
-                return error(err instanceof Error ? err.message : 'Unexpected server error.', getErrorStatus(err));
-            }
-        }
-        if (url.pathname === IMAGE_ADMIN_PATH || url.pathname.startsWith(`${IMAGE_ADMIN_PATH}/`)) {
-            try {
+        try {
+            if (url.pathname === FEEDBACK_PATH) return await handleFeedback(request, env);
+            if (url.pathname === IMAGE_API_PATH) return await handleImageRender(request, env);
+            if (url.pathname === IMAGE_THUMB_API_PATH) return await handleImageThumbUpload(request, env);
+            if (url.pathname === IMAGE_ADMIN_PATH || url.pathname.startsWith(IMAGE_ADMIN_PATH + '/')) {
                 return await handleImageAdmin(request, env, url);
-            } catch (err) {
-                return error(err instanceof Error ? err.message : 'Unexpected server error.', getErrorStatus(err));
             }
-        }
-        if (url.pathname === API_PATH) {
-            return handleApi(request, env, url, ctx);
+            if (url.pathname === API_PATH) return await handleApi(request, env, url, ctx);
+        } catch (err) {
+            return error(err instanceof Error ? err.message : 'Unexpected server error.', getErrorStatus(err));
         }
         return serveStatic(request, env);
     }

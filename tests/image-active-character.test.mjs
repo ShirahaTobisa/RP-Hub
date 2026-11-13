@@ -25,7 +25,8 @@ instrumented = `${instrumented.slice(0, startup)}
         state,
         readCharacterCatalog,
         readRowMembershipProbe,
-        resolveCharacterAttribution
+        resolveCharacterAttribution,
+        resolveRowAttribution
     };
 })();`;
 
@@ -58,7 +59,7 @@ class FakeElement {
 
 const dbValues = new Map();
 const dbReads = new Map();
-const documentFixture = { headerName: '', liveCharacters: null };
+const documentFixture = { headerName: '', liveCharacters: null, liveState: null };
 const context = {
     console,
     Element: FakeElement,
@@ -68,8 +69,8 @@ const context = {
     window: { RPHubNavAdapter: { registerEntry() {} }, location: { origin: 'http://fixture.test' } },
     document: {
         getElementById(id) {
-            return id === 'app' && documentFixture.liveCharacters
-                ? { __vue_app__: { _instance: { proxy: { characters: documentFixture.liveCharacters } } } }
+            return id === 'app' && (documentFixture.liveState || documentFixture.liveCharacters)
+                ? { __vue_app__: { _instance: { proxy: documentFixture.liveState || { characters: documentFixture.liveCharacters } } } }
                 : null;
         },
         querySelector(selector) {
@@ -101,6 +102,7 @@ function resetFixture() {
     dbReads.clear();
     documentFixture.headerName = '';
     documentFixture.liveCharacters = null;
+    documentFixture.liveState = null;
     internals.state.chatBuckets.clear();
     internals.state.chatReadAtByUuid.clear();
     internals.state.chatReadEpochByUuid.clear();
@@ -335,4 +337,27 @@ for (const shape of ['legacy', 'v4']) {
     assert.equal(result.source, 'active-character');
 }
 
-console.log('image-active-character.test.mjs: legacy/v4 attribution branches passed');
+for (const shape of ['legacy', 'v4']) {
+    resetFixture();
+    const catalog = await readCatalog(shape, D);
+    const chat = () => [message('user', 'user'), message('image###same prompt###')];
+    documentFixture.headerName = D.name;
+    documentFixture.liveState = { characters, currentCharacter: E, chatHistory: chat() };
+    const row = makeRow({ name: D.name, content: 'image###same prompt###' });
+    let result = await internals.resolveRowAttribution(row, catalog, new Map());
+    assert.equal(result.uuid, E.uuid, `${shape}: duplicate name overrode the current UUID`);
+    assert.equal(result.source, 'runtime-rescue');
+    documentFixture.liveState.currentCharacter = D;
+    documentFixture.liveState.chatHistory = chat();
+    internals.state.cacheEpoch += 1;
+    result = await internals.resolveRowAttribution(row, catalog, new Map());
+    assert.equal(result.uuid, D.uuid, `${shape}: a reused row retained the previous character`);
+    documentFixture.liveState.currentCharacter = { ...E, name: 'Renamed' };
+    internals.state.cacheEpoch += 1;
+    result = await internals.resolveRowAttribution(row, catalog, new Map());
+    assert.equal(result.uuid, E.uuid, `${shape}: renaming changed picture ownership`);
+    result = await internals.resolveRowAttribution(makeRow({ explicitUuid: D.uuid }), catalog, new Map());
+    assert.equal(result.uuid, D.uuid, `${shape}: current character overrode an explicit picture owner`);
+}
+
+console.log('image-active-character.test.mjs: legacy/v4 attribution, duplicate names, row reuse and renaming passed');

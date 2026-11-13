@@ -727,7 +727,7 @@ async function testRouteIsolationAndUpdateOverlayRemainsMainlineBehavior() {
         current: {
             upstreamTag: '9.9.9',
             upstreamSha: 'stale',
-            patchRevision: 'r2-character-split-e2b-v5',
+            patchRevision: 'r2-character-split-e2b-v6',
             slot: 'current',
             files: [{ path: 'assets/js/app.js', key: 'ignored' }]
         },

@@ -3,6 +3,34 @@
 // 其他带样式的框（多是角色卡正则换出来的）可以在设置里按卡关掉。念到哪一段，那一段标上底色。
 (() => {
     'use strict';
+        // 延迟朗读只属于触发它的角色和回复；切卡、换回复或再次生成就取消。
+    function onReplyReady(ctx, { enabled, latest, run, label }) {
+        let timer, last;
+        const cardId = () => ctx.app.get('currentCharacter')?.uuid || '';
+        const cancel = () => { clearTimeout(timer); };
+        ctx.events.on('generation-start', cancel);
+        ctx.app.watch(cardId, cancel);
+        ctx.events.on('generation-end', () => {
+            cancel();
+            if (!enabled()) return;
+            const card = cardId(), index = latest();
+            const message = ctx.app.get('chatHistory')?.[index];
+            if (!card || !message) return;
+            const id = message.id ?? index, content = String(message.content || '');
+            timer = setTimeout(() => {
+                const history = ctx.app.get('chatHistory') || [];
+                const current = history[index];
+                if (!enabled() || cardId() !== card || !current || (current.id ?? index) !== id
+                    || index !== history.length - 1 || String(current.content || '') !== content
+                    || current.responseError || ctx.app.get('isGenerating')) return;
+                if (last?.card === card && last.id === id && last.content === content) return;
+                last = { card, id, content };
+                try { Promise.resolve(run(index)).catch(error => ctx.log(label, error)); }
+                catch (error) { ctx.log(label, error); }
+            }, 800);
+        });
+    }
+
     const DEFAULTS = { rate: '1', pitch: '1', autoRead: '0', onlyQuotes: '0', skipParens: '0', skipActions: '0' };
     const VOICE_KEY = 'rph_tts_voice'; // 每台设备能用的声音不一样，单独存在本机，不跟云同步
     const LIMIT = 60; // 每次最多念 60 字：Chrome 一次念太久（十几秒以上）会被掐断
@@ -214,25 +242,11 @@
             ctx.events.on('generation-start', () => {
                 try { if (session) stop(); } catch (error) { ctx.log('停止朗读失败', error); }
             });
-            // 回复结束后自动念：等页面把插图、面板换好再读，同一条只自动念一次（工具调用续写变长了会再念）。
-            let lastAutoRead = null;
-            ctx.events.on('generation-end', () => {
-                if (get('autoRead') !== '1') return;
-                setTimeout(() => {
-                    try {
-                        const index = lastReplyIndex();
-                        const history = ctx.app.get('chatHistory') || [];
-                        const message = history[index];
-                        if (index < 0 || index !== history.length - 1 || message.responseError || ctx.app.get('isGenerating')) return;
-                        const key = `${message.id ?? index}:${String(message.content || '').length}`;
-                        if (key === lastAutoRead) return;
-                        lastAutoRead = key;
-                        startReading(index);
-                    } catch (error) {
-                        ctx.log('自动朗读失败', error);
-                    }
-                }, 800);
+            onReplyReady(ctx, {
+                enabled: () => get('autoRead') === '1', latest: lastReplyIndex,
+                run: startReading, label: '自动朗读失败'
             });
+
             ctx.app.watch(() => ctx.app.get('currentCharacter')?.uuid, () => { if (session) stop(); });
             refreshButtons();
 

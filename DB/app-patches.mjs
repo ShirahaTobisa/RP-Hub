@@ -1,5 +1,5 @@
 export const RP_HUB_APP_PATH = 'assets/js/app.js';
-export const RP_HUB_APP_PATCH_REVISION = 'r2-character-split-e2b-v5';
+export const RP_HUB_APP_PATCH_REVISION = 'r2-character-split-e2b-v6';
 
 export const APP_PATCH_MODES = Object.freeze({
     characterSave: Object.freeze({
@@ -690,6 +690,18 @@ export function patchRpHubAppJs(source, options = {}) {
         rejectPatch(options.version, 'pattern-match', { detected });
     }
 
+    // 2.0.6 的大头像缓存：切到小头像或无角色时，也要释放上一张图片。
+    if (code.includes('let avatarDisplayCache =')) {
+        const eol = code.includes('\r\n') ? '\r\n' : '\n';
+        code = replaceOnce(code, /^([ \t]*)(if \(source\.length < 1e6 \|\| .+\)) return source;$/m,
+            (_match, indent, condition) => [
+                `${indent}${condition} {`,
+                `${indent}    if (avatarDisplayCache.url) URL.revokeObjectURL(avatarDisplayCache.url);`,
+                `${indent}    avatarDisplayCache = { source: '', url: '' };`,
+                `${indent}    return source;`,
+                `${indent}}`
+            ].join(eol), options.version, 'avatar-display-cache', 'avatar-display-cache');
+    }
     const pullRestoreWriteGates = applyPullRestoreWriteGates(code, options.version);
     const hardened = hardenPersistenceReturnSemantics(code, options.version, pullRestoreWriteGates.edits);
     code = hardened.code;

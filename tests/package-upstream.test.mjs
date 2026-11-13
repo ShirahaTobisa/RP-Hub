@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { patchRpHubAppJs, patchRpHubCloudBackupJs, RP_HUB_CLOUD_BACKUP_PATH } from '../DB/app-patches.mjs';
 
@@ -41,6 +42,35 @@ try {
     for (const skipped of ['README.md', 'README.en.md', 'presence-server']) assert.equal(fs.existsSync(path.join(dist, skipped)), false, skipped);
     for (const ours of ['DB/bootstrap.js', 'DB/image-module.js', 'DB/module-loader.js', 'work.js', 'wrangler.toml']) assert.ok(fs.existsSync(path.join(dist, ours)), ours);
     console.log(`PASS the package carries upstream ${marker.tag} as published, with only app.js and cloud-backup.js patched, plus our shell`);
+
+    const appSource = fs.readFileSync(path.join(dist, 'assets/js/app.js'), 'utf8');
+    const avatarStart = appSource.indexOf('        let avatarDisplayCache =');
+    if (avatarStart >= 0) {
+        const liveUrls = new Set();
+        let nextUrl = 0;
+        const context = {
+            currentCharacter: { value: { avatar: 'data:image/png;base64,' + 'A'.repeat(1_000_000) } },
+            computed: read => ({ get value() { return read(); } }),
+            atob: () => '\0', Uint8Array, Blob,
+            URL: { createObjectURL() { const url = `blob:${++nextUrl}`; liveUrls.add(url); return url; }, revokeObjectURL: url => liveUrls.delete(url) }
+        };
+        vm.runInNewContext(appSource.slice(avatarStart, appSource.indexOf('        const scopeOptions', avatarStart))
+            + '\nglobalThis.readAvatar = () => currentCharacterAvatar.value;', context);
+        const first = context.readAvatar();
+        assert.equal(context.readAvatar(), first, 'the same large avatar lost its cached URL');
+        context.currentCharacter.value = { avatar: 'small.png' };
+        assert.equal(context.readAvatar(), 'small.png');
+        assert.equal(liveUrls.size, 0, 'switching to a small avatar retained the previous image');
+        context.currentCharacter.value = { avatar: 'data:image/png;base64,' + 'B'.repeat(1_000_000) };
+        context.readAvatar();
+        context.currentCharacter.value = null;
+        assert.equal(context.readAvatar(), '');
+        assert.equal(liveUrls.size, 0, 'clearing the character retained its image');
+        const original = fs.readFileSync(path.join(upstreamDir, 'assets/js/app.js'), 'utf8');
+        assert.throws(() => patchRpHubAppJs(original.replace('source.length < 1e6', 'source.length < 2e6')),
+            error => error.details?.stage === 'avatar-display-cache');
+        console.log('PASS large avatars reuse their URL and release it when switching to a small avatar or no character');
+    }
 
     // 装上这个包、没用过「程序更新」的站点：面板显示内置版本，分发端最新也是它时不提示更新。
     const workerSource = fs.readFileSync(path.join(dist, '_worker.js'), 'utf8');

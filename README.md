@@ -2,7 +2,7 @@
 
 基于 [STA1N156/RP-Hub](https://github.com/STA1N156/RP-Hub) 的衍生版本。本仓库独立建立，不是 GitHub fork，提交历史与上游无关；上游页面以“底稿 + 在线更新”的方式使用，本仓库的代码集中在外壳 `_worker.js` 和覆盖层 `DB/`：R2 云同步、图片生成与管理、插件工坊、测试版自更新。更新分发端在独立仓库 [RP-Hub-Update-Mirror](https://github.com/ShirahaTobisa/RP-Hub-Update-Mirror)。
 
-部署包自带打过补丁的上游 **1.9.8** 页面作为底稿；站点在「云同步 → 程序更新」拉取上游新版本后，由 R2 中的页面覆盖底稿。测试版本身按日期发版，见下方[测试版发版与一键更新](#测试版发版与一键更新)。当前状态见 [docs/CURRENT-STATE.md](docs/CURRENT-STATE.md)。
+日期版本的部署包使用分发端收录的最新正式上游作为底稿（`2026.11.13` 为 **2.0.6**）；仓库保留 1.9.8 底稿供旧版兼容检查。站点在「云同步 → 程序更新」拉取上游新版本后，由 R2 中的页面覆盖底稿。测试版本身按日期发版，见下方[测试版发版与一键更新](#测试版发版与一键更新)。当前状态见 [docs/CURRENT-STATE.md](docs/CURRENT-STATE.md)。
 
 **第一次部署和开启一键更新，见 [安装与更新](docs/INSTALL.md)。**
 
@@ -10,6 +10,7 @@
 
 | 路径 | 用途 |
 | --- | --- |
+| `src/` | 测试版自有模块源码；同步、生图、工坊、服务端及共用组件按职责拆分 |
 | `_worker.js`、`DB/` | 同步、图片、工坊、导航适配、在线更新 |
 | `index.html`、`assets/`、`character/`、`novel/` | 上游 1.9.8 页面底稿（`assets/js/app.js` 已打补丁） |
 | `mirror/README.md` | 更新分发端独立仓库指引 |
@@ -23,12 +24,15 @@
 
 ```powershell
 npm ci
+npm run build:modules
 npm test
 npm run test:package
 npm run build
 ```
 
 主站生成 `dist/`，ZIP 输出到 `release/`。发布主站时使用 `dist/` 或主站 ZIP；不要上传整个源码目录。分发端在其独立仓库中测试和打包。
+
+修改自有模块时编辑 `src/`，运行 `npm run build:modules` 合并回原文件名，并一同提交源码与生成文件。`npm test` 会检查两者一致；没有增加浏览器加载步骤。柳贯一第三方插件继续保留在原目录。
 
 浏览器测试和历史测试的依赖见 [开发与测试](docs/DEVELOPMENT.md)。GitHub Actions 运行核心检查和主站打包检查，不包含自动部署。
 
@@ -59,6 +63,8 @@ npm run build
 已有云端快照可以直接拉取，**无需先上传**。拉取会用云端内容恢复当前浏览器数据；升级站点包时应继续使用原来的 R2 bucket 和同步设置。
 
 本仓库包含 v4 分块同步，并保留旧 v3 快照读取。插件文件、启用状态及插件数据可以随快照恢复。插件可在[分发端投稿页](https://update.rph.mornye.uk/workshop/submit)投稿，审核上架后各站点在「模块管理 → 工坊」安装；接口说明见 [工坊开发指南](WORKSHOP-MOD-GUIDE.md)。
+
+「运行日志」可预览、下载或手动发送问题报告。基础使用统计默认开启，可在此关闭；按 Cloudflare 账户去重，不上传原始账户 ID、令牌或聊天内容。具体范围见 [使用统计与问题报告](docs/FEEDBACK.md)。
 
 ## 本地资料与来源
 

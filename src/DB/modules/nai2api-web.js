@@ -1,0 +1,143 @@
+// Nai2API 网页任务生图：不走 /generate 直链，改用 POST /api/web/jobs 提交任务，支持 1–50 步。
+// 超过 28 步（或 2K/4K 分辨率）按 NovelAI 官方价格计费，设置页的步数滑条下会显示每张图的点数。
+// 装好后在 RPH「设置」→「生图设置」→「生图接口」里选「Nai2API 网页任务」。
+(() => {
+    'use strict';
+    const DEFAULT_BASE = 'https://nai.sta1n.cn';
+    const POLL_MS = 2000;
+    const MAX_WAIT_MS = 10 * 60_000;
+
+    RPHubSDK.register({
+        id: 'nai2api-web', name: 'Nai2API 网页任务生图', version: '1.2.0', requiresApi: 5,
+        init(ctx) {
+            const base = () => String(ctx.storage.get('base') || DEFAULT_BASE).replace(/\/+$/, '');
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+            ctx.image.registerProvider({
+                id: 'nai2api-web',
+                label: 'Nai2API 网页任务',
+                maxSteps: 50,
+                // 点数用生图模块统一的估算（与 Nai2API 价格表一致）。
+                costHint({ steps, model, size }) {
+                    const estimate = globalThis.RPHubImageModule?.estimateImagePoints;
+                    if (!estimate) return '';
+                    const points = estimate(model, size, steps);
+                    const standard = estimate(model, size, 28);
+                    return points > standard
+                        ? `当前设置每张图约 ${points} 点（28 步只要 ${standard} 点），超过 28 步按官方价格计费。`
+                        : `当前设置每张图 ${points} 点。`;
+                },
+                async generate({ params, token }) {
+                    if (!token) throw new Error('缺少生图密钥');
+                    const service = base();
+                    const auth = { authorization: `Bearer ${token}` };
+                    const body = {};
+                    for (const key of ['tag', 'model', 'artist', 'size', 'steps', 'scale', 'cfg', 'sampler', 'negative', 'nocache', 'noise_schedule', 'seed']) {
+                        if (params[key] !== undefined) body[key] = params[key];
+                    }
+                    const read = async (response) => {
+                        const value = await response.json().catch(() => null);
+                        if (!response.ok || !value?.id) throw new Error(`网页任务失败：${value?.error || value?.message || `HTTP ${response.status}`}`);
+                        return value;
+                    };
+                    let job = await read(await fetch(`${service}/api/web/jobs`, {
+                        method: 'POST',
+                        headers: { ...auth, 'content-type': 'application/json' },
+                        body: JSON.stringify(body)
+                    }));
+                    const deadline = Date.now() + MAX_WAIT_MS;
+                    // 同一任务串行查询，上一次返回后再发下一次（Nai2API 的建议）。
+                    while (job.status !== 'done') {
+                        if (job.status === 'failed') throw new Error(`网页任务失败：${job.error || '生成失败'}`);
+                        if (Date.now() > deadline) throw new Error('网页任务等待超时，请稍后重试');
+                        await sleep(POLL_MS);
+                        job = await read(await fetch(`${service}/api/jobs/${encodeURIComponent(job.id)}`, { headers: auth }));
+                    }
+                    const image = await fetch(`${service}/api/jobs/${encodeURIComponent(job.id)}/content`, { headers: auth });
+                    if (!image.ok || image.headers.get('x-error')) throw new Error(`网页任务取图失败：HTTP ${image.status}`);
+                    return image.blob();
+                }
+            });
+
+            // 测试版 2026.10.11 及以前，设置页的步数滑条按直链 28 步上限建好后才读回数值，存的 50 步会显示成 28。
+            // 选中本接口时由插件自己把上限放到 50、读回存的步数（只改显示，不触发保存）。外壳修好后这里不再起作用。
+            const fixStepsSlider = () => {
+                const fields = document.querySelectorAll('[data-rph-image-param]');
+                const generator = fields[0]?.querySelector('select');
+                const steps = [...fields].map((field) => field.querySelector('input[type="range"]')).find(Boolean);
+                if (!steps || generator?.value !== 'nai2api-web' || steps.dataset.nai2apiSteps) return;
+                steps.dataset.nai2apiSteps = '1';
+                steps.max = '50';
+                const saved = Number(globalThis.RPHubImageModule?.getGenerationSettings?.()?.params?.steps);
+                if (saved) steps.value = String(saved);
+                steps.dispatchEvent(new Event('input'));
+            };
+
+            // 设置页「生图设置」的负面提示词下面加「全部参数恢复默认」：生图接口不变，其余参数改回默认，
+            // 和手动改每一项一样由设置页自己存到站点。
+            const DEFAULTS = { 分辨率: '', 采样器: 'k_dpmpp_2m_sde', 噪声调度: 'karras', 生成步数: '28', 提示词引导值: '6', 缩放引导值: '0' };
+            const resetAll = () => {
+                const defaults = { ...DEFAULTS, 负面提示词: globalThis.RPHubImageModule?.defaultNegativePrompt || '' };
+                for (const field of document.querySelectorAll('[data-rph-image-param]')) {
+                    const control = field.querySelector('select, input[type="range"], textarea');
+                    const value = defaults[field.querySelector('label')?.textContent.trim()];
+                    if (!control || value === undefined) continue;
+                    control.value = value;
+                    control.sync?.();
+                    control.dispatchEvent(new Event('input'));
+                    control.dispatchEvent(new Event('change'));
+                }
+            };
+            const addResetButton = () => {
+                const resetNegative = document.querySelector('[data-rph-image-param] textarea')?.parentElement.querySelector(':scope > button');
+                if (!resetNegative) return;
+                const row = Object.assign(document.createElement('div'), { className: 'flex justify-between gap-3' });
+                const button = Object.assign(document.createElement('button'), { type: 'button', className: resetNegative.className, textContent: '全部参数恢复默认' });
+                button.onclick = async () => {
+                    if (await window.RPHubUI.confirm({ title: '全部参数恢复默认', message: '生图接口不变，其余参数都改回默认值。', confirmText: '恢复默认' })) resetAll();
+                };
+                resetNegative.replaceWith(row);
+                row.append(resetNegative, button);
+            };
+
+            const patchSettings = () => { fixStepsSlider(); addResetButton(); };
+            let observer = null;
+            ctx.app.watch(() => ctx.app.get('currentView'), (view) => {
+                observer?.disconnect();
+                observer = null;
+                if (view !== 'settings') return;
+                patchSettings();
+                observer = new MutationObserver(patchSettings);
+                observer.observe(document.getElementById('app'), { childList: true, subtree: true });
+            }, { immediate: true });
+
+            ctx.ui.addSidebarEntry({
+                label: 'Nai2API 网页任务',
+                onClick() {
+                    ctx.ui.openPanel({
+                        title: 'Nai2API 网页任务生图',
+                        render(panel) {
+                            panel.innerHTML = `
+                                <p class="rph-ui-muted">在「设置」→「生图设置」→「生图接口」里选「Nai2API 网页任务」后生效。步数可设 1–50；超过 28 步按官方价格计费。</p>
+                                <label class="rph-ui-field">服务地址
+                                    <input class="rph-ui-input" data-base placeholder="${DEFAULT_BASE}"></label>
+                                <div class="rph-ui-actions">
+                                    <button type="button" class="modal-secondary-button rph-ui-button" data-reset>恢复默认</button>
+                                    <button type="button" class="modal-primary-button rph-ui-button" data-save>保存</button>
+                                </div>`;
+                            const input = panel.querySelector('[data-base]');
+                            input.value = ctx.storage.get('base') || '';
+                            panel.querySelector('[data-save]').onclick = () => {
+                                const value = input.value.trim();
+                                if (value && !/^https:\/\//.test(value)) return ctx.ui.toast('服务地址必须以 https:// 开头');
+                                ctx.storage.set('base', value);
+                                ctx.ui.toast('已保存', { kind: 'success' });
+                            };
+                            panel.querySelector('[data-reset]').onclick = () => { input.value = ''; ctx.storage.remove('base'); };
+                        }
+                    });
+                }
+            });
+        }
+    });
+})();

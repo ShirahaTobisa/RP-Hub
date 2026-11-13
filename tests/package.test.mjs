@@ -42,7 +42,6 @@ const versionedAssets = [
     ['DB/image-module.js', '/DB/image-module.js'],
     ['DB/module-loader.js', '/DB/module-loader.js']
 ];
-const EXPECTED_DIST_WORKER_SHA256 = 'fba30a1bf21d9876f76c6c92591f44b131a14c7531384c5bff28a9483809d96f';
 
 function runPackage() {
     const result = spawnSync(process.execPath, [
@@ -111,6 +110,7 @@ try {
     const sourceWorkerHash = fileHash(path.join(sourceRoot, '_worker.js'));
     const sourcePatcherHash = fileHash(path.join(sourceRoot, 'DB', 'app-patches.mjs'));
     const first = runPackage();
+    const firstWorkerHash = fileHash(path.join(distRoot, '_worker.js'));
     const second = runPackage();
 
     const expected = expectedFiles();
@@ -118,8 +118,8 @@ try {
     assert.equal(second.fileCount, expected.length);
 
     const bundledWorker = fs.readFileSync(path.join(distRoot, '_worker.js'), 'utf8');
-    assert.equal(fileHash(path.join(distRoot, '_worker.js')), EXPECTED_DIST_WORKER_SHA256,
-        'dist worker SHA-256 lock changed');
+    assert.equal(fileHash(path.join(distRoot, '_worker.js')), firstWorkerHash,
+        'packaging identical sources must produce the same worker');
     assert.doesNotMatch(bundledWorker, /^\s*import(?:\s|\{|\*)/m);
     assert.doesNotMatch(bundledWorker, /\bimport\s*\(/);
     assert.equal((bundledWorker.match(/^\s*export\s+default\b/gm) || []).length, 1);

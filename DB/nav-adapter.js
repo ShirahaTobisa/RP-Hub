@@ -217,4 +217,5 @@
             });
         }
     });
+    window.RPHubDiagnostics?.mount();
 })();

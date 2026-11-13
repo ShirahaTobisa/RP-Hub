@@ -191,6 +191,22 @@ try {
         assert.equal(await frame(page).locator('img').count(),0);
         await app(page,'selectCharacter',0); await ready(page); assert.equal(await imageUrl(page),rerolled);
         passed('same-name character switch does not borrow images');
+        await page.evaluate(async () => {
+            const app = document.querySelector('#app').__vue_app__;
+            const proxy = (app._instance || app._container._vnode.component).proxy;
+            const scans = [];
+            for (const index of [1, 0, 1]) {
+                await proxy.selectCharacter(index);
+                scans.push(RPHubImageModule.scan());
+            }
+            await Promise.all(scans);
+        });
+        await ready(page);
+        assert.equal(await frame(page).getAttribute('data-character-uuid'), 'other-card');
+        assert.equal(await frame(page).locator('img').count(), 0);
+        await app(page, 'selectCharacter', 0); await ready(page);
+        assert.equal(await imageUrl(page), rerolled);
+        passed('rapid same-name switches while scans are running keep each character’s own images');
         await page.evaluate(()=>api.performPushSync());
         assert.equal(await page.evaluate(()=>api.state.statusText),'上传成功。');
         await page.locator('.rp-sync-modal__close').click();
@@ -286,6 +302,45 @@ try {
         assert.equal(await page.evaluate(() => providerCalls[0].steps), '33', 'reroll must use the settings on the site, not the ones this page read earlier');
         generationSettings = null;
         passed('plugin image provider generates in the browser and uploads with PUT instead of the direct link');
+    }
+    {
+        const page = await device({ content: marker, records: [] });
+        await page.route('https://rphforum.zeabur.app/**', route => route.fulfill({ contentType: 'text/html', body: `<!doctype html><script>
+            addEventListener('message', event => {
+                if (event.data.buffer) parent.postMessage({ type: 'RPH_FORUM_IMPORT_CARD', requestId: 'attribution-test', buffer: event.data.buffer }, event.origin, [event.data.buffer]);
+                if (event.data.type === 'RPHUB_IMPORT_RESULT') window.importResult = event.data;
+            });</script>` }));
+        await page.evaluate(() => {
+            const app = document.querySelector('#app').__vue_app__;
+            window.squareTestApp = (app._instance || app._container._vnode.component).proxy;
+            squareTestApp.currentView = 'square';
+        });
+        await page.waitForFunction(() => !squareTestApp.isSquareLoading);
+        const square = page.frames().find(item => item.url().startsWith('https://rphforum.zeabur.app/'));
+        await page.evaluate(({ png, marker }) => {
+            const data = { spec: 'chara_card_v2', data: { name: '测试角色', first_mes: marker } };
+            const bytes = RPHubCardUtils.injectPngTextChunk(Uint8Array.from(png), 'chara', RPHubCardUtils.encodeBase64Utf8(JSON.stringify(data)));
+            document.querySelector('iframe[src*="rphforum.zeabur.app"]').contentWindow.postMessage({ buffer: bytes.buffer }, 'https://rphforum.zeabur.app', [bytes.buffer]);
+        }, { png: [...png], marker });
+        await square.waitForFunction(() => window.importResult);
+        assert.equal((await square.evaluate(() => importResult)).error, undefined);
+        assert.equal(await app(page, 'currentView'), 'square');
+        const imported = await app(page, 'currentCharacter');
+        assert.notEqual(imported.uuid, uuid);
+        assert.notEqual(imported.uuid, 'other-card');
+        await page.evaluate(() => { squareTestApp.currentView = 'chat'; });
+        await ready(page);
+        assert.equal(await frame(page).getAttribute('data-character-uuid'), imported.uuid);
+        await frame(page).locator('.rp-image-reroll-button').click();
+        const generated = await imageUrl(page);
+        assert.equal(new URL(generated, harness.url).searchParams.get('character_id'), imported.uuid);
+        await page.evaluate(() => RPHubImageModule.flushRecords());
+        const records = await read(page, 'rp_hub_image_renders_' + imported.uuid);
+        assert.ok(records.length > 0);
+        assert.ok(records.every(record => record.paramsSnapshot.characterUuid === imported.uuid));
+        await app(page, 'selectCharacter', 0); await ready(page);
+        assert.equal(await frame(page).locator('img').count(), 0);
+        passed('square import stays in the square and new images belong to the imported UUID, even with identical names and prompts');
     }
     assert.deepEqual(report.pageErrors,[]);
     report.ok = true;

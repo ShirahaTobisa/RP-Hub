@@ -1,3 +1,132 @@
+// 随 ui-kit 提前加载；只记录固定字段，不复制控制台参数、消息正文或请求内容。
+(() => {
+    const LOG_KEY = 'rphub_diagnostics_log_v1';
+    const SETTINGS_KEY = 'rphub_diagnostics_settings_v1';
+    const session = crypto.randomUUID().slice(0, 8);
+    const cards = new Map();
+    const encoder = new TextEncoder();
+    const bytes = value => encoder.encode(JSON.stringify(value)).byteLength;
+    let events = [], settings = { enabled: true }, timer;
+    try {
+        events = JSON.parse(localStorage.getItem(LOG_KEY) || '[]');
+        settings = { ...settings, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') };
+    } catch { settings.enabled = false; }
+    if (!Array.isArray(events)) events = [];
+    events = events.slice(-300);
+    let eventBytes = events.reduce((size, event) => size + bytes(event), 0);
+    const trim = () => {
+        while (events.length > 300 || eventBytes > 64 * 1024) eventBytes -= bytes(events.shift());
+    };
+    trim();
+
+    function save() {
+        clearTimeout(timer);
+        timer = 0;
+        try { localStorage.setItem(LOG_KEY, JSON.stringify(events)); } catch { /* 存满时保留内存记录 */ }
+    }
+
+    function saveSettings() {
+        try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch { /* 不影响页面功能 */ }
+    }
+
+    function card(id) {
+        if (!id) return '';
+        if (!cards.has(id)) cards.set(id, 'C' + (cards.size + 1));
+        return cards.get(id);
+    }
+
+    function record(kind, detail = {}) {
+        const event = { at: Date.now(), session, kind };
+        for (const key of ['owner', 'current']) if (detail[key]) event[key] = card(detail[key]);
+        for (const key of ['count', 'status']) if (Number.isFinite(detail[key])) event[key] = detail[key];
+        if (/^[a-z0-9-]{3,32}$/.test(detail.plugin || '')) event.plugin = detail.plugin;
+        if (detail.errorName) event.errorName = /^[\w.]{1,60}$/.test(detail.errorName) ? detail.errorName : 'Error';
+        if (detail.frames) event.frames = detail.frames;
+        events.push(event);
+        eventBytes += bytes(event);
+        trim();
+        if (!timer) timer = setTimeout(save, 1000);
+    }
+
+    function failure(kind, error) {
+        // 错误消息本身也可能带正文或令牌，只取类型和本地脚本位置。
+        const frames = String(error?.stack || '').split('\n').slice(1, 9).map(line => {
+            const match = line.match(/(?:https?:\/\/[^\s/]+)?(\/(?:DB|assets\/js)\/[\w.-]+\.m?js)(?:\?[^\s):]*)?:(\d+):(\d+)/);
+            return match ? `${match[1]}:${match[2]}:${match[3]}`.slice(0, 150) : '[外部或内联脚本]';
+        });
+        record(kind, { errorName: error?.name || 'Error', status: error?.status, frames });
+    }
+
+    for (const level of ['warn', 'error']) {
+        const original = console[level];
+        console[level] = function (...args) {
+            failure('console-' + level, args.find(value => value instanceof Error) || new Error());
+            return original.apply(this, args);
+        };
+    }
+    addEventListener('error', event => failure('page-error', event.error));
+    addEventListener('unhandledrejection', event => failure('unhandled-rejection', event.reason));
+    addEventListener('pagehide', save);
+
+    async function send(action, report) {
+        const password = localStorage.getItem('rp_hub_sync_password_v1') || '';
+        const response = await fetch('/api/rp-feedback', {
+            method: 'POST', headers: { 'content-type': 'application/json', ...(password ? { 'x-rp-sync-password': password } : {}) },
+            body: JSON.stringify({ action, ...(report ? { report } : {}) }), signal: AbortSignal.timeout(10000)
+        });
+        if (response.status === 401) throw new Error('请先在云同步中填写同步密码，或下载报告文件。');
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || '发送失败，请稍后重试或下载报告文件。');
+        return result;
+    }
+
+    async function usage() {
+        if (!settings.enabled || !window.RPH_R2_DIAGNOSTICS?.usage || document.visibilityState === 'hidden') return;
+        const day = new Date().toISOString().slice(0, 10);
+        if (settings.day === day) return;
+        settings.day = day;
+        saveSettings();
+        try { await send('usage'); } catch { /* 统计失败当天不重试 */ }
+    }
+
+    function report() {
+        let plugins = [];
+        try { plugins = JSON.parse(localStorage.getItem('rp_hub_workshop_modules_v1') || '[]'); } catch { /* 启动故障时列表可能不可读 */ }
+        const version = window.RPH_R2_DIAGNOSTICS || {};
+        return { schema: 1, release: version.release || 'dev', upstream: version.upstream || '',
+            browser: navigator.userAgent.slice(0, 250), issue: 'other', note: '',
+            plugins: Array.isArray(plugins) ? plugins.filter(item => item.enabled).slice(0, 100).map(({ id, version, lastStatus }) => ({
+                id: String(id || '').slice(0, 32), version: String(version || '').slice(0, 40), status: String(lastStatus || '').slice(0, 30) })) : [],
+            events: events.slice() };
+    }
+
+    window.RPHubDiagnostics = {
+        record, failure, send, report,
+        clear() { events = []; eventBytes = 0; save(); },
+        get enabled() { return settings.enabled; },
+        set enabled(value) { settings.enabled = value; saveSettings(); if (value) usage(); },
+        start() {
+            if (window.RPH_R2_DIAGNOSTICS?.usage && !settings.notified) {
+                window.RPHubUI.toast('测试版按 Cloudflare 账户统计活跃量，可在「运行日志」关闭。问题日志仅在你点击发送后上传。', { duration: 12000 });
+                settings.notified = true;
+                saveSettings();
+            }
+            usage();
+            addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') usage(); });
+            setInterval(usage, 60 * 60 * 1000);
+        },
+        attachApp({ get, watch }) {
+            watch(() => get('currentCharacter')?.uuid, current => record('character-switch', { current }), { immediate: true });
+            let owner = '';
+            watch(() => get('isGenerating') === true, busy => {
+                const current = get('currentCharacter')?.uuid;
+                if (busy) owner = current;
+                record(busy ? 'generation-start' : 'generation-end', { owner, current, count: get('chatHistory')?.length || 0 });
+            });
+        }
+    };
+    record('page-start');
+})();
 /* RP-Hub 覆盖层共用界面：弹窗、确认框、按钮、提示条都套用 RPH 原生的结构、样式类名和动画，跟随深色模式。
  * 弹窗：app-modal-overlay / compact-modal-panel / editor-modal-header / modal-close-button，进出场用 RPH 的 modal 过渡类名。
  * 提示条：优先调用页面自己的 showToast；页面还没挂载时用同样类名的备用提示条。 */
@@ -17,25 +146,31 @@
         return (app?._instance || app?._container?._vnode?.component)?.proxy || null;
     }
 
-    // 按 Vue <transition name="modal"> 的顺序切换类名：*-from + *-active → 下一帧 *-to → 结束后清理。
+    const transitions = new WeakMap();
     function transition(root, phase, done) {
-        const from = `modal-${phase}-from`;
-        const active = `modal-${phase}-active`;
-        const to = `modal-${phase}-to`;
-        root.classList.add(from, active);
-        let finished = false;
-        const finish = () => {
-            if (finished) return;
-            finished = true;
-            root.classList.remove(active, to);
+        transitions.get(root)?.();
+        const from = 'modal-' + phase + '-from', active = 'modal-' + phase + '-active', to = 'modal-' + phase + '-to';
+        let frame, timer;
+        const cancel = () => {
+            cancelAnimationFrame(frame);
+            clearTimeout(timer);
+            root.removeEventListener('transitionend', finish);
+            root.classList.remove(from, active, to);
+            transitions.delete(root);
+        };
+        const finish = event => {
+            if (event && event.target !== root) return;
+            cancel();
             done?.();
         };
-        requestAnimationFrame(() => requestAnimationFrame(() => {
+        transitions.set(root, cancel);
+        root.classList.add(from, active);
+        frame = requestAnimationFrame(() => { frame = requestAnimationFrame(() => {
             root.classList.remove(from);
             root.classList.add(to);
-            root.addEventListener('transitionend', (event) => { if (event.target === root) finish(); });
-            setTimeout(finish, phase === 'enter' ? ENTER_FALLBACK_MS : LEAVE_FALLBACK_MS);
-        }));
+            root.addEventListener('transitionend', finish);
+            timer = setTimeout(finish, phase === 'enter' ? ENTER_FALLBACK_MS : LEAVE_FALLBACK_MS);
+        }); });
     }
 
     function onKeydown(event) {
@@ -107,8 +242,9 @@
         try {
             render(body, modal);
         } catch (error) {
+            modal.close();
+            transitions.get(root)?.();
             root.remove();
-            stack.splice(stack.indexOf(modal), 1);
             throw error;
         }
         transition(root, 'enter');
@@ -223,5 +359,107 @@
         setTimeout(() => item.remove(), duration);
     }
 
-    window.RPHubUI = Object.freeze({ openModal, confirm, button, toast });
+    window.RPHubUI = Object.freeze({ openModal, confirm, button, toast,
+        openLogViewer: () => window.RPHubDiagnostics.openPanel() });
+})();
+(() => {
+    const diagnostics = window.RPHubDiagnostics;
+    const ISSUES = { image: '图片不对', save: '保存失败', sync: '同步异常', voice: '朗读异常', startup: '打不开或卡住', other: '其他问题' };
+    const CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>';
+    diagnostics.openPanel = () => {
+        let issueApp;
+        return window.RPHubUI.openModal({
+            title: '运行日志', size: 'sm', attributes: { 'data-rph-diagnostics': '' },
+            onClose: () => issueApp?.unmount(),
+            render(body) {
+                const report = diagnostics.report();
+                // 首屏只放选问题、写一句和发送；报告原文和统计开关在下面两行。
+                body.innerHTML = `
+                    <div class="rph-ui-field"><span>问题类型</span><select class="rph-ui-input" data-issue aria-label="问题类型">
+                        ${Object.entries(ISSUES).map(([value, label]) => `<option value="${value}"${value === report.issue ? ' selected' : ''}>${label}</option>`).join('')}
+                    </select></div>
+                    <label class="rph-ui-field">补充说明（选填）
+                        <textarea class="rph-ui-input" data-note maxlength="500" rows="3" placeholder="哪里不对，原本希望怎样？"></textarea>
+                    </label>
+                    <p class="rph-ui-note" data-result role="status" hidden></p>
+                    <div class="rph-ui-actions">
+                        <button type="button" class="modal-secondary-button rph-ui-button" data-download>下载报告</button>
+                        <button type="button" class="modal-primary-button rph-ui-button" data-send>发送报告</button>
+                    </div>
+                    <div class="rph-ui-list">
+                        <details data-details>
+                            <summary class="rph-ui-row"><div class="rph-ui-row-main"><div>报告内容</div><div class="rph-ui-muted" data-count></div></div>${CHEVRON}</summary>
+                            <div class="rph-ui-row">
+                                <textarea class="rph-ui-input rph-ui-code" readonly data-preview rows="10" aria-label="报告内容"></textarea>
+                                <button type="button" class="modal-secondary-button rph-ui-button rph-ui-danger" data-clear>清空本机日志</button>
+                            </div>
+                        </details>
+                        <div class="rph-ui-row">
+                            <div class="rph-ui-row-main"><div>使用统计</div><div class="rph-ui-muted">每天一次，按 Cloudflare 账户去重，不含原始 ID。</div></div>
+                            <label class="rph-ui-check"><input type="checkbox" class="settings-toggle-input sr-only" data-usage aria-label="参与使用统计"><span class="settings-toggle"></span></label>
+                        </div>
+                    </div>`;
+                const issue = body.querySelector('[data-issue]'), note = body.querySelector('[data-note]');
+                const preview = body.querySelector('[data-preview]'), result = body.querySelector('[data-result]');
+                const showResult = (parts, tone = '') => { result.replaceChildren(...[parts].flat()); result.dataset.tone = tone; result.hidden = false; };
+                const update = () => {
+                    report.issue = issue.value;
+                    report.note = note.value.trim();
+                    preview.value = JSON.stringify(report, null, 2);
+                    const errors = report.events.filter(event => /error|rejection/.test(event.kind)).length;
+                    body.querySelector('[data-count]').textContent = `版本、插件和 ${report.events.length} 条运行记录${errors ? `（${errors} 条报错）` : ''}，不含聊天、角色和密钥。`;
+                };
+                const usage = body.querySelector('[data-usage]');
+                usage.checked = diagnostics.enabled;
+                usage.onchange = () => { diagnostics.enabled = usage.checked; };
+                issue.onchange = update;
+                note.oninput = update;
+                // 用 RPH 的下拉组件；启动失败或旧页面没有组件时仍可选择问题并导出日志。
+                if (window.RPHubCustomSelect && window.Vue) {
+                    const host = document.createElement('div'), value = Vue.ref(issue.value);
+                    issue.hidden = true;
+                    issue.after(host);
+                    issueApp = Vue.createApp({ render: () => Vue.h(window.RPHubCustomSelect, {
+                        modelValue: value.value, options: Object.entries(ISSUES).map(([key, label]) => ({ value: key, label })),
+                        buttonClass: 'rph-ui-input', menuClass: 'text-sm',
+                        'onUpdate:modelValue': next => { value.value = issue.value = next; update(); }
+                    }) });
+                    issueApp.mount(host);
+                }
+                body.querySelector('[data-clear]').onclick = () => {
+                    diagnostics.clear(); report.events = []; update(); showResult('本机日志已清空。');
+                };
+                body.querySelector('[data-download]').onclick = () => {
+                    const link = document.createElement('a');
+                    link.href = URL.createObjectURL(new Blob([preview.value], { type: 'application/json' }));
+                    link.download = 'rph-report-' + new Date().toISOString().slice(0, 10) + '.json';
+                    link.click();
+                    setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+                };
+                const send = body.querySelector('[data-send]');
+                send.onclick = async () => {
+                    send.disabled = true;
+                    showResult('正在发送…');
+                    try {
+                        const { id } = await diagnostics.send('report', report);
+                        showResult(['已发送，编号 ', Object.assign(document.createElement('b'), { textContent: id }), '。把编号转给开发者即可。']);
+                        // 发送成功后这个按钮改成复制编号，避免重复发送。
+                        send.textContent = '复制编号';
+                        send.onclick = () => navigator.clipboard.writeText(id).then(
+                            () => window.RPHubUI.toast('编号已复制', { kind: 'success' }),
+                            () => window.RPHubUI.toast('复制失败，请长按编号手动复制', { kind: 'error' }));
+                    } catch (error) { showResult('发送失败：' + error.message, 'error'); }
+                    send.disabled = false;
+                };
+                update();
+            }
+        });
+    };
+    diagnostics.mount = () => {
+        window.RPHubNavAdapter.registerEntry({ id: 'run-log', label: '运行日志',
+            attributes: { 'data-rph-diagnostics-entry': '' }, onClick: diagnostics.openPanel, waitForClose: true,
+            iconPaths: ['M8 3h8l4 4v14H4V3h4z', 'M8 11h8M8 15h8'] });
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', diagnostics.start, { once: true });
+        else diagnostics.start();
+    };
 })();

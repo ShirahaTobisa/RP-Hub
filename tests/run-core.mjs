@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const tests = [
+    'self-modules/http.mjs',
+    'self-modules/tasks.mjs',
     'image-edit.test.mjs',
     'image-failure-toast.test.mjs',
     'image-active-character.test.mjs',

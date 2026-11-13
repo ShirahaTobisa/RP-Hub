@@ -83,25 +83,32 @@
         return dbPromise;
     }
 
-    function readValue(db, key) {
+        // operation 只负责排入请求；事务真正提交后才返回，任何同步错误都回滚本次事务。
+    function withStore(db, name, mode, operation) {
         return new Promise((resolve, reject) => {
-            const tx = db.transaction([STORE_NAME], 'readonly');
-            const request = tx.objectStore(STORE_NAME).get(key);
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error || new Error(`读取 ${key} 失败。`));
+            const tx = db.transaction(name, mode);
+            let result, failure;
+            const abort = error => {
+                if (failure) return;
+                failure = error;
+                tx.abort();
+            };
+            tx.oncomplete = () => resolve(result);
+            tx.onerror = event => { failure ||= event.target.error; };
+            tx.onabort = () => {
+                const error = failure || tx.error || new Error('数据库事务已中止。');
+                globalThis.RPHubDiagnostics?.failure('database-error', error);
+                reject(error);
+            };
+            try { result = operation(tx.objectStore(name), abort); }
+            catch (error) { abort(error); }
         });
     }
 
-    // 一个只读事务里把所有键一起读出来，不是一张卡开一个事务。
-    function readValues(db, keys) {
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction([STORE_NAME], 'readonly');
-            const store = tx.objectStore(STORE_NAME);
-            const results = keys.map((key) => store.get(key));
-            tx.oncomplete = () => resolve(results.map((request) => request.result));
-            tx.onerror = () => reject(tx.error || new Error('读取角色卡失败。'));
-            tx.onabort = () => reject(tx.error || new Error('读取角色卡事务已中止。'));
-        });
+
+    async function readValues(db, keys) {
+        const requests = await withStore(db, STORE_NAME, 'readonly', store => keys.map(key => store.get(key)));
+        return requests.map(request => request.result);
     }
 
     function enqueueMutation(task) {
@@ -213,63 +220,25 @@
     }
 
     async function migrateNow() {
-        if (isPullRestoreInProgress()) {
-            return deferPersistenceMutation(migrateNow);
-        }
+        if (isPullRestoreInProgress()) return deferPersistenceMutation(migrateNow);
         const db = await openDatabase();
-        if (isPullRestoreInProgress()) {
-            return deferPersistenceMutation(migrateNow);
-        }
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction([STORE_NAME], 'readwrite');
-            const store = tx.objectStore(STORE_NAME);
-            let firstError = null;
-            let prepared = null;
-            let migratedCards = null;
-
-            const rememberError = (error) => {
-                if (!firstError) firstError = error;
-            };
-            const trackWrite = (request, key) => {
-                request.onerror = () => rememberError(
-                    new Error(`角色卡迁移写入 ${key} 失败。`, { cause: request.error })
-                );
-            };
-
-            tx.oncomplete = () => {
-                if (prepared) rememberPrepared(prepared);
-                resolve(migratedCards);
-            };
-            tx.onerror = () => rememberError(tx.error || new Error('角色卡迁移事务失败。'));
-            tx.onabort = () => reject(firstError || tx.error || new Error('角色卡迁移事务已中止。'));
-
-            const legacyRequest = store.get(LEGACY_KEY);
-            legacyRequest.onerror = () => rememberError(
-                new Error(`读取旧角色卡记录 ${LEGACY_KEY} 失败。`, { cause: legacyRequest.error })
-            );
-            legacyRequest.onsuccess = () => {
-                const legacyValue = legacyRequest.result;
-                if (legacyValue === undefined) return;
+        if (isPullRestoreInProgress()) return deferPersistenceMutation(migrateNow);
+        let prepared, cards = null;
+        await withStore(db, STORE_NAME, 'readwrite', (store, abort) => {
+            const legacy = store.get(LEGACY_KEY);
+            legacy.onsuccess = () => {
+                if (legacy.result === undefined) return;
                 try {
-                    if (!Array.isArray(legacyValue)) {
-                        throw new TypeError(`旧角色卡记录 ${LEGACY_KEY} 不是数组。`);
-                    }
-                    prepared = prepareCards(legacyValue);
-                    migratedCards = prepared.map(cloneCard);
-                    for (const [index, item] of prepared.entries()) {
-                        trackWrite(store.put(migratedCards[index], item.key), item.key);
-                    }
-                    trackWrite(
-                        store.put({ order: prepared.map((item) => item.uuid) }, INDEX_KEY),
-                        INDEX_KEY
-                    );
-                    trackWrite(store.delete(LEGACY_KEY), LEGACY_KEY);
-                } catch (error) {
-                    rememberError(error);
-                    tx.abort();
-                }
+                    prepared = prepareCards(legacy.result);
+                    cards = prepared.map(cloneCard);
+                    prepared.forEach((item, index) => store.put(cards[index], item.key));
+                    store.put({ order: prepared.map(item => item.uuid) }, INDEX_KEY);
+                    store.delete(LEGACY_KEY);
+                } catch (error) { abort(error); }
             };
         });
+        if (prepared) rememberPrepared(prepared);
+        return cards;
     }
 
     function migrate() {
@@ -279,10 +248,7 @@
     async function loadAll() {
         await mutationQueue;
         const db = await openDatabase();
-        const [indexValue, legacyValue] = await Promise.all([
-            readValue(db, INDEX_KEY),
-            readValue(db, LEGACY_KEY)
-        ]);
+        const [indexValue, legacyValue] = await readValues(db, [INDEX_KEY, LEGACY_KEY]);
         if (indexValue !== undefined && legacyValue !== undefined) {
             throw new Error('检测到旧角色卡记录与分键索引同时存在，已停止加载以避免覆盖数据。');
         }
@@ -314,99 +280,42 @@
     }
 
     async function saveAllNow(list) {
-        if (isPullRestoreInProgress()) {
-            return deferPersistenceMutation(() => saveAllNow(list));
-        }
+        if (isPullRestoreInProgress()) return deferPersistenceMutation(() => saveAllNow(list));
         const prepared = prepareCards(list);
-        const newOrder = prepared.map((item) => item.uuid);
+        const newOrder = prepared.map(item => item.uuid);
         const newUuidSet = new Set(newOrder);
         const db = await openDatabase();
-        if (isPullRestoreInProgress()) {
-            return deferPersistenceMutation(() => saveAllNow(list));
-        }
-
-        return new Promise((resolve, reject) => {
-            const tx = db.transaction([STORE_NAME], 'readwrite');
-            const store = tx.objectStore(STORE_NAME);
-            const summary = createSaveSummary();
-            let firstError = null;
-            let indexReady = false;
-            let legacyReady = false;
-            let indexValue;
-            let legacyValue;
-            let processed = false;
-
-            const rememberError = (error) => {
-                if (!firstError) firstError = error;
-            };
-            const trackWrite = (request, key) => {
-                request.onerror = () => rememberError(
-                    new Error(`角色卡记录 ${key} 写入失败。`, { cause: request.error })
-                );
-            };
-
-            tx.oncomplete = () => {
-                rememberPrepared(prepared);
-                resolve(summary);
-            };
-            tx.onerror = () => rememberError(tx.error || new Error('角色卡保存事务失败。'));
-            tx.onabort = () => reject(firstError || tx.error || new Error('角色卡保存事务已中止。'));
-
-            const processReads = () => {
-                if (!indexReady || !legacyReady || processed) return;
-                processed = true;
+        if (isPullRestoreInProgress()) return deferPersistenceMutation(() => saveAllNow(list));
+        const summary = createSaveSummary();
+        await withStore(db, STORE_NAME, 'readwrite', (store, abort) => {
+            const index = store.get(INDEX_KEY), legacy = store.get(LEGACY_KEY);
+            // 同一事务按排入顺序完成读取；最后一个返回时再决定哪些卡需要写入。
+            legacy.onsuccess = () => {
                 try {
-                    if (legacyValue !== undefined) {
-                        throw new Error('旧角色卡记录仍存在，说明迁移尚未成功；已取消保存以保护原始数据。');
-                    }
-                    const oldOrder = indexValue === undefined
-                        ? []
-                        : normalizeIndexOrder(indexValue);
-
+                    if (legacy.result !== undefined) throw new Error('旧角色卡记录仍存在，说明迁移尚未成功；已取消保存以保护原始数据。');
+                    const oldOrder = index.result === undefined ? [] : normalizeIndexOrder(index.result);
                     for (const item of prepared) {
                         const cached = hashCache.get(item.uuid);
-                        if (indexValue !== undefined && cached?.hash === item.hash && cached.avatar === item.avatar) continue;
+                        if (index.result !== undefined && cached?.hash === item.hash && cached.avatar === item.avatar) continue;
+                        store.put(cloneCard(item), item.key);
                         summary.writtenKeys.push(item.key);
-                        trackWrite(store.put(cloneCard(item), item.key), item.key);
                     }
-
                     for (const uuid of oldOrder) {
                         if (newUuidSet.has(uuid)) continue;
                         const key = characterKey(uuid);
+                        store.delete(key);
                         summary.deletedKeys.push(key);
-                        trackWrite(store.delete(key), key);
                     }
-
-                    if (indexValue === undefined || !sameOrder(oldOrder, newOrder)) {
+                    if (index.result === undefined || !sameOrder(oldOrder, newOrder)) {
+                        store.put({ order: newOrder }, INDEX_KEY);
                         summary.indexWritten = true;
-                        trackWrite(store.put({ order: newOrder }, INDEX_KEY), INDEX_KEY);
                     }
-                } catch (error) {
-                    rememberError(error);
-                    tx.abort();
-                }
-            };
-
-            const indexRequest = store.get(INDEX_KEY);
-            indexRequest.onerror = () => rememberError(
-                new Error(`读取角色卡索引 ${INDEX_KEY} 失败。`, { cause: indexRequest.error })
-            );
-            indexRequest.onsuccess = () => {
-                indexValue = indexRequest.result;
-                indexReady = true;
-                processReads();
-            };
-
-            const legacyRequest = store.get(LEGACY_KEY);
-            legacyRequest.onerror = () => rememberError(
-                new Error(`读取旧角色卡记录 ${LEGACY_KEY} 失败。`, { cause: legacyRequest.error })
-            );
-            legacyRequest.onsuccess = () => {
-                legacyValue = legacyRequest.result;
-                legacyReady = true;
-                processReads();
+                } catch (error) { abort(error); }
             };
         });
+        rememberPrepared(prepared);
+        window.RPHubDiagnostics?.record('character-save', { count: summary.writtenKeys.length });
+        return summary;
     }
 
     function saveAll(list) {

@@ -936,7 +936,7 @@
                     reject(new Error('RPHubDB/store unavailable'));
                     return;
                 }
-                db.onversionchange = () => db.close();
+                db.onversionchange = () => { db.close(); state.dbPromise = null; };
                 resolve(db);
             };
             request.onerror = () => reject(request.error || new Error('RPHubDB open failed'));
@@ -948,34 +948,48 @@
         return state.dbPromise;
     }
 
+        // operation 只负责排入请求；事务真正提交后才返回，任何同步错误都回滚本次事务。
+    function withStore(db, name, mode, operation) {
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(name, mode);
+            let result, failure;
+            const abort = error => {
+                if (failure) return;
+                failure = error;
+                tx.abort();
+            };
+            tx.oncomplete = () => resolve(result);
+            tx.onerror = event => { failure ||= event.target.error; };
+            tx.onabort = () => {
+                const error = failure || tx.error || new Error('数据库事务已中止。');
+                globalThis.RPHubDiagnostics?.failure('database-error', error);
+                reject(error);
+            };
+            try { result = operation(tx.objectStore(name), abort); }
+            catch (error) { abort(error); }
+        });
+    }
+
+
     async function appDbGet(key) {
         const db = await openAppDatabase();
-        return new Promise((resolve, reject) => {
-            let request;
-            try { request = db.transaction(DB_STORE, 'readonly').objectStore(DB_STORE).get(String(key)); }
-            catch (error) { reject(error); return; }
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error || new Error('IndexedDB read failed'));
-        });
+        const request = await withStore(db, DB_STORE, 'readonly', store => store.get(String(key)));
+        return request.result;
     }
 
     async function appDbKeys(prefix) {
         const db = await openAppDatabase();
         const keyPrefix = String(prefix || '');
-        return new Promise((resolve, reject) => {
+        return withStore(db, DB_STORE, 'readonly', store => {
             const keys = [];
-            let request;
-            try {
-                const range = IDBKeyRange.bound(keyPrefix, `${keyPrefix}\uffff`);
-                request = db.transaction(DB_STORE, 'readonly').objectStore(DB_STORE).openKeyCursor(range);
-            } catch (error) { reject(error); return; }
+            const request = store.openKeyCursor(IDBKeyRange.bound(keyPrefix, keyPrefix + '\uffff'));
             request.onsuccess = () => {
                 const cursor = request.result;
-                if (!cursor) { resolve(keys); return; }
+                if (!cursor) return;
                 if (typeof cursor.key === 'string' && cursor.key.startsWith(keyPrefix)) keys.push(cursor.key);
                 cursor.continue();
             };
-            request.onerror = () => reject(request.error || new Error('IndexedDB key scan failed'));
+            return keys;
         });
     }
 
@@ -1091,6 +1105,7 @@
 
     function setRuntimeStatus(runtime, status) {
         runtime.entry.lastStatus = status;
+        if (status.endsWith('error') || status === 'api-mismatch') window.RPHubDiagnostics?.record('plugin-error', { plugin: runtime.entry.id });
         writeInstallations();
         refreshManagementPanel();
     }
@@ -1205,6 +1220,7 @@
         state.appSettled = true;
         state.resolveAppSettled();
         dispatchEvent('ready');
+        if (appState()) window.RPHubDiagnostics?.attachApp({ get: appGet, watch: appWatch });
     }
 
     function startDomRuntime() {

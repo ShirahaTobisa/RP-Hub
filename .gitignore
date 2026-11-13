@@ -1,5 +1,6 @@
 # Local archives, test evidence and build output
 /archive/
+/candidates/
 /evidence/
 /release/
 /dist/

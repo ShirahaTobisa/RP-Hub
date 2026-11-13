@@ -611,48 +611,45 @@
         await deleteObjectStoreKeys(db, storeName, keysToDelete);
     }
 
-    function writeObjectStoreRecordBatch(db, storeDef, records) {
-        if (!Array.isArray(records) || records.length === 0) return Promise.resolve();
+        // operation 只负责排入请求；事务真正提交后才返回，任何同步错误都回滚本次事务。
+    function withStore(db, name, mode, operation) {
         return new Promise((resolve, reject) => {
-            const tx = db.transaction([storeDef.name], 'readwrite');
-            const store = tx.objectStore(storeDef.name);
-            let firstError = null;
-
-            const abortWith = (error, event) => {
-                event?.preventDefault?.();
-                firstError ||= error;
-                try { tx.abort(); } catch {}
+            const tx = db.transaction(name, mode);
+            let result, failure;
+            const abort = error => {
+                if (failure) return;
+                failure = error;
+                tx.abort();
             };
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => { firstError ||= tx.error || new Error('IndexedDB restore failed.'); };
-            tx.onabort = () => reject(firstError || tx.error || new Error('IndexedDB restore failed.'));
+            tx.oncomplete = () => resolve(result);
+            tx.onerror = event => { failure ||= event.target.error; };
+            tx.onabort = () => {
+                const error = failure || tx.error || new Error('数据库事务已中止。');
+                globalThis.RPHubDiagnostics?.failure('database-error', error);
+                reject(error);
+            };
+            try { result = operation(tx.objectStore(name), abort); }
+            catch (error) { abort(error); }
+        });
+    }
 
+
+    function writeObjectStoreRecordBatch(db, storeDef, records) {
+        if (!Array.isArray(records) || !records.length) return Promise.resolve();
+        return withStore(db, storeDef.name, 'readwrite', (store, abort) => {
             for (const record of records) {
-                const request = storeDef.keyPath !== null && typeof storeDef.keyPath !== 'undefined'
-                    ? store.put(record.value)
-                    : store.put(record.value, record.key);
-                request.onerror = (event) => {
-                    const serialized = JSON.stringify(record.value);
-                    const size = new TextEncoder().encode(serialized).byteLength;
-                    abortWith(new Error(`恢复失败:记录 ${record.key}(约 ${(size / 1024 / 1024).toFixed(2)}MB)写入被浏览器拒绝(单条记录上限约127MB)。`), event);
+                const request = storeDef.keyPath != null ? store.put(record.value) : store.put(record.value, record.key);
+                request.onerror = event => {
+                    event.preventDefault();
+                    abort(new Error('恢复记录 ' + record.key + ' 失败。', { cause: request.error }));
                 };
             }
         });
     }
 
     function clearObjectStore(db, storeName) {
-        return new Promise((resolve, reject) => {
-            if (!db.objectStoreNames.contains(storeName)) {
-                resolve();
-                return;
-            }
-
-            const tx = db.transaction([storeName], 'readwrite');
-            const store = tx.objectStore(storeName);
-            tx.oncomplete = () => resolve();
-            tx.onerror = () => reject(tx.error || new Error('IndexedDB clear failed.'));
-            store.clear();
-        });
+        if (!db.objectStoreNames.contains(storeName)) return Promise.resolve();
+        return withStore(db, storeName, 'readwrite', store => { store.clear(); });
     }
 
     async function clearKnownIndexedDbStores(dbDef, storeNames) {
@@ -1175,10 +1172,9 @@
             request.onblocked = () => reject(new Error('RPHubSyncState blocked'));
             request.onsuccess = () => {
                 const db = request.result;
-                const tx = db.transaction(storeName, mode);
-                const result = operation(tx.objectStore(storeName));
-                tx.oncomplete = () => { db.close(); resolve(result?.result); };
-                tx.onerror = tx.onabort = () => { db.close(); reject(tx.error); };
+                withStore(db, storeName, mode, operation)
+                    .finally(() => db.close())
+                    .then(result => resolve(result?.result), reject);
             };
         });
     }
@@ -1596,25 +1592,13 @@
     }
 
     function clearDownloadStagingStore(stagingDb) {
-        return new Promise((resolve, reject) => {
-            const tx = stagingDb.transaction([DOWNLOAD_STAGING_STORE], 'readwrite');
-            tx.objectStore(DOWNLOAD_STAGING_STORE).clear();
-            tx.oncomplete = () => resolve();
-            tx.onabort = () => reject(tx.error || new Error('同步临时数据清理中止。'));
-        });
+        return withStore(stagingDb, DOWNLOAD_STAGING_STORE, 'readwrite', store => { store.clear(); });
     }
 
     function writeDownloadStagingChunks(stagingDb, chunks) {
-        return new Promise((resolve, reject) => {
-            const tx = stagingDb.transaction([DOWNLOAD_STAGING_STORE], 'readwrite');
-            const store = tx.objectStore(DOWNLOAD_STAGING_STORE);
-            let writeError;
-            tx.oncomplete = () => resolve();
-            tx.onabort = () => reject(writeError || tx.error || new Error('同步临时数据写入中止。'));
-            try {
-                for (const chunk of chunks) store.put(chunk.bytes,
-                    stagingDb.name === DOWNLOAD_CACHE_DB ? chunkCacheKey(chunk) : chunk.index);
-            } catch (error) { writeError = error; tx.abort(); }
+        return withStore(stagingDb, DOWNLOAD_STAGING_STORE, 'readwrite', store => {
+            for (const chunk of chunks) store.put(chunk.bytes,
+                stagingDb.name === DOWNLOAD_CACHE_DB ? chunkCacheKey(chunk) : chunk.index);
         });
     }
 
@@ -2825,27 +2809,13 @@
     }
 
     function buildSyncHeaders(options = {}) {
-        const headers = {
-            'content-type': 'application/json'
-        };
         const password = typeof options.password === 'string' ? options.password : getStoredSyncPassword();
-        if (password) {
-            headers['x-rp-sync-password'] = password;
-        }
-        return headers;
+        return { 'content-type': 'application/json', ...(password ? { 'x-rp-sync-password': password } : {}) };
     }
 
     function buildPartHeaders(chunk, options = {}) {
-        const headers = {
-            'content-type': 'application/octet-stream',
-            'x-rp-part-checksum': chunk.checksum,
-            'x-rp-part-length': String(chunk.length)
-        };
-        const password = typeof options.password === 'string' ? options.password : getStoredSyncPassword();
-        if (password) {
-            headers['x-rp-sync-password'] = password;
-        }
-        return headers;
+        return { ...buildSyncHeaders(options), 'content-type': 'application/octet-stream',
+            'x-rp-part-checksum': chunk.checksum, 'x-rp-part-length': String(chunk.length) };
     }
 
     function shouldRetrySyncError(error) {
@@ -2853,174 +2823,60 @@
         return !status || status === 408 || status === 429 || status >= 500;
     }
 
-    const transferTimeout = (bytes) => CONFIG.transferTimeoutMs + Math.ceil(bytes / 50);
+    const transferTimeout = bytes => CONFIG.transferTimeoutMs + Math.ceil(bytes / 50);
 
-    async function postSync(payload, options = {}) {
-        const retryCount = Number.isInteger(options.retryCount) ? options.retryCount : CONFIG.retryCount;
-        const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : CONFIG.requestTimeoutMs;
-        let lastError = null;
-
-        for (let attempt = 0; attempt <= retryCount; attempt += 1) {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-            try {
-                const response = await fetch(CONFIG.apiEndpoint, {
-                    method: 'POST',
-                    headers: buildSyncHeaders(options),
-                    body: JSON.stringify(payload),
-                    credentials: 'same-origin',
-                    signal: controller.signal
-                });
-
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok || !data.ok) {
-                    if (response.status === 401 && !options.keepPasswordOnAuthError) {
-                        clearStoredSyncPassword();
-                    }
-                    throw Object.assign(new Error(data.error || `HTTP ${response.status}`), { response: data, status: response.status });
-                }
-                return data;
-            } catch (error) {
-                const isAbort = error?.name === 'AbortError';
-                const status = isAbort ? 0 : error?.status;
-                const normalizedError = isAbort
-                    ? new Error('同步请求超时，请检查网络后重试。')
-                    : (error instanceof Error ? error : new Error(String(error)));
-                lastError = Object.assign(normalizedError, { status });
-                if (attempt >= retryCount || !shouldRetrySyncError(lastError)) {
-                    throw lastError;
-                }
-                await wait(CONFIG.retryDelayMs * (attempt + 1));
-            } finally {
-                clearTimeout(timeoutId);
-            }
-        }
-
-        throw lastError || new Error('同步请求失败。');
-    }
-
-    async function postSyncBinary(payload, options = {}) {
-        const retryCount = Number.isInteger(options.retryCount) ? options.retryCount : CONFIG.retryCount;
-        const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : CONFIG.requestTimeoutMs;
-        let lastError = null;
-
-        for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+    async function requestSync(url, init, options = {}) {
+        const retries = Number.isInteger(options.retryCount) ? options.retryCount : CONFIG.retryCount;
+        const timeout = Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : CONFIG.requestTimeoutMs;
+        for (let attempt = 0; ; attempt += 1) {
             if (options.shouldStop?.()) throw new Error('其他下载任务已失败，停止重试。');
             const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+            const timer = setTimeout(() => controller.abort(), timeout);
             try {
-                const response = await fetch(CONFIG.apiEndpoint, {
-                    method: 'POST',
-                    headers: buildSyncHeaders(options),
-                    body: JSON.stringify(payload),
-                    credentials: 'same-origin',
-                    signal: controller.signal
-                });
-
-                if (!response.ok) {
-                    const data = await response.json().catch(() => ({}));
-                    if (response.status === 401 && !options.keepPasswordOnAuthError) {
-                        clearStoredSyncPassword();
-                    }
-                    throw Object.assign(new Error(data.error || `HTTP ${response.status}`), { response: data, status: response.status });
+                const response = await fetch(url, { ...init, method: 'POST', credentials: 'same-origin', signal: controller.signal });
+                if (response.ok && options.binary) {
+                    const bytes = new Uint8Array(await response.arrayBuffer());
+                    return { ok: true, bytes,
+                        byteLength: Number(response.headers.get('x-rp-sync-byte-length') || bytes.byteLength),
+                        partLengths: response.headers.get('x-rp-sync-part-lengths') || '' };
                 }
-
-                const bytes = new Uint8Array(await response.arrayBuffer());
-                return {
-                    ok: true,
-                    bytes,
-                    byteLength: Number(response.headers.get('x-rp-sync-byte-length') || bytes.byteLength),
-                    partLengths: response.headers.get('x-rp-sync-part-lengths') || ''
-                };
-            } catch (error) {
-                const isAbort = error?.name === 'AbortError';
-                const status = isAbort ? 0 : error?.status;
-                const normalizedError = isAbort
-                    ? new Error('同步请求超时，请检查网络后重试。')
-                    : (error instanceof Error ? error : new Error(String(error)));
-                lastError = Object.assign(normalizedError, { status });
-                if (attempt >= retryCount || !shouldRetrySyncError(lastError)) {
-                    throw lastError;
-                }
-                await wait(CONFIG.retryDelayMs * (attempt + 1));
-            } finally {
-                clearTimeout(timeoutId);
-            }
+                const data = await response.json().catch(() => ({}));
+                if (response.ok && data.ok) return data;
+                if (response.status === 401 && !options.keepPasswordOnAuthError) clearStoredSyncPassword();
+                throw Object.assign(new Error(data.error || 'HTTP ' + response.status), { response: data, status: response.status });
+            } catch (cause) {
+                const error = cause?.name === 'AbortError'
+                    ? Object.assign(new Error((options.upload ? '上传' : '同步请求') + '超时，请检查网络后重试。'), { status: 0 })
+                    : cause instanceof Error ? cause : new Error(String(cause));
+                if (attempt >= retries || !shouldRetrySyncError(error)) throw error;
+            } finally { clearTimeout(timer); }
+            await wait(CONFIG.retryDelayMs * (attempt + 1));
         }
-
-        throw lastError || new Error('同步请求失败。');
     }
 
-    // 一块要传的内容：版本 6 先压缩，记下压缩后的长度和校验码（服务器按这个核对）。
+    function postSync(payload, options = {}) {
+        return requestSync(CONFIG.apiEndpoint, { headers: buildSyncHeaders(options), body: JSON.stringify(payload) }, options);
+    }
+
+    function postSyncBinary(payload, options = {}) {
+        return postSync(payload, { ...options, binary: true });
+    }
+
+    // 版本 6 分片先压缩，再按压缩后的长度和校验码上传。
     async function preparePart(chunk, gzip = false) {
         const body = gzip ? await gzipBytes(chunk.bytes) : chunk.bytes;
-        return {
-            index: chunk.index,
-            checksum: chunk.checksum,
-            length: chunk.length,
-            body,
-            ...(gzip ? { encoding: 'gzip', storedLength: body.byteLength, storedChecksum: await sha256Bytes(body) } : {})
-        };
+        return { index: chunk.index, checksum: chunk.checksum, length: chunk.length, body,
+            ...(gzip ? { encoding: 'gzip', storedLength: body.byteLength, storedChecksum: await sha256Bytes(body) } : {}) };
     }
 
     async function postUploadPart(chunk) {
-        const retryCount = CONFIG.retryCount;
-        let lastError = null;
-        const { body } = chunk;
-        const headers = {
-            ...buildPartHeaders(chunk),
-            ...(chunk.encoding === 'gzip' ? {
-                'x-rp-part-encoding': 'gzip',
-                'x-rp-part-stored-length': String(chunk.storedLength),
-                'x-rp-part-stored-checksum': chunk.storedChecksum
-            } : {})
-        };
-        const params = new URLSearchParams({
-            action: 'upload-part',
-            index: String(chunk.index),
-            partNumber: String(chunk.index + 1)
-        });
-
-        for (let attempt = 0; attempt <= retryCount; attempt += 1) {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), transferTimeout(body.byteLength));
-            try {
-                const response = await fetch(`${CONFIG.apiEndpoint}?${params.toString()}`, {
-                    method: 'POST',
-                    headers,
-                    body,
-                    credentials: 'same-origin',
-                    signal: controller.signal
-                });
-                const data = await response.json().catch(() => ({}));
-                if (!response.ok || !data.ok) {
-                    if (response.status === 401) clearStoredSyncPassword();
-                    throw Object.assign(new Error(data.error || `HTTP ${response.status}`), { response: data, status: response.status });
-                }
-                return {
-                    partNumber: Number(data.partNumber),
-                    index: chunk.index,
-                    byteLength: chunk.length,
-                    checksum: chunk.checksum,
-                    key: data.key
-                };
-            } catch (error) {
-                const isAbort = error?.name === 'AbortError';
-                const status = isAbort ? 0 : error?.status;
-                const normalizedError = isAbort
-                    ? new Error('上传超时，请检查网络后重试。')
-                    : (error instanceof Error ? error : new Error(String(error)));
-                lastError = Object.assign(normalizedError, { status });
-                if (attempt >= retryCount || !shouldRetrySyncError(lastError)) {
-                    throw lastError;
-                }
-                await wait(CONFIG.retryDelayMs * (attempt + 1));
-            } finally {
-                clearTimeout(timeoutId);
-            }
-        }
-
-        throw lastError || new Error('上传失败。');
+        const headers = { ...buildPartHeaders(chunk), ...(chunk.encoding === 'gzip' ? {
+            'x-rp-part-encoding': 'gzip', 'x-rp-part-stored-length': String(chunk.storedLength),
+            'x-rp-part-stored-checksum': chunk.storedChecksum } : {}) };
+        const params = new URLSearchParams({ action: 'upload-part', index: String(chunk.index), partNumber: String(chunk.index + 1) });
+        const data = await requestSync(CONFIG.apiEndpoint + '?' + params, { headers, body: chunk.body }, {
+            timeoutMs: transferTimeout(chunk.body.byteLength), upload: true });
+        return { partNumber: Number(data.partNumber), index: chunk.index, byteLength: chunk.length, checksum: chunk.checksum, key: data.key };
     }
 
     function updateProgress(progress, text) {
@@ -3727,6 +3583,7 @@
 
     async function performPullSync() {
         if (state.syncing) return;
+        window.RPHubDiagnostics?.record('sync-pull-start');
 
         state.syncing = true;
         updateButtonState();
@@ -3775,6 +3632,7 @@
             }
 
             restoreSucceeded = true;
+            window.RPHubDiagnostics?.record('sync-pull-end');
             markDirtyAll(); // 本地数据整个换过了，下次上传完整扫描
             try { localStorage.removeItem(RESTORE_NOTICE_KEY); } catch (_) { /* storage blocked */ }
             announceRestore('done');
@@ -3784,6 +3642,7 @@
                 location.reload();
             }, 700);
         } catch (error) {
+            window.RPHubDiagnostics?.failure('sync-pull-error', error);
             if (restoreStarted && !restoreSucceeded) {
                 // 本地库可能只换了一半。内存里的旧数据不能写回去（会把换好的部分盖掉，角色卡还会因为哈希缓存没变而漏写），
                 // 写闸门保持关着，刷新让页面按现在的库重新加载，刷新后提示一次让用户重新拉取。
@@ -3913,6 +3772,7 @@
 
     async function performPushSync(mode = 'full') {
         if (state.syncing) return;
+        window.RPHubDiagnostics?.record('sync-push-start');
 
         state.syncing = true;
         updateButtonState();
@@ -3941,8 +3801,10 @@
             }
             updateProgress(100, status);
             succeeded = true;
+            window.RPHubDiagnostics?.record('sync-push-end');
             setActionButtonsDisabled(false);
         } catch (error) {
+            window.RPHubDiagnostics?.failure('sync-push-error', error);
             updateProgress(100, error?.message || '本地同步失败。');
             setActionButtonsDisabled(false);
         } finally {

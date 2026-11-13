@@ -3,7 +3,7 @@
 // 和原版的区别：同步密码、同步状态、测试版的同步缓存不导出；导入时保留目标站点自己的这些设置；
 // 导入期间暂停页面自动保存（与云同步恢复相同的做法），写完立即刷新。
 RPHubSDK.register({
-    id: 'site-backup', name: '全站备份', version: '1.0.1', requiresApi: 1,
+    id: 'site-backup', name: '全站备份', version: '1.0.2', requiresApi: 1,
     init(ctx) {
         'use strict';
         const JSZIP_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
@@ -53,8 +53,7 @@ RPHubSDK.register({
                 return { __rphub_bin__: bytesToB64(new Uint8Array(value.buffer || value, value.byteOffset || 0, value.byteLength)) };
             }
             if (value instanceof Blob) {
-                try { return { __rphub_bin__: bytesToB64(new Uint8Array(await value.arrayBuffer())), __rphub_mime__: value.type || '' }; }
-                catch (_) { return null; }
+                return { __rphub_bin__: bytesToB64(new Uint8Array(await value.arrayBuffer())), __rphub_mime__: value.type || '' };
             }
             if (Array.isArray(value)) {
                 const out = new Array(value.length);
@@ -64,7 +63,7 @@ RPHubSDK.register({
             if (type === 'object') {
                 const out = {};
                 for (const key of Object.keys(value)) {
-                    const normalized = await normalizeDeep(value[key]).catch(() => undefined);
+                    const normalized = await normalizeDeep(value[key]);
                     if (normalized !== undefined) out[key] = normalized;
                 }
                 return out;
@@ -97,31 +96,27 @@ RPHubSDK.register({
             } catch (_) { return fallback; }
         }
         function openExisting(name) {
-            return new Promise((resolve) => {
-                try {
-                    const request = indexedDB.open(name); // 不指定版本：不存在不创建、已存在不改结构
-                    let created = false;
-                    request.onupgradeneeded = () => { created = true; };
-                    request.onsuccess = () => {
-                        if (created) { request.result.close(); indexedDB.deleteDatabase(name); resolve(null); return; }
-                        resolve(request.result);
-                    };
-                    request.onerror = () => resolve(null);
-                    request.onblocked = () => resolve(null);
-                } catch (_) { resolve(null); }
+            return new Promise((resolve, reject) => {
+                const request = indexedDB.open(name); // 不指定版本：已存在的库不改结构，空的候选库不归档
+                let created = false;
+                request.onupgradeneeded = () => { created = true; };
+                request.onsuccess = () => {
+                    if (created) { request.result.close(); indexedDB.deleteDatabase(name); resolve(null); return; }
+                    resolve(request.result);
+                };
+                request.onerror = () => reject(request.error);
+                request.onblocked = () => reject(new Error('数据库被占用，请关闭本站的其他标签页后重试'));
             });
         }
         function readStore(db, storeName) {
-            return new Promise((resolve) => {
-                try {
-                    const tx = db.transaction([storeName], 'readonly');
-                    const store = tx.objectStore(storeName);
-                    const records = [];
-                    const request = store.openCursor();
-                    request.onsuccess = () => { const cursor = request.result; if (cursor) { records.push({ k: cursor.key, v: cursor.value }); cursor.continue(); } };
-                    tx.oncomplete = () => resolve({ records, keyPath: store.keyPath ?? null, autoInc: !!store.autoIncrement });
-                    tx.onerror = tx.onabort = () => resolve({ records: [], keyPath: store.keyPath ?? null, autoInc: !!store.autoIncrement });
-                } catch (_) { resolve({ records: [], keyPath: null, autoInc: false }); }
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction([storeName], 'readonly');
+                const store = tx.objectStore(storeName);
+                const records = [];
+                const request = store.openCursor();
+                request.onsuccess = () => { const cursor = request.result; if (cursor) { records.push({ k: cursor.key, v: cursor.value }); cursor.continue(); } };
+                tx.oncomplete = () => resolve({ records, keyPath: store.keyPath ?? null, autoInc: !!store.autoIncrement });
+                tx.onerror = tx.onabort = () => reject(tx.error || new Error('读取失败：' + storeName));
             });
         }
         async function dumpAllDatabases(progress) {
@@ -130,27 +125,26 @@ RPHubSDK.register({
                 const db = await openExisting(name);
                 if (!db) continue;
                 const dump = { name, stores: [] };
-                for (const storeName of Array.from(db.objectStoreNames)) {
-                    progress(`读取 ${name} / ${storeName}…`);
-                    const result = await readStore(db, storeName);
-                    if (!result.records.length) continue;
-                    const records = [];
-                    for (const record of result.records) records.push({ k: await normalizeDeep(record.k), v: await normalizeDeep(record.v) });
-                    dump.stores.push({ store: storeName, keyPath: result.keyPath, autoInc: result.autoInc, records });
-                }
-                db.close();
+                try {
+                    for (const storeName of Array.from(db.objectStoreNames)) {
+                        progress(`读取 ${name} / ${storeName}…`);
+                        const result = await readStore(db, storeName);
+                        if (!result.records.length) continue;
+                        const records = [];
+                        for (const record of result.records) records.push({ k: await normalizeDeep(record.k), v: await normalizeDeep(record.v) });
+                        dump.stores.push({ store: storeName, keyPath: result.keyPath, autoInc: result.autoInc, records });
+                    }
+                } finally { db.close(); }
                 if (dump.stores.length) out.push(dump);
             }
             return out;
         }
         function readWebStorage(storage) {
             const out = {};
-            try {
-                for (let i = 0; i < storage.length; i++) {
-                    const key = storage.key(i);
-                    if (key !== null && !isSiteKey(key)) out[key] = storage.getItem(key);
-                }
-            } catch (_) { /* storage blocked */ }
+            for (let i = 0; i < storage.length; i++) {
+                const key = storage.key(i);
+                if (key !== null && !isSiteKey(key)) out[key] = storage.getItem(key);
+            }
             return out;
         }
 
@@ -185,14 +179,15 @@ RPHubSDK.register({
         function replaceStore(db, storeName, records) {
             return new Promise((resolve, reject) => {
                 const tx = db.transaction([storeName], 'readwrite');
-                const store = tx.objectStore(storeName);
-                store.clear();
-                for (const record of records) {
-                    const value = restoreDeep(record.v);
-                    if (store.keyPath) store.put(value); else store.put(value, restoreDeep(record.k));
-                }
                 tx.oncomplete = () => resolve();
-                tx.onerror = () => reject(tx.error || new Error('写入失败：' + storeName));
+                tx.onerror = tx.onabort = () => reject(tx.error || new Error('写入失败：' + storeName));
+                try {
+                    const store = tx.objectStore(storeName);
+                    store.clear();
+                    for (const record of records) {
+                        if (store.keyPath) store.put(record.v); else store.put(record.v, record.k);
+                    }
+                } catch (error) { tx.abort(); reject(error); }
             });
         }
         function replaceWebStorage(storage, data) {
@@ -205,14 +200,22 @@ RPHubSDK.register({
         }
         // 与云同步恢复相同：先暂停页面自动保存，免得写完又被内存里的旧数据盖回去；写完立即刷新。
         async function applyImport(databases, webStorage, progress) {
+            // 所有记录先还原完，再开始写入；坏内容不能在清表后才被发现。
+            for (const { name, stores } of databases) {
+                if (SKIP_DATABASES.has(name)) continue;
+                for (const { records } of stores) for (const record of records) {
+                    record.k = restoreDeep(record.k);
+                    record.v = restoreDeep(record.v);
+                }
+            }
             globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS = true;
             try {
                 for (const { name, stores } of databases) {
                     if (SKIP_DATABASES.has(name)) continue;
                     progress(`写入 ${name}…`);
                     const db = await openForImport(name, stores);
-                    for (const def of stores) await replaceStore(db, def.store, def.records);
-                    db.close();
+                    try { for (const def of stores) await replaceStore(db, def.store, def.records); }
+                    finally { db.close(); }
                 }
                 if (webStorage.localStorage) replaceWebStorage(localStorage, webStorage.localStorage);
                 if (webStorage.sessionStorage) replaceWebStorage(sessionStorage, webStorage.sessionStorage);
@@ -241,7 +244,7 @@ RPHubSDK.register({
             const ss = readWebStorage(sessionStorage);
             const zip = new JSZip();
             const manifest = {
-                format: 'rphub-backup-zip', version: '1.0', plugin: '全站备份', pluginVersion: '1.0.1',
+                format: 'rphub-backup-zip', version: '1.0', plugin: '全站备份', pluginVersion: '1.0.2',
                 createdAt: new Date().toISOString(), databases: [], webStorage: {}, totalRecords: 0
             };
             for (const db of databases) {
@@ -295,26 +298,38 @@ RPHubSDK.register({
                 const JSZip = await loadJSZip();
                 progress('解压校验中…');
                 const zip = await JSZip.loadAsync(file);
-                const manifest = JSON.parse(await (zip.file('manifest.json') || { async: () => { throw new Error('不是有效的备份：缺少 manifest.json'); } }).async('string'));
+                const read = async (path) => {
+                    const entry = zip.file(path);
+                    if (!entry) throw new Error('备份缺少文件：' + path);
+                    return entry.async('string');
+                };
+                const manifest = JSON.parse(await read('manifest.json'));
                 if (manifest.format !== 'rphub-backup-zip') throw new Error('备份格式不匹配');
                 const ws = manifest.webStorage || {};
                 const ok = await confirmAction('导入全站备份', `备份时间：${manifest.createdAt || '未知'}\n数据库 ${(manifest.databases || []).length} 个 · 记录 ${manifest.totalRecords || 0} 条 · 本地存储 ${ws.localStorage || 0} 项\n\n本站同名数据会被覆盖（本站的同步密码和同步设置保留）。导入后页面会刷新。`, '覆盖导入');
                 if (!ok) return '已取消导入。';
                 const databases = [];
+                let total = 0;
                 for (const db of manifest.databases || []) {
                     const stores = [];
                     for (const store of db.stores || []) {
                         const records = [];
                         for (const path of store.chunks || []) {
-                            const text = await zip.file(path)?.async('string');
+                            const text = await read(path);
                             if (text) text.split('\n').forEach((line) => { if (line) records.push(JSON.parse(line)); });
                         }
+                        if (store.records != null && records.length !== store.records) throw new Error('备份记录数不符：' + store.store);
+                        total += records.length;
                         stores.push({ store: store.store, keyPath: store.keyPath, autoInc: store.autoInc, records });
                     }
                     databases.push({ name: db.name, stores });
                 }
-                const read = async (path) => JSON.parse((await zip.file(path)?.async('string')) || 'null');
-                await applyImport(databases, { localStorage: await read('storage/localStorage.json'), sessionStorage: await read('storage/sessionStorage.json') }, progress);
+                if (manifest.totalRecords != null && total !== manifest.totalRecords) throw new Error('备份总记录数不符');
+                const readStorage = async (name) => {
+                    const path = `storage/${name}.json`;
+                    return zip.file(path) || ws[name] > 0 ? JSON.parse(await read(path)) : null;
+                };
+                await applyImport(databases, { localStorage: await readStorage('localStorage'), sessionStorage: await readStorage('sessionStorage') }, progress);
                 return '';
             }
             progress('解析备份中…');

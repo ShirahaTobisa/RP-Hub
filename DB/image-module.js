@@ -2037,6 +2037,30 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         if (justGenerated) uploadImageThumbnail(image).catch((error) => log('thumbnail task failed', error));
     }
 
+    async function commitReroll(entry, paramsSnapshot) {
+        const { uuid, records, index, record: previous } = entry;
+        window.RPHubDiagnostics?.record('image-reroll-start', { owner: uuid, current: state.character?.uuid });
+        const record = normalizeImageRenderRecord({
+            ...previous,
+            paramsSnapshot,
+            imageSignature: buildImageRenderSignature(paramsSnapshot),
+            updatedAt: Date.now(),
+            rerollCount: (Number(previous.rerollCount) || 0) + 1,
+            readOnly: false,
+            status: 'rendered'
+        }, uuid);
+        records[index] = record;
+        markRecordBucketDirty(uuid);
+        if (!await saveRecords({ uuid, records, silent: true })) {
+            window.RPHubDiagnostics?.record('image-save-error', { owner: uuid, current: state.character?.uuid });
+            records[index] = previous;
+            throw new Error('图片记录保存失败');
+        }
+        const frame = document.querySelector(`.rp-generated-image-frame[data-character-uuid="${CSS.escape(uuid)}"][data-image-render-key="${CSS.escape(previous.key)}"]`);
+        if (frame) frame.replaceWith(createImageFrame(record));
+        window.RPHubDiagnostics?.record('image-reroll-end', { owner: uuid, current: state.character?.uuid });
+    }
+
     async function getRecordBucketEntry(key, ownerUuid = '') {
         const hintedUuid = String(ownerUuid || '');
         const candidateUuids = hintedUuid
@@ -2057,7 +2081,6 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
     async function rerollImageRender(key, ownerUuid = '') {
         const entry = await getRecordBucketEntry(key, ownerUuid);
         if (!entry) return;
-        const { uuid, records, index } = entry;
         const previous = entry.record;
         await reloadGenerationSettings();
         const paramsSnapshot = buildImageParamsSnapshot(previous.prompt || previous.paramsSnapshot?.prompt || '', {
@@ -2067,23 +2090,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             characterName: previous.paramsSnapshot?.characterName
         });
         if (!paramsSnapshot) return;
-        const record = normalizeImageRenderRecord({
-            ...previous,
-            paramsSnapshot,
-            imageSignature: buildImageRenderSignature(paramsSnapshot),
-            updatedAt: Date.now(),
-            rerollCount: (Number(previous.rerollCount) || 0) + 1,
-            readOnly: false,
-            status: 'rendered'
-        }, uuid);
-        records[index] = record;
-        markRecordBucketDirty(uuid);
-        if (!await saveRecords({ uuid, records, silent: true })) {
-            records[index] = previous;
-            throw new Error('图片记录保存失败');
-        }
-        const frame = document.querySelector(`.rp-generated-image-frame[data-image-render-key="${CSS.escape(key)}"]`);
-        if (frame) frame.replaceWith(createImageFrame(record));
+        return commitReroll(entry, paramsSnapshot);
     }
 
     function rerollUpstreamTag(value) {
@@ -2102,7 +2109,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
     async function rerollUpstreamImageRender(key, ownerUuid = '') {
         const entry = await getRecordBucketEntry(key, ownerUuid);
         if (!entry) return;
-        const { uuid, records, index } = entry;
+        const { uuid } = entry;
         const previous = entry.record;
         if (previous.paramsSnapshot?.source !== 'upstream') return rerollImageRender(key, uuid);
         const upstreamParams = normalizeGenerationParams(previous.paramsSnapshot.upstreamParams);
@@ -2125,23 +2132,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             upstreamParams,
             upstreamSourceSignature: getUpstreamSourceSignature(previous)
         };
-        const record = normalizeImageRenderRecord({
-            ...previous,
-            paramsSnapshot,
-            imageSignature: buildImageRenderSignature(paramsSnapshot),
-            updatedAt: Date.now(),
-            rerollCount: (Number(previous.rerollCount) || 0) + 1,
-            readOnly: false,
-            status: 'rendered'
-        }, uuid);
-        records[index] = record;
-        markRecordBucketDirty(uuid);
-        if (!await saveRecords({ uuid, records, silent: true })) {
-            records[index] = previous;
-            throw new Error('图片记录保存失败');
-        }
-        const frame = document.querySelector(`.rp-generated-image-frame[data-image-render-key="${CSS.escape(key)}"]`);
-        if (frame) frame.replaceWith(createImageFrame(record));
+        return commitReroll(entry, paramsSnapshot);
     }
 
     async function rerollStoredImageRender(key, ownerUuid = '') {
