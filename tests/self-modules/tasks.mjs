@@ -59,7 +59,7 @@ const analysis = voice.slice(voice.indexOf('            let store = { card:'), v
     const requests = [], saves = [];
     const context = { characterId: () => card, character: () => ({}), linesOf: () => [{ text: '你好。', quote: true }], keyOf: () => 'same',
         get: () => '', readCast: () => [{ name: card }], userName: () => '用户', renderWidget() {}, widgetVisible: () => true,
-        parseJson: JSON.parse, markRows() {}, NARRATOR: '旁白', DIALOGUE: '对话', ANALYSIS_KEEP: 10, ANALYZE_PROMPT: 'fixture',
+        parseJson: JSON.parse, markRows() {}, NARRATOR: '旁白', DIALOGUE: '对话', ANALYSIS_KEEP: 10, analyzePrompt: () => 'fixture', LANGS: {},
         isNarrator: () => false, personOf: () => true, saveCast() {}, document: { querySelectorAll: () => [] },
         ctx: { data: { get: () => delayStore ? new Promise(resolve => { releaseStore = () => resolve({}); }) : Promise.resolve({}),
             set: async (key, value) => saves.push({ key, value }) },

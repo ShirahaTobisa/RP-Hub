@@ -5,6 +5,7 @@ import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } fr
 // 只念人物的台词（旁白不念，用户扮演的默认不念），带语气；边播边生成下一段；重听不再分析也不再生成；
 // 自动分析模式只分析不出声；自动说时分析失败，引号里的话用默认声音；密钥错了有提示。分析用的模型从站点的模型列表里选，配音表不放卡名。
 // AI 回的配音表格式坏了能一行行捞；Fish 临时出错再试一次，只坏一句就跳过，连着三句才停，回的是文字不当成语音。
+// 说话时能暂停、上一句、下一句，音量语速、读音替换、连播；声音标了语言就念译文；Fish 可以走中转地址；也能接 OpenAI 格式的接口。
 const LONG = '她把书包放在桌上，打开窗户让风吹进来，又把昨天没写完的作业拿出来，一边嘟囔着一边在草稿纸上画着奇怪的小人，直到上课铃响起来才慌慌张张地收好东西。';
 const GREETING = [
     '清晨的阳光洒进教室。',
@@ -106,6 +107,9 @@ try {
             aiRequests.push({ kind: 'analyze', body });
             if (analysisFails) return route.fulfill({ status: 500, json: { error: { message: 'analysis is down' } } });
             if (user.includes('你来了')) return route.fulfill(reply(JSON.stringify([[1, '班长', 'cold', 0.3], [2, '旁白', 'calm narration', 0]])));
+            if (user.includes('快坐下') && system.includes('"译文"')) {
+                return route.fulfill(reply(JSON.stringify([[1, '同桌', 'soft', 0.3, '早く座って。'], [2, '旁白', 'calm narration', 0, '']])));
+            }
             if (user.includes('快坐下')) return route.fulfill(reply(JSON.stringify([[1, '同桌', 'soft', 0.3], [2, '旁白', 'calm narration', 0]])));
             // 多说了一句话、少了最后的括号：插件一行行捞出来照样能用。
             return route.fulfill(reply('配音表如下：\n' + JSON.stringify([[1, '旁白', 'calm narration', 0], [2, '同桌', 'cheerful', 0.2], [3, '旁白', 'calm narration', 0],
@@ -125,6 +129,15 @@ try {
         }
         return route.fulfill({ headers: cors, contentType: 'audio/wav', body: wav });
     });
+    // 中转和 OpenAI 格式的接口：记下请求发到了哪、带了什么。
+    const otherRequests = [];
+    for (const pattern of ['https://relay.test/**', 'https://api.openai.com/v1/audio/speech']) {
+        await page.route(pattern, (route) => {
+            const request = route.request();
+            otherRequests.push({ url: request.url(), auth: request.headers().authorization, ...request.postDataJSON() });
+            return route.fulfill({ headers: cors, contentType: 'audio/wav', body: wav });
+        });
+    }
     await page.goto(harness.url + '/seed.html');
     await initializeFixture(page);
     await page.evaluate(async ({ base, greeting }) => {
@@ -154,7 +167,7 @@ try {
         await page.evaluate(() => [...document.querySelectorAll('.app-nav-trigger')].find((trigger) => trigger.offsetParent)?.click());
         await page.locator('#app-navigation-panel [data-rph-workshop-page-entry="character-voice"]').waitFor({ state: 'attached' });
         await page.evaluate(() => document.querySelector('[data-rph-workshop-page-entry="character-voice"]').click());
-        await panel.locator('[data-k="fishKey"]').waitFor();
+        await panel.locator('[data-k="provider"]').waitFor({ state: 'attached' });
     };
     const backToChat = () => page.evaluate(() => {
         const app = document.querySelector('#app').__vue_app__;
@@ -416,6 +429,133 @@ try {
     assert.equal(await blobPlays(), before + 1);
     assert.deepEqual(ttsRequests.slice(from).map((item) => item.input), ['[soft] “快坐下。”', '[soft] “快坐下。”'], 'a text reply is not kept as audio, so the line is requested again');
     console.log('PASS a failing Fish request is retried once, one bad line is skipped, three in a row stop, and a text reply is not kept as audio');
+
+    // 9. 播放控制：说话时多出上一句、暂停、下一句；音量和语速用设置里的；读音替换只改念的字，页面上标的还是原文
+    const setting = (key, value) => page.evaluate(([name, next]) => localStorage.setItem('rph_mod_character-voice::' + name, next), [key, value]);
+    const speakingIs = (text) => page.waitForFunction((value) => [...(CSS.highlights.get('rph-voice-now') || [])].some((range) => range.toString() === value), text);
+    const marked = () => page.evaluate(() => [...CSS.highlights.get('rph-voice-line')].map((range) => range.toString()));
+    const playThrough = async (index, last = index) => {
+        await voiceButton(index).click();
+        await playingBlob();
+        await page.evaluate(() => window.__audio.end());
+        await idle(last);
+    };
+    await setting('fishModel', 'fish-audio/s2.1-pro-free');
+    await setting('volume', '0.5');
+    await setting('speed', '1.5');
+    await setting('pronunciations', JSON.stringify([{ from: '眼镜', to: '墨镜' }, { from: '', to: '左边空着的不算' }]));
+    assert.equal(await widget.locator('[data-controls]').isHidden(), true, 'the extra controls only show while speaking');
+    from = ttsRequests.length;
+    await voiceButton(0).click();
+    await speakingIs('“早上好，今天也要加油哦。”');
+    assert.deepEqual(await page.evaluate(() => [window.__audio.current.volume, window.__audio.current.playbackRate]), [0.5, 1.5]);
+    const pauses = await page.evaluate(() => window.__audio.pauses);
+    before = await blobPlays();
+    await widget.locator('[data-pause]').click();
+    assert.equal(await widgetStatus(), '已暂停：同桌');
+    assert.equal(await widget.locator('[data-pause]').textContent(), '继续');
+    assert.equal(await page.evaluate(() => window.__audio.pauses), pauses + 1);
+    await widget.locator('[data-pause]').click();
+    assert.equal(await widgetStatus(), '正在说：同桌');
+    assert.equal(await blobPlays(), before + 1, 'resuming plays the same line on');
+    await widget.locator('[data-next]').click();
+    await speakingIs('（她心里其实有点紧张。）');
+    await widget.locator('[data-prev]').click();
+    await speakingIs('“早上好，今天也要加油哦。”');
+    await page.evaluate(() => window.__audio.end());
+    await idle(0);
+    assert.equal(await widget.locator('[data-controls]').isHidden(), true);
+    assert.deepEqual(ttsRequests.slice(from).map((item) => item.input), ['[nervous inner voice] （她心里其实有点紧张。）', '[shy] 她轻轻推了推墨镜。'],
+        'only the words sent to the voice service are replaced');
+    assert.ok((await marked()).includes('她轻轻推了推眼镜。'), 'the page still marks the original words');
+    console.log('PASS speaking can be paused, resumed and moved a line back or forth; volume, speed and the pronunciation table apply');
+
+    // 10. 连播：这条说完接着说后面的回复
+    await setting('continuous', '1');
+    before = await blobPlays();
+    await playThrough(2, 4);
+    assert.equal(await blobPlays(), before + 2, 'the next reply is spoken after this one');
+    await setting('continuous', '0');
+    console.log('PASS with continuous play on, the next reply follows');
+
+    // 11. 声音标了语言：分析时把这个人的台词译过去，念译文，页面上标的还是原文；换了语言的回复，下次播放会重新分析
+    await openSettings();
+    await panel.locator('[data-person="同桌"] button[aria-haspopup="listbox"]').click();
+    await page.getByRole('option', { name: '日文', exact: true }).click();
+    assert.equal((await cast()).find((person) => person.name === '同桌').lang, 'ja');
+    assert.equal(await panel.locator('select:visible').count(), 0, 'the language dropdown is the RPH one too');
+    await backToChat();
+    await panel.waitFor({ state: 'detached' });
+    await statusIs('最新回复：同桌 1 句');
+    const analysed = analysisCount();
+    from = ttsRequests.length;
+    await playThrough(4);
+    assert.equal(analysisCount(), analysed + 1, 'the reply is analysed again once its speaker has a language');
+    const translating = aiRequests.filter((item) => item.kind === 'analyze').at(-1).body.messages;
+    assert.ok(translating[0].content.includes('"译文"') && translating[1].content.includes('\n声音语言：同桌 → 日文\n'), translating[1].content);
+    assert.deepEqual(ttsRequests.slice(from).map((item) => [item.voice, item.input]), [['girl-gentle', '[soft] 早く座って。']], 'the translation is what gets voiced');
+    assert.ok((await marked()).includes('“快坐下。”'), 'the page still marks the original line');
+    const quote = await page.evaluate(() => {
+        const range = [...CSS.highlights.get('rph-voice-line')].find((item) => item.toString() === '“快坐下。”');
+        range.startContainer.parentElement.scrollIntoView({ block: 'center' });
+        const rect = range.getClientRects()[0];
+        return { x: rect.left + 6, y: rect.top + rect.height / 2 };
+    });
+    await page.mouse.click(quote.x, quote.y);
+    assert.equal(await page.locator('[data-rph-voice-pop] .rph-voice-pop__said').textContent(), '念的是：早く座って。');
+    await page.mouse.click(5, 5);
+    await playThrough(4);
+    assert.equal(analysisCount(), analysed + 1, 'the translated analysis is kept');
+    console.log('PASS a voice with a language gets its lines translated during analysis and speaks the translation');
+
+    // 12. 中转：填了接口地址就把请求发到那里（Fish 的走 /compat/v1，填到 /v1 的照填的走）；中转的密钥不发给 Fish 官方
+    await setting('fishUrl', 'https://relay.test/fish/');
+    await setting('fishKey', 'relay-key');
+    await playThrough(2);
+    assert.deepEqual(otherRequests.at(-1), { url: 'https://relay.test/fish/compat/v1/audio/speech', auth: 'Bearer relay-key',
+        model: 'fish-audio/s2.1-pro-free', input: '[cold] “你来了。”', voice: 'uncle-deep', response_format: 'mp3' });
+    await setting('fishUrl', 'https://relay.test/v1');
+    await playThrough(2);
+    assert.equal(otherRequests.at(-1).url, 'https://relay.test/v1/audio/speech');
+    await openSettings();
+    await panel.locator('[data-person="班长"]').getByRole('button', { name: '搜索' }).click();
+    await panel.locator('[data-pick="班长"] input').fill('e'.repeat(32));
+    await panel.locator('[data-pick="班长"] input').press('Enter');
+    await panel.locator(`[data-pick="班长"] [data-voice-id="${'e'.repeat(32)}"]`).waitFor();
+    assert.equal(lookups.at(-1), undefined, 'the relay key is not sent to Fish, and a voice it cannot look up can still be used by ID');
+    console.log('PASS with a relay address, speech requests go there with the relay key, which is never sent to Fish itself');
+
+    // 13. OpenAI 兼容接口：选常用提供商填好地址和模型；人物在这个接口上另填声音名，没填的用默认声音；语气放 instructions
+    const picked = (name) => panel.locator(`[data-person="${name}"] .rph-ui-row-main .rph-ui-muted`).textContent();
+    const choose = async (key, name) => {
+        await dropdown(key).click();
+        await page.getByRole('option', { name, exact: true }).click();
+    };
+    await choose('provider', 'OpenAI 兼容接口');
+    await panel.locator('[data-k="openaiKey"]').fill('sk-test');
+    assert.deepEqual(await panel.locator('[data-k="openaiUrl"], [data-k="openaiModel"]').evaluateAll((items) => items.map((item) => item.value)), ['https://api.openai.com', 'gpt-4o-mini-tts']);
+    assert.equal(await panel.locator('select:visible').count(), 0);
+    assert.equal(await picked('同桌'), '默认声音', 'a Fish voice is not used on another service');
+    await panel.locator('[data-person="同桌"]').getByRole('button', { name: '填声音' }).click();
+    await panel.locator('[data-pick="同桌"]').getByRole('button', { name: 'coral', exact: true }).click();
+    assert.deepEqual((await cast())[0], { name: '同桌', id: 'coral', title: 'coral', sample: '', lang: 'ja', provider: 'openai' }, 'changing the voice keeps the language');
+    await backToChat();
+    await panel.waitFor({ state: 'detached' });
+    await playThrough(4);
+    assert.deepEqual(otherRequests.at(-1), { url: 'https://api.openai.com/v1/audio/speech', auth: 'Bearer sk-test',
+        model: 'gpt-4o-mini-tts', input: '早く座って。', voice: 'coral', response_format: 'mp3', instructions: 'soft' });
+    await playThrough(2);
+    assert.deepEqual([otherRequests.at(-1).voice, otherRequests.at(-1).instructions], ['alloy', 'cold'], 'people without a voice here use the default voice');
+    await openSettings();
+    await choose('openaiTemplate', '硅基流动（CosyVoice2）');
+    assert.deepEqual(await panel.locator('[data-k="openaiUrl"], [data-k="openaiKey"], [data-k="openaiModel"]').evaluateAll((items) => items.map((item) => item.value)),
+        ['https://api.siliconflow.cn', 'sk-test', 'FunAudioLLM/CosyVoice2-0.5B'], 'a preset fills the address and model and leaves the key');
+    assert.equal(await panel.locator('[data-k="openaiTone"]').inputValue(), 'none');
+    await choose('provider', 'Fish Audio');
+    assert.deepEqual([await picked('同桌'), await picked('班长')], ['Fish 默认声音', '大叔']);
+    await backToChat();
+    await panel.waitFor({ state: 'detached' });
+    console.log('PASS an OpenAI-style service is set up from a preset, takes voice names per person and gets the tone as instructions');
     assert.deepEqual(errors, []);
 } finally {
     await browser.close();
