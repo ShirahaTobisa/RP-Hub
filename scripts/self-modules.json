@@ -71,6 +71,9 @@
   "DB/modules/nai2api-web.js": [
     "src/DB/modules/nai2api-web.js"
   ],
+  "DB/modules/navigation.js": [
+    "src/DB/modules/navigation.js"
+  ],
   "DB/modules/preset-schemes.js": [
     "src/DB/modules/preset-schemes.js"
   ],
