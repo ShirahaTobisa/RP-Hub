@@ -9,6 +9,11 @@ const errors = [];
 try {
     const page = await browser.newPage();
     page.on('pageerror', (error) => errors.push(error.message));
+    // 2026.11.13 起外壳自带运行日志，插件见到它就不做事。插件是给更早的外壳用的，这里把外壳的日志入口拿掉来测它。
+    await page.addInitScript(() => {
+        let kit;
+        Object.defineProperty(window, 'RPHubUI', { get: () => kit, set(value) { kit = Object.freeze({ ...value, openLogViewer: undefined }); } });
+    });
     await page.goto(harness.url + '/seed.html');
     await initializeFixture(page);
     await page.evaluate((base) => {

@@ -47,10 +47,12 @@ try {
         // 刷新后上一次的“已加载”标记还在，所以等插件真正接管请求。
         await page.waitForFunction(() => window.fetch.__multiProvider === true, null, { timeout: 45000 });
     };
-    const app = (name, ...args) => page.evaluate(async ({ name, args }) => {
+    // 调用页面方法时不等它返回的 Promise：页面里那次调用会正常结束，但 page.evaluate 等它时偶尔报
+    // “Resulting promise was garbage collected”。每处调用后面都另有等结果的步骤。
+    const app = (name, ...args) => page.evaluate(({ name, args }) => {
         const a = document.querySelector('#app').__vue_app__;
         const proxy = a._instance?.proxy || a._container._vnode.component.proxy;
-        return typeof proxy[name] === 'function' ? void await proxy[name](...args) : JSON.parse(JSON.stringify(proxy[name]));
+        return typeof proxy[name] === 'function' ? void proxy[name](...args) : JSON.parse(JSON.stringify(proxy[name]));
     }, { name, args });
     const setApp = (path, value) => page.evaluate(({ path, value }) => {
         const a = document.querySelector('#app').__vue_app__;
