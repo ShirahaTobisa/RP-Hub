@@ -109,7 +109,19 @@
                 addSidebarEntry: (options) => addSidebarEntry(id, options),
                 addComposerButton: (options) => addComposerButton(id, options),
                 addPage: (options) => addPage(id, options),
+                addStyle: (css, options) => addStyle(id, css, options),
+                attach: (options) => attach(id, options),
                 openPanel
+            },
+            // API 10：插件之间互相提供接口。
+            provide: (name, api) => provide(id, name, api),
+            use: (name) => service(name).promise,
+            // API 10：包住或调用官方主程序里的函数，manifest 要写 hooks: true。
+            hooks: {
+                has: hasHook,
+                names: () => Object.keys(state.hooks.functions || {}),
+                wrap: (name, handler) => wrapHook(id, name, handler),
+                call: (name, ...args) => callHook(name, args)
             },
             events: {
                 on: (name, callback) => subscribe(id, name, callback)

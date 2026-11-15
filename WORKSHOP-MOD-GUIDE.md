@@ -1,6 +1,6 @@
 # RP-Hub 创意工坊 Mod 作者指南
 
-这份指南描述当前 `DB/module-loader.js` 的 API 9，兼容原有 API 1～8 模块。指南和 `examples/` 都是教材，
+这份指南描述当前 `DB/module-loader.js` 的 API 10，兼容原有 API 1～9 模块。指南和 `examples/` 都是教材，
 不会进入 `dist/` 或发布 ZIP。
 
 ## 1. 这是什么与信任模型
@@ -50,9 +50,10 @@ Mod 是由用户在“模块管理”面板通过 URL 或文件导入安装的 J
 | `id` | 必填字符串，必须匹配 `^[a-z0-9-]{3,32}$`；也是存储隔离和卸载清理的身份。 |
 | `name` | 必填、非空字符串；显示在模块管理面板。 |
 | `version` | 必填、非空字符串；loader 不解释版本格式，只负责显示。 |
-| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `9`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`，使用 `ctx.image` 的模块声明 `5`；离不开 `beforeMount` 的模块声明 `6`（可有可无的不用改，旧外壳会忽略它）；离不开 `ctx.ai` 的模块声明 `7`（可有可无的可以先判断 `ctx.ai` 在不在）；离不开 `ctx.ui.addPage` 的模块声明 `8`（可以先判断它在不在，旧外壳退回 `addSidebarEntry`）；离不开 `ctx.app.saveChatHistory` 的模块声明 `9`（可以先判断它在不在）。 |
+| `requiresApi` | 必须是整数；大于当前 `apiVersion` 时拒载并显示 `api-mismatch`。当前 API 是 `10`；使用 `ctx.data` 的模块至少声明 `2`，使用 `ctx.app.get/watch`、`ctx.requests` 或生成事件的模块声明 `3`，使用 `ctx.app.set` 或 `ctx.ui.addComposerButton` 的模块声明 `4`，使用 `ctx.image` 的模块声明 `5`；离不开 `beforeMount` 的模块声明 `6`（可有可无的不用改，旧外壳会忽略它）；离不开 `ctx.ai` 的模块声明 `7`（可有可无的可以先判断 `ctx.ai` 在不在）；离不开 `ctx.ui.addPage` 的模块声明 `8`（可以先判断它在不在，旧外壳退回 `addSidebarEntry`）；离不开 `ctx.app.saveChatHistory` 的模块声明 `9`（可以先判断它在不在）；用 `ctx.ui.addStyle`、`ctx.ui.attach`、`ctx.provide`、`ctx.use`、`ctx.hooks` 或在 `beforeMount` 里用 `ctx` 的模块声明 `10`。 |
 | `init(ctx)` | 必填函数；应用启动落定后调用。抛错会隔离为 `init-error`。 |
-| `beforeMount({ options, root })` | 可选函数（API 6）；官方页面挂载前调用一次，见下文。 |
+| `beforeMount({ options, root, ctx })` | 可选函数（API 6，`ctx` 是 API 10）；官方页面挂载前调用一次，见下文。 |
+| `hooks` | 可选，`true`（API 10）；要用 `ctx.hooks` 包住官方函数的模块写上，见下文。 |
 
 文件加载后要立刻同步调用 `RPHubSDK.register(manifest)`。模块必须在 3 秒期限内注册，不能
 等网络、定时器或其他异步回调完成后再注册。
@@ -107,6 +108,12 @@ await ctx.persistence.track('import', async () => {
   页面标题栏和手机上打开导航的按钮由加载器提供，插件在 `render(body)` 里画内容，可以返回一个清理函数，离开页面时调用。
   返回 `{ open() }`，可以用代码打开这个页面。每个插件只能有一个页面；普通插件仍用 `addSidebarEntry`，别让导航菜单变长。
   例子见 `DB/modules/character-voice.js`（角色语音设置页）。
+
+- `addStyle(css, { early })`（API 10）给页面加一段样式，返回 `{ set(css), remove() }`。`early: true` 的那份由加载器记在本机（每个插件一份，最多 64KB），
+  下次打开页面时第一帧就生效，那时插件还没加载，换配色不会先闪一下默认的；之后不传 `css`（`addStyle(null, { early: true })`）就沿用记下的那份。
+- `attach({ anchor, position, render })`（API 10）把一块内容挂到页面里，返回 `{ node, remove() }`。`anchor` 是选择器或返回元素的函数，
+  `position` 是 `before`、`after`（默认）、`prepend`、`append`；`render(node)` 只在第一次挂上时调用。锚点还没出现就等它出现，
+  页面重画把内容冲掉时加载器补回去，不用自己监听页面。例子见 `DB/modules/skins.js`（设置页最下面的「皮肤」栏）。
 
 #### 面板样式
 
@@ -193,7 +200,8 @@ ctx.requests.onChat(body => {
 有些改动只能在官方页面挂载前做，比如给官方根组件加状态、改页面模板。manifest 里写了 `beforeMount` 的插件，加载器会在下次打开页面时先加载它，并让官方 `app.mount('#app')` 等它加载完（最多 3 秒，超时照常挂载）。
 
 - `options` 是官方根组件的选项（`setup`、`components` 等），可以直接替换或修改；`root` 是 `#app` 元素，改它的 `innerHTML` 就是改页面模板。
-- 只调用一次，在 `init` 之前，这时页面还没挂载，不能用 `ctx`；抛错只记日志，页面照常挂载。
+- 只调用一次，在 `init` 之前；抛错只记日志，页面照常挂载。
+- `ctx`（API 10）和 `init` 收到的是同一个。这时页面还没挂载，`ctx.app` 读不到东西，`ctx.storage`、`ctx.data`、`ctx.ui.addStyle`、`ctx.hooks.wrap` 可以用。
 - 加载器要等插件第一次注册才知道它有 `beforeMount`，所以新装后（或第一次加上 `beforeMount` 的更新后）会提示再刷新一次，之后每次打开页面都先加载它。
 - 官方代码对不上时应保持原样，不要半改。例子见 `DB/modules/liuguanyi-20.5.9.js`（聊天模型五槽）。
 
@@ -215,10 +223,52 @@ const text = await ctx.ai.complete({ messages: [
 
 例子见 `DB/modules/character-voice.js`（分析每句话是谁说的、用什么语气）。
 
+### `ctx.provide` 与 `ctx.use`（API 10）
+
+插件之间互相提供接口：`ctx.provide(name, api)` 把一个对象登记在某个名字下，别的插件用 `ctx.use(name)` 拿到一个 Promise，
+等到有插件提供了这个名字才有结果，所以不用管谁先加载。一个名字只能提供一次。
+
+```js
+// 提供方
+ctx.provide('skins', { register(skin) { /* … */ } });
+// 使用方
+ctx.use('skins').then((skins) => skins.register({ id: 'my-skin', name: '我的皮肤', accent: '#3f8fd6' }));
+```
+
+### `ctx.hooks`（API 10）
+
+包住官方主程序（`app.js` 根组件 `setup`）里的函数，在它前后加自己的逻辑、改参数、拦下不执行，或者直接调用它。
+manifest 要写 `hooks: true`；和 `beforeMount` 一样，新装后要再刷新一次才生效。
+
+- `wrap(name, handler)`：`handler(next, ...args)`，调用 `next(...args)` 才会继续执行官方函数（和排在后面的插件），返回值就是这次调用的结果；
+  不调用 `next` 就是拦下。返回一个取消包装的函数。官方内部互相调用、页面按钮触发的调用都会经过。
+- `call(name, ...args)`：直接调用一个官方函数，包括没有交给页面模板、`ctx.app.get` 拿不到的内部函数。
+- `has(name)`、`names()`：这个版本的官方代码里有没有这个函数、一共有哪些（挂载后才有结果，在 `init` 里判断）。
+
+能包住的是 `setup` 最外层写成 `const 名字 = (参数) => …` 的函数，官方 2.0.6 里有三百多个，如 `sendMessage`、`generateResponse`、`selectCharacter`、`showToast`。
+名字是官方代码里的名字，官方改名或删掉后 `has` 返回 `false`、包装不再被调用，所以用之前先判断，没有时让这部分功能停用。
+
+互不影响的保证：某个插件的 `handler` 出错只记日志，官方函数和其他插件的包装照常执行；官方函数自己抛的错原样往上抛。
+官方把 `setup` 改得加载器认不出时，页面照常，只是所有插件的 `ctx.hooks` 都不可用（`names()` 为空），别的接口不受影响。
+要在页面挂载时就生效的包装（比如包住启动时的读取），在 `beforeMount` 里用 `ctx.hooks.wrap` 登记。
+
+```js
+RPHubSDK.register({
+    id: 'my-mod', name: '我的 Mod', version: '1.0.0', requiresApi: 10, hooks: true,
+    init(ctx) {
+        if (!ctx.hooks.has('sendMessage')) return ctx.ui.toast('这个版本的 RPH 用不了发送前检查', { kind: 'warning' });
+        ctx.hooks.wrap('sendMessage', (next, ...args) => {
+            if (ctx.app.get('userInput').includes('草稿')) return ctx.ui.toast('草稿没发出去', { kind: 'info' });
+            return next(...args);
+        });
+    }
+});
+```
+
 ### `ctx.log`、版本与上游信息
 
 `ctx.log(...)` 会以 `[RPH-mod:<id>]` 前缀写入控制台。`ctx.version` 是
-`{ api: 8, loader: 'r2-workshop-8' }`。`ctx.upstream.updateInfo` 是页面提供的
+`{ api: 10, loader: 'r2-workshop-9' }`。`ctx.upstream.updateInfo` 是页面提供的
 `RPH_R2_UPDATE_INFO` 原值，也可能是 `null`；请判空读取。
 
 ## 5. 生命周期与状态徽记
@@ -239,7 +289,7 @@ const text = await ctx.ai.complete({ messages: [
 ## 6. 纪律与最佳实践
 
 - 加载器在无启用模块时不扫描主库。模块初始化只读取必要的自身数据，重活放到明确的用户动作之后。
-- 聊天变化订阅 `chat-mutation`，不要自己建立全页 `MutationObserver`。
+- 聊天变化订阅 `chat-mutation`，往页面里加内容用 `ctx.ui.attach`，不要自己建立全页 `MutationObserver`。
 - 不碰 `rp_hub_settings` 和任何同步协议数据，不依赖 app 内部 DOM 或 Vue 实例的稳定结构。
 - 每个事件回调都捕获自己的异常，日志清楚但不阻塞主应用；失败要 fail-soft。
 - `appDb` 只读，`keys` 只扫键；不要把内部键名当作稳定 API。

@@ -2,9 +2,11 @@
 (() => {
     'use strict';
 
-    const API_VERSION = 9;
-    const LOADER_VERSION = 'r2-workshop-8';
+    const API_VERSION = 10;
+    const LOADER_VERSION = 'r2-workshop-9';
     const LIST_KEY = 'rp_hub_workshop_modules_v1';
+    // ctx.ui.addStyle(css, { early: true }) 的样式存在插件自己 storage 里的这个名字下，随卸载清理、随云同步走。
+    const EARLY_STYLE_NAME = 'early-style';
     const DB_NAME = 'RPHubDB';
     const DB_STORE = 'store';
     const STORAGE_VALUE_LIMIT = 64 * 1024;
@@ -48,6 +50,11 @@
         chatRequestHandlers: new Set(),
         fetchWrapped: false,
         composerButtons: [],
+        earlyStyles: new Map(),
+        attachments: [],
+        attachTimer: 0,
+        services: new Map(),
+        hooks: { functions: null, handlers: new Map() },
         pages: new Map(),
         pageWatch: null,
         workshopIndex: null,
@@ -79,7 +86,8 @@
             enabled: value.enabled === true,
             addedAt: Number.isFinite(value.addedAt) ? value.addedAt : 0,
             lastStatus: VALID_STATUSES.has(value.lastStatus) ? value.lastStatus : '',
-            beforeMount: value.beforeMount === true
+            beforeMount: value.beforeMount === true,
+            hooks: value.hooks === true
         };
     }
 
@@ -112,7 +120,8 @@
                 enabled: entry.enabled,
                 addedAt: entry.addedAt,
                 lastStatus: entry.lastStatus,
-                ...(entry.beforeMount ? { beforeMount: true } : {})
+                ...(entry.beforeMount ? { beforeMount: true } : {}),
+                ...(entry.hooks ? { hooks: true } : {})
             }))));
             return true;
         } catch (error) {
@@ -287,6 +296,84 @@
         });
         state.composerButtons.push(button);
         ensureComposerButtons();
+    }
+
+    // API 10：插件的样式。early 的那份记在本机，下次打开页面时第一帧就生效（那时插件还没加载），换配色不会先闪一下默认的；每个插件一份。
+    function earlyStyleKey(owner) {
+        return `rph_mod_${owner}::${EARLY_STYLE_NAME}`;
+    }
+
+    function styleNode(owner, css) {
+        const node = element('style', '', css);
+        node.dataset.rphWorkshopStyle = owner;
+        document.head.appendChild(node);
+        return node;
+    }
+
+    function applyEarlyStyles(entries) {
+        for (const { id } of entries) {
+            let css = '';
+            try { css = id && localStorage.getItem(earlyStyleKey(id)); } catch (_) { /* storage blocked */ }
+            if (css) state.earlyStyles.set(id, styleNode(id, css));
+        }
+    }
+
+    function addStyle(owner, css, options = {}) {
+        const early = options.early === true;
+        const key = earlyStyleKey(owner);
+        const node = (early && state.earlyStyles.get(owner)) || styleNode(owner, '');
+        if (early) state.earlyStyles.set(owner, node);
+        const set = (value) => {
+            const text = String(value ?? '');
+            if (early && storageByteLength(text) > STORAGE_VALUE_LIMIT) throw new RangeError('early style exceeds 64KB');
+            node.textContent = text;
+            if (early) persistSetting(key, () => (text ? localStorage.setItem(key, text) : localStorage.removeItem(key)));
+        };
+        // early 的样式不传内容时沿用上次记下的那份。
+        if (css != null) set(css);
+        return Object.freeze({
+            set,
+            remove() {
+                set('');
+                node.remove();
+                if (state.earlyStyles.get(owner) === node) state.earlyStyles.delete(owner);
+            }
+        });
+    }
+
+    // API 10：把一块内容挂到页面里。anchor 是选择器或返回元素的函数，position 是 before / after / prepend / append。
+    // 页面重画把它冲掉、或者锚点后来才出现时由加载器补回去；render(node) 只在第一次挂上时调用。
+    function ensureAttachments() {
+        state.attachTimer = 0;
+        for (const item of state.attachments) {
+            if (item.node.isConnected) continue;
+            let target = null;
+            try { target = typeof item.anchor === 'function' ? item.anchor() : document.querySelector(item.anchor); }
+            catch (error) { log(`attach anchor for ${item.owner} failed`, error); }
+            if (!target?.isConnected) continue;
+            target[item.position](item.node);
+            if (item.render) safeCall(`attach for ${item.owner}`, item.render, item.node);
+            item.render = null;
+        }
+    }
+
+    function attach(owner, options) {
+        const { anchor, position = 'after', render } = options || {};
+        if (typeof render !== 'function') throw new TypeError('attach render must be a function');
+        if (typeof anchor !== 'string' && typeof anchor !== 'function') throw new TypeError('attach anchor must be a selector or a function');
+        if (!['before', 'after', 'prepend', 'append'].includes(position)) throw new TypeError('unsupported attach position');
+        const node = element('div');
+        node.dataset.rphWorkshopAttach = owner;
+        const item = { owner, node, anchor, position, render };
+        state.attachments.push(item);
+        ensureAttachments();
+        return Object.freeze({
+            node,
+            remove() {
+                state.attachments = state.attachments.filter((other) => other !== item);
+                node.remove();
+            }
+        });
     }
 
     // API 8：插件自己的整页功能（给完整的新功能用，普通插件仍用 addSidebarEntry）。导航菜单里加一个入口，点开像「设置」那样占满主区域；

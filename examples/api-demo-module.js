@@ -1,4 +1,4 @@
-// 接口示范 mod：把 RP-Hub 测试版插件接口（API 7）的每一项各用一次，写插件时照着抄。
+// 接口示范 mod：把 RP-Hub 测试版插件接口（API 10）的每一项各用一次，写插件时照着抄。
 // 默认不改动任何聊天内容；“请求改写示范”要在面板里手动打开。
 (() => {
     'use strict';
@@ -9,10 +9,13 @@
     RPHubSDK.register({
         id: 'api-demo',
         name: '接口示范',
-        version: '1.3.0',
-        requiresApi: 7,
+        version: '1.4.0',
+        requiresApi: 10,
+        // ⑲ hooks（API 10）：要用 ctx.hooks 包住官方函数就写上；新装后同样要再刷新一次。
+        hooks: true,
         // ⑫ beforeMount（API 6）：官方页面挂载前调用一次，可以改官方根组件（options）和页面模板（root.innerHTML）。
-        // 这里只看不改；真改的例子见 DB/modules/liuguanyi-20.5.9.js（聊天模型五槽）。这时还没有 ctx。
+        // 这里只看不改；真改的例子见 DB/modules/liuguanyi-20.5.9.js（聊天模型五槽）。
+        // API 10 起这里也收到 ctx（和 init 的是同一个），页面还没挂载，ctx.app 读不到东西，其余可以用。
         // 新装后（或第一次加上 beforeMount 的更新后）要按提示再刷新一次，之后每次打开页面都会先调用它。
         beforeMount({ options, root }) {
             mountInfo = `挂载前看到 ${Object.keys(options.components || {}).length} 个官方组件，页面模板 ${root.innerHTML.length} 字`;
@@ -64,6 +67,24 @@
 
             // ⑪ ctx.image：生图前看一眼（或修改）参数；注册生图接口见 DB/modules/nai2api-web.js
             ctx.image.onParams((params) => record(`新图参数：${params.steps} 步 · ${params.sampler}`));
+
+            // ⑯ ctx.ui.addStyle（API 10）：给页面加样式；加 { early: true } 的那份下次打开页面第一帧就生效，换配色用（见 DB/modules/skins.js）。
+            ctx.ui.addStyle('[data-rph-workshop-attach="api-demo"]{margin:0 0 1rem;color:var(--c-text-3);font-size:.8125rem}');
+            // ⑰ ctx.ui.attach（API 10）：把一块内容挂到页面里，这里挂在设置页标题下面；页面重画冲掉了加载器会补回。
+            ctx.ui.attach({
+                anchor: '.settings-view:not([data-rph-workshop-page]) .settings-page-header',
+                render(node) { node.textContent = '接口示范：这行字是插件用 ctx.ui.attach 挂上来的。'; }
+            });
+            // ⑱ ctx.provide / ctx.use（API 10）：插件之间互相提供接口，use 会等到对方提供了才有结果。
+            ctx.provide('api-demo', { record });
+            ctx.use('api-demo').then((demo) => demo.record('ctx.use 拿到了自己提供的接口'));
+            // ⑲ ctx.hooks（API 10）：包住官方函数，这里只记下官方弹过的提示再原样放行；官方没有这个函数时就不包。
+            if (ctx.hooks.has('showToast')) {
+                ctx.hooks.wrap('showToast', (next, message, ...rest) => {
+                    record('官方提示：' + message);
+                    return next(message, ...rest);
+                });
+            }
 
             // ⑭ ctx.ui.addPage（API 8）：给完整的新功能用的整页（导航菜单里单独一项），这里不用，免得示范插件占导航；
             //    写法见 DB/modules/character-voice.js。普通插件像下面这样放进「模块管理」就行。

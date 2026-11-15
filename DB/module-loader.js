@@ -2,9 +2,11 @@
 (() => {
     'use strict';
 
-    const API_VERSION = 9;
-    const LOADER_VERSION = 'r2-workshop-8';
+    const API_VERSION = 10;
+    const LOADER_VERSION = 'r2-workshop-9';
     const LIST_KEY = 'rp_hub_workshop_modules_v1';
+    // ctx.ui.addStyle(css, { early: true }) 的样式存在插件自己 storage 里的这个名字下，随卸载清理、随云同步走。
+    const EARLY_STYLE_NAME = 'early-style';
     const DB_NAME = 'RPHubDB';
     const DB_STORE = 'store';
     const STORAGE_VALUE_LIMIT = 64 * 1024;
@@ -48,6 +50,11 @@
         chatRequestHandlers: new Set(),
         fetchWrapped: false,
         composerButtons: [],
+        earlyStyles: new Map(),
+        attachments: [],
+        attachTimer: 0,
+        services: new Map(),
+        hooks: { functions: null, handlers: new Map() },
         pages: new Map(),
         pageWatch: null,
         workshopIndex: null,
@@ -79,7 +86,8 @@
             enabled: value.enabled === true,
             addedAt: Number.isFinite(value.addedAt) ? value.addedAt : 0,
             lastStatus: VALID_STATUSES.has(value.lastStatus) ? value.lastStatus : '',
-            beforeMount: value.beforeMount === true
+            beforeMount: value.beforeMount === true,
+            hooks: value.hooks === true
         };
     }
 
@@ -112,7 +120,8 @@
                 enabled: entry.enabled,
                 addedAt: entry.addedAt,
                 lastStatus: entry.lastStatus,
-                ...(entry.beforeMount ? { beforeMount: true } : {})
+                ...(entry.beforeMount ? { beforeMount: true } : {}),
+                ...(entry.hooks ? { hooks: true } : {})
             }))));
             return true;
         } catch (error) {
@@ -287,6 +296,84 @@
         });
         state.composerButtons.push(button);
         ensureComposerButtons();
+    }
+
+    // API 10：插件的样式。early 的那份记在本机，下次打开页面时第一帧就生效（那时插件还没加载），换配色不会先闪一下默认的；每个插件一份。
+    function earlyStyleKey(owner) {
+        return `rph_mod_${owner}::${EARLY_STYLE_NAME}`;
+    }
+
+    function styleNode(owner, css) {
+        const node = element('style', '', css);
+        node.dataset.rphWorkshopStyle = owner;
+        document.head.appendChild(node);
+        return node;
+    }
+
+    function applyEarlyStyles(entries) {
+        for (const { id } of entries) {
+            let css = '';
+            try { css = id && localStorage.getItem(earlyStyleKey(id)); } catch (_) { /* storage blocked */ }
+            if (css) state.earlyStyles.set(id, styleNode(id, css));
+        }
+    }
+
+    function addStyle(owner, css, options = {}) {
+        const early = options.early === true;
+        const key = earlyStyleKey(owner);
+        const node = (early && state.earlyStyles.get(owner)) || styleNode(owner, '');
+        if (early) state.earlyStyles.set(owner, node);
+        const set = (value) => {
+            const text = String(value ?? '');
+            if (early && storageByteLength(text) > STORAGE_VALUE_LIMIT) throw new RangeError('early style exceeds 64KB');
+            node.textContent = text;
+            if (early) persistSetting(key, () => (text ? localStorage.setItem(key, text) : localStorage.removeItem(key)));
+        };
+        // early 的样式不传内容时沿用上次记下的那份。
+        if (css != null) set(css);
+        return Object.freeze({
+            set,
+            remove() {
+                set('');
+                node.remove();
+                if (state.earlyStyles.get(owner) === node) state.earlyStyles.delete(owner);
+            }
+        });
+    }
+
+    // API 10：把一块内容挂到页面里。anchor 是选择器或返回元素的函数，position 是 before / after / prepend / append。
+    // 页面重画把它冲掉、或者锚点后来才出现时由加载器补回去；render(node) 只在第一次挂上时调用。
+    function ensureAttachments() {
+        state.attachTimer = 0;
+        for (const item of state.attachments) {
+            if (item.node.isConnected) continue;
+            let target = null;
+            try { target = typeof item.anchor === 'function' ? item.anchor() : document.querySelector(item.anchor); }
+            catch (error) { log(`attach anchor for ${item.owner} failed`, error); }
+            if (!target?.isConnected) continue;
+            target[item.position](item.node);
+            if (item.render) safeCall(`attach for ${item.owner}`, item.render, item.node);
+            item.render = null;
+        }
+    }
+
+    function attach(owner, options) {
+        const { anchor, position = 'after', render } = options || {};
+        if (typeof render !== 'function') throw new TypeError('attach render must be a function');
+        if (typeof anchor !== 'string' && typeof anchor !== 'function') throw new TypeError('attach anchor must be a selector or a function');
+        if (!['before', 'after', 'prepend', 'append'].includes(position)) throw new TypeError('unsupported attach position');
+        const node = element('div');
+        node.dataset.rphWorkshopAttach = owner;
+        const item = { owner, node, anchor, position, render };
+        state.attachments.push(item);
+        ensureAttachments();
+        return Object.freeze({
+            node,
+            remove() {
+                state.attachments = state.attachments.filter((other) => other !== item);
+                node.remove();
+            }
+        });
     }
 
     // API 8：插件自己的整页功能（给完整的新功能用，普通插件仍用 addSidebarEntry）。导航菜单里加一个入口，点开像「设置」那样占满主区域；
@@ -791,6 +878,101 @@
         return save();
     }
 
+    // API 10：插件之间互相提供接口。use 返回 Promise，等有插件 provide 了这个名字才有结果，所以不用管谁先加载。
+    function service(name) {
+        const key = String(name);
+        if (!state.services.has(key)) {
+            const slot = { owner: '' };
+            slot.promise = new Promise((resolve) => { slot.resolve = resolve; });
+            state.services.set(key, slot);
+        }
+        return state.services.get(key);
+    }
+
+    function provide(owner, name, api) {
+        const slot = service(name);
+        if (slot.owner) throw new Error(`接口 ${name} 已经由 ${slot.owner} 提供`);
+        slot.owner = owner;
+        slot.resolve(api);
+    }
+
+    // API 10：ctx.hooks，让插件包住官方主程序里的函数。做法和柳贯一的五槽一样，挂载前把官方 setup 的源码改写后重新生成：
+    // 顶层的「const 名字 = (参数) => …」改名成「名字$rph」，再补一个同名函数转给 hookCall，于是官方内部互相调用和页面按钮都会经过插件。
+    // 官方写法变了对不上、或者改写后有语法错误，就保持原样，只是 ctx.hooks 用不了，页面和其他插件不受影响。
+    function installHooks(options) {
+        try {
+            const source = String(options.setup);
+            const head = /^(?:function\s*)?[\w$]*\s*(\([^)]*\))\s*\{/.exec(source);
+            const indent = /\n([ \t]+)\S/.exec(source)?.[1];
+            if (!head || !indent) throw new Error('setup 的写法对不上');
+            const names = [];
+            const body = source.slice(head[0].length).replace(
+                new RegExp(`^(${indent}const )([A-Za-z_$][\\w$]*)(?= = (?:async )?(?:\\([^\\n]*\\)|[A-Za-z_$][\\w$]*) => )`, 'gm'),
+                (match, declaration, name) => { names.push(name); return `${declaration}${name}$rph`; }
+            );
+            if (!names.length) throw new Error('没有找到可以包住的函数');
+            const wrappers = names.map((name) => `function ${name}(...args) { return rphSetup.call$('${name}', ${name}$rph, args); }`).join(' ');
+            const setup = (0, eval)(`(function rphSetup${head[1]} { rphSetup.bind$({ ${names.join(', ')} }); ${wrappers}${body})`);
+            setup.call$ = hookCall;
+            setup.bind$ = (functions) => { state.hooks.functions = functions; };
+            options.setup = setup;
+        } catch (error) {
+            log('official function hooks unavailable', error);
+        }
+    }
+
+    function hookCall(name, original, args) {
+        const chain = state.hooks.handlers.get(name);
+        return chain?.length ? runHook(name, chain, chain.length - 1, original, args) : original(...args);
+    }
+
+    // 一个插件的包装出错（没来得及调用 next，或者调完之后自己出错）只记日志，照常走官方流程和别的插件；官方函数自己抛的错原样往上抛。
+    function runHook(name, chain, position, original, args) {
+        if (position < 0) return original(...args);
+        const { id, handler } = chain[position];
+        let called = false, official = false, result;
+        const next = (...nextArgs) => {
+            called = true;
+            try { result = runHook(name, chain, position - 1, original, nextArgs); }
+            catch (error) { official = true; throw error; }
+            if (typeof result?.then === 'function') result.then(undefined, () => { official = true; });
+            return result;
+        };
+        const recover = (error) => {
+            if (official) throw error;
+            log(`hook ${name} of ${id} failed`, error);
+            return called ? result : runHook(name, chain, position - 1, original, args);
+        };
+        try {
+            const value = handler(next, ...args);
+            return typeof value?.then === 'function' ? value.then(undefined, recover) : value;
+        } catch (error) {
+            return recover(error);
+        }
+    }
+
+    function wrapHook(id, name, handler) {
+        if (typeof handler !== 'function') throw new TypeError('hook handler must be a function');
+        const key = String(name);
+        const entry = { id, handler };
+        if (!state.hooks.handlers.has(key)) state.hooks.handlers.set(key, []);
+        state.hooks.handlers.get(key).push(entry);
+        return () => {
+            const chain = state.hooks.handlers.get(key);
+            const index = chain.indexOf(entry);
+            if (index >= 0) chain.splice(index, 1);
+        };
+    }
+
+    function hasHook(name) {
+        return !!state.hooks.functions && Object.hasOwn(state.hooks.functions, String(name));
+    }
+
+    function callHook(name, args) {
+        if (!hasHook(name)) throw new Error(`官方函数 ${name} 现在调不到`);
+        return state.hooks.functions[String(name)](...args);
+    }
+
     function isMainChatRequest(url, body) {
         return /chat\/completions/i.test(url) && Array.isArray(body?.messages) && appGet('isGenerating') === true
             && !body.messages.some(message => AUXILIARY_REQUEST_MARKERS.some(marker => String(message?.content || '').includes(marker)));
@@ -905,6 +1087,7 @@
         if (state.chatObserver || !state.runtimeActive) return;
         state.chatObserver = new MutationObserver((records) => {
             if (state.composerButtons.length) ensureComposerButtons();
+            if (state.attachments.length && !state.attachTimer) state.attachTimer = requestAnimationFrame(ensureAttachments);
             if (state.listeners['chat-mutation'].size === 0) return;
             collectDirtyRows(records);
             scheduleChatMutationDispatch();
@@ -1051,7 +1234,19 @@
                 addSidebarEntry: (options) => addSidebarEntry(id, options),
                 addComposerButton: (options) => addComposerButton(id, options),
                 addPage: (options) => addPage(id, options),
+                addStyle: (css, options) => addStyle(id, css, options),
+                attach: (options) => attach(id, options),
                 openPanel
+            },
+            // API 10：插件之间互相提供接口。
+            provide: (name, api) => provide(id, name, api),
+            use: (name) => service(name).promise,
+            // API 10：包住或调用官方主程序里的函数，manifest 要写 hooks: true。
+            hooks: {
+                has: hasHook,
+                names: () => Object.keys(state.hooks.functions || {}),
+                wrap: (name, handler) => wrapHook(id, name, handler),
+                call: (name, ...args) => callHook(name, args)
             },
             events: {
                 on: (name, callback) => subscribe(id, name, callback)
@@ -1112,7 +1307,7 @@
 
     async function initializeRuntime(runtime) {
         try {
-            await runtime.manifest.init(buildContext(runtime.manifest.id));
+            await runtime.manifest.init(runtime.ctx);
             setRuntimeStatus(runtime, 'ok');
             log(`module ${runtime.manifest.id} ready`);
         } catch (error) {
@@ -1136,7 +1331,8 @@
             version: manifest.version.trim(),
             requiresApi: manifest.requiresApi,
             init: manifest.init,
-            beforeMount: typeof manifest.beforeMount === 'function' ? manifest.beforeMount : null
+            beforeMount: typeof manifest.beforeMount === 'function' ? manifest.beforeMount : null,
+            hooks: manifest.hooks === true
         };
     }
 
@@ -1167,8 +1363,12 @@
         runtime.entry.name = checked.name;
         runtime.entry.version = checked.version;
         runtime.entry.lastStatus = '';
-        if (checked.beforeMount && !runtime.entry.beforeMount) showToast(`${checked.name} 要再刷新一次才能完整生效`, { kind: 'info' });
+        runtime.ctx = buildContext(checked.id);
+        if ((checked.beforeMount && !runtime.entry.beforeMount) || (checked.hooks && !runtime.entry.hooks)) {
+            showToast(`${checked.name} 要再刷新一次才能完整生效`, { kind: 'info' });
+        }
         runtime.entry.beforeMount = !!checked.beforeMount;
+        runtime.entry.hooks = checked.hooks;
         writeInstallations();
         refreshManagementPanel();
         runtime.initializing = appSettled.then(() => initializeRuntime(runtime));
@@ -1235,24 +1435,28 @@
 
     // API 6：上次运行时登记过 beforeMount 的插件先于页面加载，官方 app.mount('#app') 等它们加载完
     // （最多 REGISTER_TIMEOUT_MS）再挂载，插件借此改官方根组件和页面模板。新装或更新的插件刷新一次后生效。
-    function holdMount(runtimes) {
+    // API 10：有插件登记过 hooks 时，挂载前再改写官方 setup；排在各插件的 beforeMount 之后，它们看到的还是官方原文。
+    function holdMount(runtimes, hooks) {
         const createApp = window.Vue?.createApp;
-        if (!runtimes.length || typeof createApp !== 'function') return;
+        if ((!runtimes.length && !hooks) || typeof createApp !== 'function') return;
         window.Vue.createApp = function (...args) {
             const app = createApp.apply(this, args);
             const mount = app.mount;
             app.mount = function (target, ...rest) {
                 if (target !== '#app') return mount.call(this, target, ...rest);
                 window.Vue.createApp = createApp;
-                const timeout = new Promise((resolve) => setTimeout(resolve, REGISTER_TIMEOUT_MS));
-                state.mounted = Promise.race([Promise.allSettled(runtimes.map((runtime) => runtime.loading)), timeout]).then(() => {
+                const finish = () => {
                     for (const runtime of runtimes) {
                         if (state.registeredIds.get(runtime.manifest?.id) !== runtime) continue;
-                        try { runtime.manifest.beforeMount?.({ options: app._component, root: document.querySelector(target) }); }
+                        try { runtime.manifest.beforeMount?.({ options: app._component, root: document.querySelector(target), ctx: runtime.ctx }); }
                         catch (error) { log(`module ${runtime.manifest.id} beforeMount failed`, error); }
                     }
-                    mount.call(app, target, ...rest);
-                });
+                    if (hooks) installHooks(app._component);
+                    return mount.call(app, target, ...rest);
+                };
+                if (!runtimes.length) return finish();
+                const timeout = new Promise((resolve) => setTimeout(resolve, REGISTER_TIMEOUT_MS));
+                state.mounted = Promise.race([Promise.allSettled(runtimes.map((runtime) => runtime.loading)), timeout]).then(finish);
             };
             return app;
         };
@@ -1269,8 +1473,10 @@
     const enabled = state.installations.filter((entry) => entry.enabled);
     state.runtimeActive = !state.safeMode && enabled.length > 0;
     if (state.runtimeActive) {
+        applyEarlyStyles(enabled);
         for (const entry of enabled) createRuntime(entry);
-        holdMount(enabled.filter((entry) => entry.beforeMount).map((entry) => state.runtimesByUrl.get(entry.url)));
+        holdMount(enabled.filter((entry) => entry.beforeMount).map((entry) => state.runtimesByUrl.get(entry.url)),
+            enabled.some((entry) => entry.hooks));
     }
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', startDomRuntime, { once: true });

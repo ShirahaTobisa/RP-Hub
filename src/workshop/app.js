@@ -62,6 +62,101 @@
         return save();
     }
 
+    // API 10：插件之间互相提供接口。use 返回 Promise，等有插件 provide 了这个名字才有结果，所以不用管谁先加载。
+    function service(name) {
+        const key = String(name);
+        if (!state.services.has(key)) {
+            const slot = { owner: '' };
+            slot.promise = new Promise((resolve) => { slot.resolve = resolve; });
+            state.services.set(key, slot);
+        }
+        return state.services.get(key);
+    }
+
+    function provide(owner, name, api) {
+        const slot = service(name);
+        if (slot.owner) throw new Error(`接口 ${name} 已经由 ${slot.owner} 提供`);
+        slot.owner = owner;
+        slot.resolve(api);
+    }
+
+    // API 10：ctx.hooks，让插件包住官方主程序里的函数。做法和柳贯一的五槽一样，挂载前把官方 setup 的源码改写后重新生成：
+    // 顶层的「const 名字 = (参数) => …」改名成「名字$rph」，再补一个同名函数转给 hookCall，于是官方内部互相调用和页面按钮都会经过插件。
+    // 官方写法变了对不上、或者改写后有语法错误，就保持原样，只是 ctx.hooks 用不了，页面和其他插件不受影响。
+    function installHooks(options) {
+        try {
+            const source = String(options.setup);
+            const head = /^(?:function\s*)?[\w$]*\s*(\([^)]*\))\s*\{/.exec(source);
+            const indent = /\n([ \t]+)\S/.exec(source)?.[1];
+            if (!head || !indent) throw new Error('setup 的写法对不上');
+            const names = [];
+            const body = source.slice(head[0].length).replace(
+                new RegExp(`^(${indent}const )([A-Za-z_$][\\w$]*)(?= = (?:async )?(?:\\([^\\n]*\\)|[A-Za-z_$][\\w$]*) => )`, 'gm'),
+                (match, declaration, name) => { names.push(name); return `${declaration}${name}$rph`; }
+            );
+            if (!names.length) throw new Error('没有找到可以包住的函数');
+            const wrappers = names.map((name) => `function ${name}(...args) { return rphSetup.call$('${name}', ${name}$rph, args); }`).join(' ');
+            const setup = (0, eval)(`(function rphSetup${head[1]} { rphSetup.bind$({ ${names.join(', ')} }); ${wrappers}${body})`);
+            setup.call$ = hookCall;
+            setup.bind$ = (functions) => { state.hooks.functions = functions; };
+            options.setup = setup;
+        } catch (error) {
+            log('official function hooks unavailable', error);
+        }
+    }
+
+    function hookCall(name, original, args) {
+        const chain = state.hooks.handlers.get(name);
+        return chain?.length ? runHook(name, chain, chain.length - 1, original, args) : original(...args);
+    }
+
+    // 一个插件的包装出错（没来得及调用 next，或者调完之后自己出错）只记日志，照常走官方流程和别的插件；官方函数自己抛的错原样往上抛。
+    function runHook(name, chain, position, original, args) {
+        if (position < 0) return original(...args);
+        const { id, handler } = chain[position];
+        let called = false, official = false, result;
+        const next = (...nextArgs) => {
+            called = true;
+            try { result = runHook(name, chain, position - 1, original, nextArgs); }
+            catch (error) { official = true; throw error; }
+            if (typeof result?.then === 'function') result.then(undefined, () => { official = true; });
+            return result;
+        };
+        const recover = (error) => {
+            if (official) throw error;
+            log(`hook ${name} of ${id} failed`, error);
+            return called ? result : runHook(name, chain, position - 1, original, args);
+        };
+        try {
+            const value = handler(next, ...args);
+            return typeof value?.then === 'function' ? value.then(undefined, recover) : value;
+        } catch (error) {
+            return recover(error);
+        }
+    }
+
+    function wrapHook(id, name, handler) {
+        if (typeof handler !== 'function') throw new TypeError('hook handler must be a function');
+        const key = String(name);
+        const entry = { id, handler };
+        if (!state.hooks.handlers.has(key)) state.hooks.handlers.set(key, []);
+        state.hooks.handlers.get(key).push(entry);
+        return () => {
+            const chain = state.hooks.handlers.get(key);
+            const index = chain.indexOf(entry);
+            if (index >= 0) chain.splice(index, 1);
+        };
+    }
+
+    function hasHook(name) {
+        return !!state.hooks.functions && Object.hasOwn(state.hooks.functions, String(name));
+    }
+
+    function callHook(name, args) {
+        if (!hasHook(name)) throw new Error(`官方函数 ${name} 现在调不到`);
+        return state.hooks.functions[String(name)](...args);
+    }
+
     function isMainChatRequest(url, body) {
         return /chat\/completions/i.test(url) && Array.isArray(body?.messages) && appGet('isGenerating') === true
             && !body.messages.some(message => AUXILIARY_REQUEST_MARKERS.some(marker => String(message?.content || '').includes(marker)));
@@ -176,6 +271,7 @@
         if (state.chatObserver || !state.runtimeActive) return;
         state.chatObserver = new MutationObserver((records) => {
             if (state.composerButtons.length) ensureComposerButtons();
+            if (state.attachments.length && !state.attachTimer) state.attachTimer = requestAnimationFrame(ensureAttachments);
             if (state.listeners['chat-mutation'].size === 0) return;
             collectDirtyRows(records);
             scheduleChatMutationDispatch();

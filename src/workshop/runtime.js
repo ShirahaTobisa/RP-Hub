@@ -7,7 +7,7 @@
 
     async function initializeRuntime(runtime) {
         try {
-            await runtime.manifest.init(buildContext(runtime.manifest.id));
+            await runtime.manifest.init(runtime.ctx);
             setRuntimeStatus(runtime, 'ok');
             log(`module ${runtime.manifest.id} ready`);
         } catch (error) {
@@ -31,7 +31,8 @@
             version: manifest.version.trim(),
             requiresApi: manifest.requiresApi,
             init: manifest.init,
-            beforeMount: typeof manifest.beforeMount === 'function' ? manifest.beforeMount : null
+            beforeMount: typeof manifest.beforeMount === 'function' ? manifest.beforeMount : null,
+            hooks: manifest.hooks === true
         };
     }
 
@@ -62,8 +63,12 @@
         runtime.entry.name = checked.name;
         runtime.entry.version = checked.version;
         runtime.entry.lastStatus = '';
-        if (checked.beforeMount && !runtime.entry.beforeMount) showToast(`${checked.name} 要再刷新一次才能完整生效`, { kind: 'info' });
+        runtime.ctx = buildContext(checked.id);
+        if ((checked.beforeMount && !runtime.entry.beforeMount) || (checked.hooks && !runtime.entry.hooks)) {
+            showToast(`${checked.name} 要再刷新一次才能完整生效`, { kind: 'info' });
+        }
         runtime.entry.beforeMount = !!checked.beforeMount;
+        runtime.entry.hooks = checked.hooks;
         writeInstallations();
         refreshManagementPanel();
         runtime.initializing = appSettled.then(() => initializeRuntime(runtime));
@@ -130,24 +135,28 @@
 
     // API 6：上次运行时登记过 beforeMount 的插件先于页面加载，官方 app.mount('#app') 等它们加载完
     // （最多 REGISTER_TIMEOUT_MS）再挂载，插件借此改官方根组件和页面模板。新装或更新的插件刷新一次后生效。
-    function holdMount(runtimes) {
+    // API 10：有插件登记过 hooks 时，挂载前再改写官方 setup；排在各插件的 beforeMount 之后，它们看到的还是官方原文。
+    function holdMount(runtimes, hooks) {
         const createApp = window.Vue?.createApp;
-        if (!runtimes.length || typeof createApp !== 'function') return;
+        if ((!runtimes.length && !hooks) || typeof createApp !== 'function') return;
         window.Vue.createApp = function (...args) {
             const app = createApp.apply(this, args);
             const mount = app.mount;
             app.mount = function (target, ...rest) {
                 if (target !== '#app') return mount.call(this, target, ...rest);
                 window.Vue.createApp = createApp;
-                const timeout = new Promise((resolve) => setTimeout(resolve, REGISTER_TIMEOUT_MS));
-                state.mounted = Promise.race([Promise.allSettled(runtimes.map((runtime) => runtime.loading)), timeout]).then(() => {
+                const finish = () => {
                     for (const runtime of runtimes) {
                         if (state.registeredIds.get(runtime.manifest?.id) !== runtime) continue;
-                        try { runtime.manifest.beforeMount?.({ options: app._component, root: document.querySelector(target) }); }
+                        try { runtime.manifest.beforeMount?.({ options: app._component, root: document.querySelector(target), ctx: runtime.ctx }); }
                         catch (error) { log(`module ${runtime.manifest.id} beforeMount failed`, error); }
                     }
-                    mount.call(app, target, ...rest);
-                });
+                    if (hooks) installHooks(app._component);
+                    return mount.call(app, target, ...rest);
+                };
+                if (!runtimes.length) return finish();
+                const timeout = new Promise((resolve) => setTimeout(resolve, REGISTER_TIMEOUT_MS));
+                state.mounted = Promise.race([Promise.allSettled(runtimes.map((runtime) => runtime.loading)), timeout]).then(finish);
             };
             return app;
         };
@@ -164,8 +173,10 @@
     const enabled = state.installations.filter((entry) => entry.enabled);
     state.runtimeActive = !state.safeMode && enabled.length > 0;
     if (state.runtimeActive) {
+        applyEarlyStyles(enabled);
         for (const entry of enabled) createRuntime(entry);
-        holdMount(enabled.filter((entry) => entry.beforeMount).map((entry) => state.runtimesByUrl.get(entry.url)));
+        holdMount(enabled.filter((entry) => entry.beforeMount).map((entry) => state.runtimesByUrl.get(entry.url)),
+            enabled.some((entry) => entry.hooks));
     }
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', startDomRuntime, { once: true });
