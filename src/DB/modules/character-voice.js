@@ -1,7 +1,7 @@
 // 角色语音：让 AI 回复里的人物开口说话（旁白、叙述不念，那是「朗读」插件的事）。
 // 一次 AI 调用（插件接口 API 7 的 ctx.ai）分析每句是谁说的、用什么语气；人物的台词按「配音表」里各自的声音念。
 // 语音接口两种：Fish Audio（官方，或 new-api、fish2api 这类中转；语气写成句首 [方括号]，音色从公共声音库里让 AI 挑、自己搜，或粘贴声音 ID），
-// 和 OpenAI 语音格式的接口（声音填名字）。人物的声音可以标语言：分析时顺便把这个人的台词译过去，念译文，页面上标的还是原文。
+// 和 OpenAI 语音格式的接口（声音填名字）。声音带语言（Fish 声音库里的自带，搜索时可以按语言找，也能在人物那行改）：和正文不是一种语言时，分析顺便把这个人的台词译成声音的语言，念译文，页面上标的还是原文。
 // 聊天页有个状态悬浮窗：显示最新回复分析了没有、谁说了几句、正在说谁的台词，带「分析」「播放/停止」，说话时多出上一句、暂停、下一句。
 // 分析过的回复里，人物的每句台词画虚线，点一下能看是谁说的、什么语气，能只播这一句或从这句开始；句与句之间按 AI 给的节奏停顿。
 (() => {
@@ -24,7 +24,7 @@
             voices: ['troy', 'autumn', 'diana', 'hannah', 'austin', 'daniel'] },
         { id: 'custom', label: '自定义', url: '', model: '', tone: 'instructions', voices: [] }
     ];
-    // 声音念什么语言：没选就是跟正文一样；选了别的，分析时把这个人的台词译过去。
+    // 声音念什么语言：没有就是跟正文一样；是别的语言，分析时把这个人的台词译过去。
     const LANGS = { zh: '中文', ja: '日文', en: '英文', ko: '韩文', de: '德文', fr: '法文', es: '西班牙文', ru: '俄文', pt: '葡萄牙文', it: '意大利文' };
     // 没有试听的声音点「试听」时现合成的一句。
     const SAMPLES = { ja: 'これは試聴用の一文です。声の雰囲気を確かめてください。', en: 'This is a short sample sentence, just to hear how this voice sounds.', ko: '이것은 시청용 문장입니다. 목소리 분위기를 확인해 보세요.' };
@@ -118,7 +118,7 @@ ${translate ? `
 .rph-voice-widget.is-busy .rph-voice-widget__dot{box-shadow:0 0 0 3px rgba(96,165,250,.45),0 6px 18px rgba(0,0,0,.16)}`;
 
     RPHubSDK.register({
-        id: 'character-voice', name: '角色语音', version: '1.3.0', requiresApi: 7,
+        id: 'character-voice', name: '角色语音', version: '1.3.1', requiresApi: 7,
         init(ctx) {
             const player = new Audio(); // 都用这一个播放器：手机上点过一次以后，自动播放也能出声
             const preview = new Audio(); // 声音库的试听
@@ -920,22 +920,26 @@ ${translate ? `
             loadStore().then(markAll, () => {});
 
             // ---- 挑音色：Fish 公共声音库（不用密钥，网页能直接搜），用库里的声音不占 Fish 账号的保存名额 ----
-            const toVoice = (item) => ({ id: item._id, title: item.title || item._id, tags: (item.tags || []).slice(0, 5), sample: item.samples?.[0]?.audio || '' });
-            // 搜一页中文声音，按热度排；返回 Fish 原样的 { items, total }。
-            async function libraryPage({ title = '', tags = [], page = 1 }) {
+            // 声音自带语言（Fish 给每个声音标的）：选了它，这个人的台词就念那种语言。自己账号里的私有声音 Fish 猜得不准，不带，留给人物那行自己选。
+            const toVoice = (item) => ({
+                id: item._id, title: item.title || item._id, tags: (item.tags || []).slice(0, 5), sample: item.samples?.[0]?.audio || '',
+                lang: item.visibility !== 'private' && LANGS[item.languages?.[0]] ? item.languages[0] : ''
+            });
+            // 搜一页某种语言的声音（language 空着是不限语言），按热度排；返回 Fish 原样的 { items, total }。
+            async function libraryPage({ title = '', tags = [], page = 1, language = 'zh' }) {
                 const url = new URL(FISH_LIBRARY);
                 url.searchParams.set('page_size', String(PAGE_SIZE));
                 url.searchParams.set('page_number', String(page));
                 url.searchParams.set('sort_by', 'score');
-                url.searchParams.set('language', 'zh');
+                if (language) url.searchParams.set('language', language);
                 if (title) url.searchParams.set('title', title);
                 tags.filter((tag) => tag && tag !== 'unknown').forEach((tag) => url.searchParams.append('tag', tag));
                 const response = await fetch(url);
                 if (!response.ok) throw new Error(`Fish 声音库搜索失败（${response.status}）`);
                 return response.json();
             }
-            async function searchPage(title, page) {
-                const data = await libraryPage({ title, page });
+            async function searchPage(title, page, language) {
+                const data = await libraryPage({ title, page, language });
                 return { voices: (data.items || []).filter((item) => item?._id).map(toVoice), total: Number(data.total) || 0 };
             }
             // 按 ID 查一个声音；带上密钥，自己账号里的私有声音也查得到。
@@ -987,7 +991,8 @@ ${translate ? `
                 return parts.filter(Boolean).join('\n\n').slice(0, 4000);
             }
 
-            async function aiPick(name) {
+            // language：在哪种语言的声音里挑。
+            async function aiPick(name, language) {
                 const reply = await ctx.ai.complete({
                     model: get('analysisModel').trim() || undefined,
                     messages: [{ role: 'system', content: PICK_PROMPT }, { role: 'user', content: `人物：${name}\n资料：\n${aboutPerson(name) || '（世界书里没找到这个人的资料，按名字推测）'}` }]
@@ -997,7 +1002,7 @@ ${translate ? `
                 const keywords = (Array.isArray(want.keywords) ? want.keywords : []).map(String).filter(Boolean).slice(0, 2);
                 const gender = ['male', 'female'].includes(want.gender) ? want.gender : '';
                 const age = ['young', 'middle-aged', 'old'].includes(want.age) ? want.age : '';
-                const voices = await searchLibrary([...keywords.map((title) => ({ title, tags: [gender] })), { tags: [gender, age] }],
+                const voices = await searchLibrary([...keywords.map((title) => ({ title, tags: [gender], language })), { tags: [gender, age], language }],
                     { gender, age, keywords, tags: Array.isArray(want.tags) ? want.tags : [] });
                 return { voices, reason: String(want.reason || '') };
             }
@@ -1140,6 +1145,18 @@ ${translate ? `
                         item.onclick = onClick;
                         return item;
                     };
+                    // 语言下拉框（RPH 的样式）。empty 是「不选」那一项的名字；返回装着它的盒子和存值的原生下拉框。
+                    const languageSelect = (empty, value, onChange) => {
+                        const select = element('select', 'rph-ui-input');
+                        select.append(new Option(empty, ''), ...Object.entries(LANGS).map(([code, label]) => new Option(label, code)));
+                        select.value = LANGS[value] ? value : '';
+                        select.onchange = onChange;
+                        const box = element('div');
+                        box.style.width = '8.5rem';
+                        box.appendChild(select);
+                        castSelects.push(styledSelect(select));
+                        return { box, select };
+                    };
 
                     // 读音替换：念之前把左边的字换成右边的，页面上还是原文。改完一格就存；左边空着的不算。
                     const rulesBox = body.querySelector('[data-rules]');
@@ -1191,18 +1208,18 @@ ${translate ? `
                             ctx.ui.toast(`试听放不出来：${error?.message || error}`);
                         }
                     };
-                    // 换声音不动这个人已经选的语言。
+                    // 选了声音，这个人就念这个声音的语言；声音没带语言的（填的名字、私有声音）不动他原来选的。
                     const assign = (name, voice) => {
                         saveCast(readCast().map((person) => (person.name === name
-                            ? { ...person, id: voice.id, title: voice.title, sample: voice.sample, provider: fish ? undefined : 'openai' } : person)));
+                            ? { ...person, id: voice.id, title: voice.title, sample: voice.sample, provider: fish ? undefined : 'openai', lang: voice.lang || person.lang } : person)));
                         renderCast();
                     };
-                    // 一个候选声音：能试听、选用。
+                    // 一个候选声音：写着它的语言和标签，能试听、选用。
                     const voiceRow = (name, voice) => {
                         const row = element('div', 'rph-ui-row');
                         row.dataset.voiceId = voice.id;
                         const main = element('div', 'rph-ui-row-main');
-                        main.append(element('strong', '', voice.title), element('div', 'rph-ui-muted', voice.tags.join(' · ')));
+                        main.append(element('strong', '', voice.title), element('div', 'rph-ui-muted', [LANGS[voice.lang], ...voice.tags].filter(Boolean).join(' · ')));
                         const actions = element('div', 'rph-ui-row-actions');
                         actions.append(smallButton('试听', () => playSample(voice)), smallButton('用这个', () => assign(name, voice)));
                         row.append(main, actions);
@@ -1214,14 +1231,16 @@ ${translate ? `
                         if (!voices.length) area.appendChild(element('p', 'rph-ui-muted', '没找到合适的声音，换个词搜搜。'));
                         voices.forEach((voice) => area.appendChild(voiceRow(name, voice)));
                     };
-                    // 自己搜：每页 20 个，写出一共多少个，底下「加载更多」往后翻。粘贴的是声音 ID 或 fish.audio 声音页网址时直接按 ID 查。
-                    const searchBox = (area, name) => {
+                    // 自己搜：选在哪种语言的声音里搜（先按这个人现在的语言，没选过是中文），每页 20 个，写出一共多少个，底下「加载更多」往后翻。
+                    // 粘贴的是声音 ID 或 fish.audio 声音页网址时直接按 ID 查。
+                    const searchBox = (area, name, language) => {
                         area.replaceChildren();
                         const form = element('div', 'rph-ui-actions');
-                        form.style.marginTop = '0.5rem';
+                        form.style.cssText = 'margin-top:0.5rem;flex-wrap:wrap'; // 手机上搜索框占一行，语言和按钮换到下一行
                         const input = element('input', 'rph-ui-input');
                         input.placeholder = '搜声音，或粘贴声音 ID、网址';
-                        input.style.cssText = 'flex:1;min-width:0';
+                        input.style.cssText = 'flex:1 1 12rem;min-width:0';
+                        const scope = languageSelect('全部语言', language || 'zh', () => load(true));
                         const results = element('div');
                         let page = 0;
                         const more = smallButton('加载更多', () => load(false));
@@ -1235,7 +1254,7 @@ ${translate ? `
                             try {
                                 const text = input.value.trim();
                                 const id = text.match(/(?:^|\/m\/)([0-9a-f]{32})\b/i)?.[1];
-                                const { voices, total } = id ? { voices: [await lookupVoice(id)], total: 1 } : await searchPage(text, page + 1);
+                                const { voices, total } = id ? { voices: [await lookupVoice(id)], total: 1 } : await searchPage(text, page + 1, scope.select.value);
                                 page += 1;
                                 if (fresh) results.replaceChildren(element('p', 'rph-ui-muted', total ? `一共 ${total} 个声音` : '没找到声音，换个词搜搜。'));
                                 more.remove();
@@ -1248,7 +1267,7 @@ ${translate ? `
                             }
                         };
                         input.onkeydown = (event) => { if (event.key === 'Enter') load(true); };
-                        form.append(input, smallButton('搜索', () => load(true)));
+                        form.append(input, scope.box, smallButton('搜索', () => load(true)));
                         area.append(form, results);
                         input.focus();
                     };
@@ -1284,30 +1303,22 @@ ${translate ? `
                             const area = element('div');
                             area.dataset.pick = person.name;
                             area.style.marginBottom = '0.5rem';
-                            // 这个人的声音念什么语言：选了别的，分析时把他的台词译过去再念。
-                            const lang = element('select', 'rph-ui-input');
-                            lang.dataset.lang = '';
-                            lang.append(new Option('不翻译', ''), ...Object.entries(LANGS).map(([code, label]) => new Option(label, code)));
-                            lang.value = LANGS[person.lang] ? person.lang : '';
-                            lang.onchange = () => saveCast(readCast().map((item) => (item.name === person.name ? { ...item, lang: lang.value || undefined } : item)));
-                            const langBox = element('div');
-                            langBox.title = '这个声音念什么语言';
-                            langBox.style.width = '6.5rem';
-                            langBox.appendChild(lang);
-                            castSelects.push(styledSelect(lang));
-                            actions.append(langBox);
+                            // 这个人的声音念什么语言：选声音时跟着声音带过来，也可以在这里改。和正文不是一种语言时，分析会把他的台词译过去再念。
+                            const lang = languageSelect('跟正文一样', person.lang, () => saveCast(readCast().map((item) => (item.name === person.name ? { ...item, lang: lang.select.value || undefined } : item))));
+                            lang.box.title = '这个声音念什么语言';
+                            actions.append(lang.box);
                             if (!fish) actions.append(smallButton('填声音', () => nameBox(area, person.name)));
                             else actions.append(smallButton('AI 挑', async () => {
                                 area.replaceChildren(element('p', 'rph-ui-muted', '正在按世界书找声音……'));
                                 try {
-                                    const { voices, reason } = await aiPick(person.name);
+                                    const { voices, reason } = await aiPick(person.name, lang.select.value || 'zh');
                                     if (voices[0]) assign(person.name, voices[0]);
                                     const fresh = castBox.querySelector(`[data-pick="${CSS.escape(person.name)}"]`);
                                     showVoices(fresh, person.name, voices, voices[0] ? `已选「${voices[0].title}」。${reason}` : reason);
                                 } catch (error) {
                                     area.replaceChildren(element('p', 'rph-ui-muted', `没挑成：${error?.message || error}`));
                                 }
-                            }), smallButton('搜索', () => searchBox(area, person.name)));
+                            }), smallButton('搜索', () => searchBox(area, person.name, lang.select.value)));
                             actions.append(smallButton('试听', () => playSample(person)), smallButton('删除', () => {
                                 saveCast(readCast().filter((item) => item.name !== person.name));
                                 renderCast();

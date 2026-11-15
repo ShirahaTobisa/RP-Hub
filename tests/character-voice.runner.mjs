@@ -73,9 +73,14 @@ try {
             }
         };
     });
+    const searchLanguages = []; // 每次搜声音库带的语言
     await page.route('https://api.fish.audio/model?**', (route) => {
         const url = new URL(route.request().url());
         const title = url.searchParams.get('title') || '';
+        searchLanguages.push(url.searchParams.get('language'));
+        if (title === '声優') {
+            return route.fulfill({ headers: cors, json: { total: 1, items: [{ _id: 'seiyuu', title: '声優', tags: ['female'], languages: ['ja'], samples: [] }] } });
+        }
         if (title === '少年') {
             const page = Number(url.searchParams.get('page_number'));
             const items = Array.from({ length: page === 1 ? 20 : 5 }, (_, i) => ({ _id: `boy-${page}-${i}`, title: `少年${page}-${i}`, tags: ['male', 'young'], samples: [] }));
@@ -242,6 +247,23 @@ try {
         { name: '同桌', id: 'girl-gentle', title: '温柔少女', sample: 'https://example.test/girl.mp3' },
         { name: '班长', id: 'uncle-deep', title: '大叔', sample: 'https://example.test/uncle.mp3' }
     ]);
+    // 搜索能选在哪种语言的声音里找（默认中文）；选了带语言的声音，这个人就念它的语言；按那行的语言继续搜
+    assert.ok(searchLanguages.every((language) => language === 'zh'), 'searches look among Chinese voices unless told otherwise');
+    await panel.locator('[data-new-person]').fill('学姐');
+    await panel.locator('[data-add-person]').click();
+    await panel.locator('[data-person="学姐"]').getByRole('button', { name: '搜索' }).click();
+    await panel.locator('[data-pick="学姐"] button[aria-haspopup="listbox"]').click();
+    await page.getByRole('option', { name: '日文', exact: true }).click();
+    await panel.locator('[data-pick="学姐"] input').fill('声優');
+    await panel.locator('[data-pick="学姐"] input').press('Enter');
+    await panel.locator('[data-pick="学姐"] [data-voice-id="seiyuu"]', { hasText: '日文 · female' }).getByRole('button', { name: '用这个' }).click();
+    assert.equal(searchLanguages.at(-1), 'ja');
+    assert.deepEqual((await cast()).at(-1), { name: '学姐', id: 'seiyuu', title: '声優', sample: '', lang: 'ja' }, 'the person takes the language of the chosen voice');
+    assert.equal((await panel.locator('[data-person="学姐"] button[aria-haspopup="listbox"]').textContent()).trim(), '日文');
+    await panel.locator('[data-person="学姐"]').getByRole('button', { name: '搜索' }).click();
+    assert.equal((await panel.locator('[data-pick="学姐"] button[aria-haspopup="listbox"]').textContent()).trim(), '日文', 'the search starts in the language of that row');
+    assert.equal(await panel.locator('select:visible').count(), 0);
+    await panel.locator('[data-person="学姐"]').getByRole('button', { name: '删除' }).click();
     await backToChat();
     await panel.waitFor({ state: 'detached' });
     assert.equal(analysisCount(), 0, 'nothing is analysed until asked');
