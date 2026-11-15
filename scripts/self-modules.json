@@ -80,6 +80,9 @@
   "DB/modules/site-backup.js": [
     "src/DB/modules/site-backup.js"
   ],
+  "DB/modules/skins.js": [
+    "src/DB/modules/skins.js"
+  ],
   "DB/modules/storage-manager.js": [
     "src/DB/modules/storage-manager.js"
   ],
