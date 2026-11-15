@@ -4,6 +4,7 @@ import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } fr
 // 角色语音插件：配音表（AI 按资料挑、自己搜、粘贴声音 ID）；状态悬浮窗（点「分析」只分析、显示谁说了几句、正在说谁、能收起和拖动并记住位置）；
 // 只念人物的台词（旁白不念，用户扮演的默认不念），带语气；边播边生成下一段；重听不再分析也不再生成；
 // 自动分析模式只分析不出声；自动说时分析失败，引号里的话用默认声音；密钥错了有提示。分析用的模型从站点的模型列表里选，配音表不放卡名。
+// AI 回的配音表格式坏了能一行行捞；Fish 临时出错再试一次，只坏一句就跳过，连着三句才停，回的是文字不当成语音。
 const LONG = '她把书包放在桌上，打开窗户让风吹进来，又把昨天没写完的作业拿出来，一边嘟囔着一边在草稿纸上画着奇怪的小人，直到上课铃响起来才慌慌张张地收好东西。';
 const GREETING = [
     '清晨的阳光洒进教室。',
@@ -105,16 +106,23 @@ try {
             aiRequests.push({ kind: 'analyze', body });
             if (analysisFails) return route.fulfill({ status: 500, json: { error: { message: 'analysis is down' } } });
             if (user.includes('你来了')) return route.fulfill(reply(JSON.stringify([[1, '班长', 'cold', 0.3], [2, '旁白', 'calm narration', 0]])));
-            return route.fulfill(reply(JSON.stringify([[1, '旁白', 'calm narration', 0], [2, '同桌', 'cheerful', 0.2], [3, '旁白', 'calm narration', 0],
-                [4, '同桌', 'nervous inner voice', 0.4], [5, '用户', 'shy', 0.2], [6, '班长', 'annoyed', 0]])));
+            if (user.includes('快坐下')) return route.fulfill(reply(JSON.stringify([[1, '同桌', 'soft', 0.3], [2, '旁白', 'calm narration', 0]])));
+            // 多说了一句话、少了最后的括号：插件一行行捞出来照样能用。
+            return route.fulfill(reply('配音表如下：\n' + JSON.stringify([[1, '旁白', 'calm narration', 0], [2, '同桌', 'cheerful', 0.2], [3, '旁白', 'calm narration', 0],
+                [4, '同桌', 'nervous inner voice', 0.4], [5, '用户', 'shy', 0.2], [6, '班长', 'annoyed', 0]]).slice(0, -1)));
         }
         return route.fulfill(reply(REPLIES[replies++]));
     });
     const ttsRequests = [];
+    const faults = new Map(); // 台词里的词 → 接下来几次请求各回什么状态码（200 是回一段文字冒充成功）
     await page.route('https://api.fish.audio/compat/v1/audio/speech', (route) => {
         const request = route.request();
-        ttsRequests.push({ ...request.postDataJSON(), auth: request.headers().authorization });
+        const body = request.postDataJSON();
+        ttsRequests.push({ ...body, auth: request.headers().authorization });
         if (request.headers().authorization === 'Bearer bad-key') return route.fulfill({ status: 401, headers: cors, json: { error: { code: 401, message: 'Invalid Token' } } });
+        for (const [word, statuses] of faults) {
+            if (body.input.includes(word) && statuses.length) return route.fulfill({ status: statuses.shift(), headers: cors, json: { message: 'fixture failure' } });
+        }
         return route.fulfill({ headers: cors, contentType: 'audio/wav', body: wav });
     });
     await page.goto(harness.url + '/seed.html');
@@ -238,7 +246,7 @@ try {
     assert.equal(ttsRequests.length, 0, 'analysing alone makes no audio');
     assert.equal(aiRequests.find((item) => item.kind === 'analyze').body.model, 'analysis-model');
     const analysis = aiRequests.find((item) => item.kind === 'analyze').body.messages[1].content;
-    assert.ok(analysis.includes('已知人物：同桌、班长；用户扮演：用户') && analysis.includes('2. “早上好，今天也要加油哦。”'), analysis);
+    assert.ok(analysis.includes('已知人物：同桌、班长\n用户扮演：用户\n角色设定摘录：安静的同桌女生\n\n正文：\n1. [叙述] 清晨的阳光洒进教室。\n2. [对白] “早上好，今天也要加油哦。”'), analysis);
     assert.ok(!analysis.includes('好感度') && !analysis.includes('1girl'), analysis);
     assert.deepEqual(await page.evaluate(() => [...CSS.highlights.get('rph-voice-line')].map((range) => range.toString())),
         ['“早上好，今天也要加油哦。”', '（她心里其实有点紧张。）', LONG_TEXT], 'the lines spoken by people are underlined');
@@ -372,6 +380,42 @@ try {
     await page.locator('.toast-item', { hasText: 'Fish 报错（401，密钥不对）：Invalid Token' }).waitFor();
     await idle(4);
     console.log('PASS a wrong key shows the Fish error with a plain hint, and the floating window keeps its place after a reload');
+
+    // 8. 合成出错：Fish 临时出错自动再试一次；只坏一句就跳过接着说；连着三句都不行才停；回的是文字不当成语音留着
+    analysisFails = false;
+    await page.evaluate(() => localStorage.setItem('rph_mod_character-voice::fishKey', 'test-key'));
+    faults.set('早上好', [500]).set('紧张', [400]);
+    let from = ttsRequests.length;
+    before = await blobPlays();
+    const skipped = page.locator('.toast-item', { hasText: '有一句没合成出来，跳过了：Fish 报错（400' }).waitFor({ timeout: 15000 });
+    await voiceButton(0).click();
+    await playingBlob();
+    await page.evaluate(() => window.__audio.end());
+    await idle(0);
+    await skipped;
+    assert.deepEqual(ttsRequests.slice(from).map((item) => item.input), ['[cheerful] “早上好，今天也要加油哦。”', '[cheerful] “早上好，今天也要加油哦。”',
+        '[nervous inner voice] （她心里其实有点紧张。）', '[shy] 她轻轻推了推眼镜。', `[annoyed] ${LONG}`], 'a 500 is retried once; a rejected line is skipped and the rest goes on');
+    assert.equal(await blobPlays(), before + 3);
+    await page.evaluate(() => localStorage.setItem('rph_mod_character-voice::fishModel', 'fish-audio/s2.1-pro'));
+    faults.set('', [400, 400, 400]);
+    from = ttsRequests.length;
+    await voiceButton(0).click();
+    await page.locator('.toast-item', { hasText: '连着三句都没合成出来，停了' }).waitFor();
+    await idle(0);
+    assert.equal(ttsRequests.length - from, 3, 'after three failures in a row the fourth line is not requested');
+    faults.set('快坐下', [200]);
+    from = ttsRequests.length;
+    await voiceButton(4).click();
+    await page.locator('.toast-item', { hasText: 'Fish 返回的不是语音' }).waitFor();
+    await idle(4);
+    before = await blobPlays();
+    await voiceButton(4).click();
+    await playingBlob();
+    await page.evaluate(() => window.__audio.end());
+    await idle(4);
+    assert.equal(await blobPlays(), before + 1);
+    assert.deepEqual(ttsRequests.slice(from).map((item) => item.input), ['[soft] “快坐下。”', '[soft] “快坐下。”'], 'a text reply is not kept as audio, so the line is requested again');
+    console.log('PASS a failing Fish request is retried once, one bad line is skipped, three in a row stop, and a text reply is not kept as audio');
     assert.deepEqual(errors, []);
 } finally {
     await browser.close();

@@ -17,6 +17,11 @@
     const CACHE_SIZE = 80; // 重听不重新生成（不再花钱），最多留 80 段，刷新页面后清空
     const ANALYSIS_KEEP = 40; // 每张卡最多存 40 条回复的分析结果
     const ERROR_HINTS = { 400: '多半是声音 ID 填错了', 401: '密钥不对', 402: '余额不足', 403: '密钥没有权限', 429: '请求太频繁或额度用完了' };
+    const TIMEOUT = 60000; // Fish 一分钟没回应算超时
+    const RETRYABLE = [429, 500, 502, 503, 504]; // 等一下多半就好的错，自动再试一次
+    const SKIPPABLE = [400, 408, 422, ...RETRYABLE]; // 只坏这一句的错（内容被拒、超时、重试后还是不行）：跳过接着说
+    // AI 回的配音表里的一行。整段解析不了时（多说了话、少了括号）就一行行捞。
+    const ROW = /\[\s*\d+\s*,\s*"(?:\\.|[^"\\])*"\s*,\s*"(?:\\.|[^"\\])*"(?:\s*,\s*\d+(?:\.\d+)?)?\s*\]/g;
     const SILENT = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
     const SPEAKING = 'rph-voice-speaking';
     const QUOTE = '“[^”]*”|「[^」]*」|『[^』]*』|"[^"\\n]*"';
@@ -27,14 +32,27 @@
     const VOICE_TAGS = 'gentle, soft, warm, calm, deep, clear, bright, crisp, breathy, raspy, smooth, high, cheerful, playful, energetic, '
         + 'enthusiastic, serious, confident, authoritative, mysterious, expressive, dramatic, intimate, empathetic, relaxed, animated, '
         + 'character-voice, anime, storytelling, ASMR';
-    const ANALYZE_PROMPT = [
-        '你是有声剧的配音导演。下面是一段角色扮演回复里的句子，每行开头是编号。',
-        '逐行判断这一句是谁说的、该用什么语气念、念完停多久。',
-        '说话人：叙述、动作、环境描写写「旁白」；人物说的话（包括心里话）写人物名字，尽量用已知人物里的名字。',
-        '语气：用 2～5 个英文单词描述怎么念，比如 cheerful and teasing、whispering nervously、cold and distant。',
-        '停顿：这一句念完后停几秒（0～3，可以带小数），按剧情节奏定：接得紧的对话 0.3～0.6，换人说话 0.6～1，情绪重、要留白的地方停久一点。',
-        '只输出 JSON 数组，每行一项：[编号, "说话人", "语气", 停顿秒数]，不要输出别的文字。'
-    ].join('\n');
+    const ANALYZE_PROMPT = `你是一部有声剧的配音导演。下面是一段角色扮演正文，已按行编号，每行开头标了类型（对白 / 叙述）。请判断每一行由谁来念、用什么语气念、念完停多久，列出配音表。
+
+判断说话人：
+1. 第三人称的叙述、环境和动作描写、系统提示、作者的话，不是人物自己念的，说话人写「${NARRATOR}」。
+2. 引号里的话是人物开口说的。先看前后有没有「某某说」「她笑道」「他压低声音」这类提示，有就用那个人；没有就按上下文推断：谁在场、上一句是谁说的（对话通常轮流）、称呼和口吻、内容符合谁的身份。
+3. 人物的心理活动、内心独白、自言自语，以及没加引号但明显是人物在说或在想的话（比如单独一行的「你……能听到吗？」、喊话、诗句），都算那个人物自己念，不算「${NARRATOR}」；语气写得轻一些，比如 soft inner voice、murmuring to herself、whispering。
+4. 一行里既有叙述又夹着一小段人物的话，按说话的那个人物算。
+5. 同一个人全文只用一个名字，优先用「已知人物」里的写法；正文里的外号、代称（她、少女、红龙）都换成本名。用户扮演的角色说的话，说话人写用户的名字。
+6. 实在分不清是谁，写「${NARRATOR}」，不要编造正文里没有的名字。
+
+语气：
+7. 语气是给配音演员的指令，用 2 到 6 个英文单词写清情绪和说法，例如 soft and gentle、angry shouting、whispering nervously、teasing with a smirk、cold and indifferent、tearful and pleading、breathless and flustered、cheerful and energetic。
+8. 要贴合这一句的内容和前后文，同一个人在不同句子可以不同，不要千篇一律。
+9. 「${NARRATOR}」的语气固定写 calm narration。
+
+停顿：
+10. 这一句念完后停几秒（0～3，可以带小数），按剧情节奏定：接得紧的对话 0.3～0.6，换人说话 0.6～1，情绪重、要留白的地方停久一点。
+
+输出：
+只输出一个 JSON 数组，不要解释、不要 Markdown 代码块。每个元素是 [行号, "说话人", "语气", 停顿秒数]，行号从 1 开始，正文有几行就要有几个元素，不能漏也不能重复。
+示例：[[1,"${NARRATOR}","calm narration",0.5],[2,"阿玲","playful and feigning sternness",0.8]]`;
     const PICK_PROMPT = [
         '你是配音选角。根据人物资料，给这个人物写在声音库里找声音的条件。',
         '只输出 JSON：{"gender":"male|female|unknown","age":"young|middle-aged|old|unknown","tags":[2～4 个英文标签],"keywords":[1～2 个中文搜索词，比如 少女、御姐、少年、大叔、老人、萝莉、正太、公子、温柔男声],"reason":"一句中文理由"}',
@@ -70,7 +88,7 @@
 .rph-voice-widget.is-busy .rph-voice-widget__dot{box-shadow:0 0 0 3px rgba(96,165,250,.45),0 6px 18px rgba(0,0,0,.16)}`;
 
     RPHubSDK.register({
-        id: 'character-voice', name: '角色语音', version: '1.2.3', requiresApi: 7,
+        id: 'character-voice', name: '角色语音', version: '1.2.4', requiresApi: 7,
         init(ctx) {
             const player = new Audio(); // 都用这一个播放器：手机上点过一次以后，自动播放也能出声
             const preview = new Audio(); // 声音库的试听
@@ -259,17 +277,25 @@
                 renderWidget();
                 try {
                     if (!widgetVisible()) ctx.ui.toast('正在分析每句是谁说的、用什么语气……', { kind: 'info' });
+                    // 角色设定的前几百字，帮模型认人名。
+                    const profile = String(character().description || '').replace(/\s+/g, ' ').trim().slice(0, 600);
                     const reply = await ctx.ai.complete({
                         model: get('analysisModel').trim() || undefined,
                         messages: [
                             { role: 'system', content: ANALYZE_PROMPT },
-                            { role: 'user', content: `已知人物：${readCast().map((person) => person.name).join('、') || '（还没有）'}；用户扮演：${userName() || '未知'}\n\n${lines.map((line, i) => `${i + 1}. ${line.text.slice(0, 300)}`).join('\n')}` }
+                            { role: 'user', content: [
+                                `已知人物：${readCast().map((person) => person.name).join('、') || '（正文里出现谁就用谁的名字）'}`,
+                                `用户扮演：${userName() || '未知'}`,
+                                ...(profile ? [`角色设定摘录：${profile}`] : []),
+                                '\n正文：',
+                                ...lines.map((line, i) => `${i + 1}. [${line.quote ? '对白' : '叙述'}] ${line.text.slice(0, 300)}`)
+                            ].join('\n') }
                         ]
                     });
-                    const rows = parseJson(reply, '[');
-                    if (!Array.isArray(rows)) throw new Error('AI 没有按格式回答');
+                    const rows = (parseJson(reply, '[') || [...reply.matchAll(ROW)].map((match) => JSON.parse(match[0]))).filter(Array.isArray);
+                    if (!rows.length) throw new Error(reply.trim() ? 'AI 没有按格式回答' : 'AI 没有返回内容，换个分析模型试试');
                     const labels = fallback.map((item, i) => {
-                        const row = rows.find((entry) => Array.isArray(entry) && Number(entry[0]) === i + 1);
+                        const row = rows.find((entry) => Number(entry[0]) === i + 1);
                         if (!row) return item;
                         const pause = Number(row[3]);
                         return {
@@ -351,29 +377,62 @@
                 player.play().catch(() => {});
             }
 
+            // 等一会儿（句与句之间的停顿、重试前的间隔），停止时马上结束。
+            const wait = (ms, signal) => new Promise((resolve) => {
+                const timer = setTimeout(resolve, ms);
+                signal.addEventListener('abort', () => {
+                    clearTimeout(timer);
+                    resolve();
+                }, { once: true });
+            });
+
             const cache = new Map();
+            const failure = (message, status) => Object.assign(new Error(message), { status });
+            // 向 Fish 要一段语音。出错时带上状态码，播放那边据此决定重试、跳过还是停。
+            async function request(body, signal) {
+                const controller = new AbortController();
+                const cancel = () => controller.abort();
+                if (signal.aborted) cancel(); else signal.addEventListener('abort', cancel, { once: true });
+                const timer = setTimeout(cancel, TIMEOUT);
+                try {
+                    const response = await fetch(FISH_SPEECH, {
+                        method: 'POST',
+                        signal: controller.signal,
+                        headers: { 'content-type': 'application/json', authorization: `Bearer ${get('fishKey').trim()}` },
+                        body: JSON.stringify(body)
+                    });
+                    if (!response.ok) {
+                        const detail = await response.text().catch(() => '');
+                        let reason = detail;
+                        try {
+                            const json = JSON.parse(detail);
+                            reason = [json.error?.message, json.message, json.detail, json.error].find((item) => typeof item === 'string' && item) || detail;
+                        } catch (_) { /* 不是 JSON，用原文 */ }
+                        const status = ERROR_HINTS[response.status] ? `${response.status}，${ERROR_HINTS[response.status]}` : response.status;
+                        throw failure(`Fish 报错（${status}）：${String(reason).slice(0, 200) || response.statusText}`, response.status);
+                    }
+                    const blob = await response.blob();
+                    // 回的是一段文字（出错了却没给错误码）或者空的：不当成语音存下来。
+                    if (!blob.size || /json|^text\//i.test(blob.type)) throw failure('Fish 返回的不是语音');
+                    return blob;
+                } catch (error) {
+                    throw controller.signal.aborted && !signal.aborted ? failure('Fish 一分钟没回应', 408) : error;
+                } finally {
+                    clearTimeout(timer);
+                    signal.removeEventListener('abort', cancel);
+                }
+            }
             async function synthesize({ text, voice, tone }, signal) {
                 const input = tone ? `[${tone}] ${text}` : text;
                 const model = get('fishModel');
                 const key = [model, voice, input].join('\n');
                 if (cache.has(key)) return cache.get(key);
-                const response = await fetch(FISH_SPEECH, {
-                    method: 'POST',
-                    signal,
-                    headers: { 'content-type': 'application/json', authorization: `Bearer ${get('fishKey').trim()}` },
-                    body: JSON.stringify({ model, input, voice, response_format: 'mp3' })
+                const body = { model, input, voice, response_format: 'mp3' };
+                const blob = await request(body, signal).catch(async (error) => {
+                    if (!RETRYABLE.includes(error.status)) throw error;
+                    await wait(1500, signal);
+                    return request(body, signal);
                 });
-                if (!response.ok) {
-                    const detail = await response.text().catch(() => '');
-                    let reason = detail;
-                    try {
-                        const json = JSON.parse(detail);
-                        reason = [json.error?.message, json.message, json.detail, json.error].find((item) => typeof item === 'string' && item) || detail;
-                    } catch (_) { /* 不是 JSON，用原文 */ }
-                    const status = ERROR_HINTS[response.status] ? `${response.status}，${ERROR_HINTS[response.status]}` : response.status;
-                    throw new Error(`Fish 报错（${status}）：${String(reason).slice(0, 200) || response.statusText}`);
-                }
-                const blob = await response.blob();
                 cache.set(key, blob);
                 if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value);
                 return blob;
@@ -407,15 +466,6 @@
                 document.querySelectorAll(`.${SPEAKING}`).forEach((el) => el.classList.remove(SPEAKING));
                 line?.el.classList.add(SPEAKING);
             }
-            // 句与句之间的停顿，停止时马上结束。
-            const wait = (ms, current) => new Promise((resolve) => {
-                const timer = setTimeout(resolve, ms);
-                current.abort.signal.addEventListener('abort', () => {
-                    clearTimeout(timer);
-                    resolve();
-                }, { once: true });
-            });
-
             // 说一条回复：没分析过先分析，再按人物的声音一句句说，句与句之间按节奏停顿；边播边生成下一段。
             // from 是从第几句开始，only 为 true 时只说这一句（点台词时用）。
             async function speak(index, { from = 0, only = false } = {}) {
@@ -431,8 +481,19 @@
                     if (!items.length) ctx.ui.toast('这条回复里没有人物说的话', { kind: 'info' });
                     const loads = [];
                     const load = (i) => (loads[i] ??= synthesize(items[i], current.abort.signal));
+                    let failed = 0; // 连着几句没合成出来
                     for (let i = 0; i < items.length && !current.stopped; i += 1) {
-                        const blob = await load(i);
+                        let blob;
+                        try {
+                            blob = await load(i);
+                        } catch (error) {
+                            failed += 1;
+                            if (current.stopped || !SKIPPABLE.includes(error.status)) throw error;
+                            if (failed >= 3) throw new Error(`连着三句都没合成出来，停了：${error.message}`);
+                            ctx.ui.toast(`有一句没合成出来，跳过了：${error.message}`, { kind: 'warning' });
+                            continue;
+                        }
+                        failed = 0;
                         if (i + 1 < items.length) load(i + 1).catch(() => {});
                         if (current.stopped) break;
                         current.speaker = items[i].speaker;
@@ -443,7 +504,7 @@
                         } finally {
                             showSpeaking(null);
                         }
-                        if (items[i].pause && !current.stopped) await wait(items[i].pause, current);
+                        if (items[i].pause && !current.stopped) await wait(items[i].pause, current.abort.signal);
                     }
                 } catch (error) {
                     if (!current.stopped) {
