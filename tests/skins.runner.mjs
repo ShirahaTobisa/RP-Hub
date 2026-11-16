@@ -91,6 +91,21 @@ try {
     await ready();
     console.log('PASS the colors are there on the first frame and the splash shows the skin art until the plugin is ready');
 
+    // 竖屏（手机）用竖图，横屏（电脑）用同一幅画的横版。
+    const backdrop = () => page.evaluate(() => {
+        const image = getComputedStyle(document.querySelector('.app-main'), '::before').backgroundImage.slice(0, 160);
+        const root = document.documentElement.style;
+        return image === root.getPropertyValue('--rph-skin-wide').slice(0, 160) ? 'wide' : image === root.getPropertyValue('--rph-skin-art').slice(0, 160) ? 'tall' : image;
+    });
+    assert.equal(await backdrop(), 'tall');
+    await page.setViewportSize({ width: 1280, height: 800 });
+    assert.equal(await backdrop(), 'wide');
+    // 横版里人物靠一边（中间是聊天栏），图按那一边对齐。
+    assert.match(await page.evaluate(() => document.documentElement.style.getPropertyValue('--rph-skin-side')), /^(left|right)$/);
+    assert.match(await page.evaluate(() => getComputedStyle(document.querySelector('.app-main'), '::before').backgroundPosition), /^(0%|100%) 30%$/);
+    await page.setViewportSize({ width: 390, height: 844 });
+    console.log('PASS upright screens get the upright art and wide screens the wide version of the same picture, with the character at one side');
+
     // 页面背景、聊天页背景、彩绘图标：样式里各有一段；导航入口、设置页分区的图标标上了图集里的位置。逐项关掉后对应的那段没了。
     const option = (key) => page.locator('[data-rph-workshop-attach="skins"] label.rph-ui-check', { has: page.locator(`input[data-option="${key}"]`) });
     const parts = ['.app-main::before', '.char-bg-blur', '[data-rph-skin-icon]'];
@@ -103,6 +118,14 @@ try {
         return [icon.style.getPropertyValue('--rph-skin-x'), icon.style.getPropertyValue('--rph-skin-y'), getComputedStyle(icon).backgroundImage.startsWith('url("data:image/webp')];
     }), ['5', '0', true]);
     await page.keyboard.press('Escape');
+    // 别的插件自己画的入口：写上名字，画好后叫皮肤插件换一遍，马上就是彩绘的。
+    assert.equal(await page.evaluate(() => {
+        const node = Object.assign(document.createElement('button'), { id: 'probe-icon', innerHTML: '<span class="app-navigation-icon"><svg viewBox="0 0 24 24"></svg></span>' });
+        node.dataset.rphIcon = '设置';
+        document.body.appendChild(node);
+        skinProbe.api.refreshIcons();
+        return node.firstElementChild.style.getPropertyValue('--rph-skin-x');
+    }), '5');
     await view('settings');
     await page.waitForFunction(() => document.querySelector('.settings-card__title svg[data-rph-skin-icon]'));
     for (const key of ['backdrop', 'chat', 'icons']) await option(key).click();
@@ -160,15 +183,24 @@ try {
     await page.locator('[data-rph-workshop-attach="skins"] input[type="file"]').setInputFiles({ name: 'photo.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
     await page.locator('[data-rph-workshop-attach="skins"] .rph-skin-photo').waitFor();
     assert.ok((await early()).includes('.entry-transition'));
+    // 再放一张横图：竖屏还用竖的那张，横图留给横屏。
+    const widePng = await page.evaluate(async () => {
+        const canvas = Object.assign(document.createElement('canvas'), { width: 90, height: 60 });
+        canvas.getContext('2d').fillRect(0, 0, 90, 60);
+        return canvas.toDataURL('image/png').split(',')[1];
+    });
+    await page.locator('[data-rph-workshop-attach="skins"] input[type="file"]').setInputFiles({ name: 'wide.png', mimeType: 'image/png', buffer: Buffer.from(widePng, 'base64') });
+    await page.waitForFunction(() => document.querySelectorAll('[data-rph-workshop-attach="skins"] .rph-skin-photo').length === 2);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => document.documentElement.classList.contains('rph-skin-art'), null, { timeout: 20000 });
-    assert.match(await page.evaluate(() => document.documentElement.style.getPropertyValue('--rph-skin-art')), /^url\("data:image\/jpeg/);
+    assert.match(await page.evaluate(() => document.documentElement.style.getPropertyValue('--rph-skin-art')), /^url\("data:image\/jpeg[^#]*"\)$/);
+    assert.match(await page.evaluate(() => document.documentElement.style.getPropertyValue('--rph-skin-wide')), /^url\("data:image\/jpeg[^#]*#wide"\)$/);
     await ready();
     await view('settings');
     await card('custom').waitFor();
     await option('splash').click();
     assert.ok(!(await early()).includes('.entry-transition'));
-    console.log('PASS the custom skin takes a theme color and your own splash photos; the splash can be turned off');
+    console.log('PASS the custom skin takes a theme color and your own photos (upright ones for upright screens, wide ones for wide screens); the splash can be turned off');
     assert.deepEqual(errors, []);
 } finally {
     await context.close();

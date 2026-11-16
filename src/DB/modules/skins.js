@@ -1,9 +1,11 @@
 // 皮肤：换整站配色、开屏图、页面背景和图标。自带里见茜、谬因、莫宁三套，每套都能再调主题色、底色浓淡和背景深浅，也可以放自己的图。
 // 配色只换官方 theme.css 里那些颜色变量的色相和浓淡，明暗不动，所以官方调好的文字对比度不变，官方改版也照常跟。
-// 别的插件可以再加皮肤：ctx.use('skins').then((skins) => skins.register({ id, name, note, accent, neutral, colors, art, icons, css, apply, remove }))。
-// accent 是主题色，neutral 定底色的色调，colors 是这套皮肤自己的几个备选主题色；art 是皮肤的图（一张或几张，每次打开随机用一张，
-// 当开屏图和页面背景），icons 是 6 列 4 行的图标表（格子顺序见 ICON_NAMES），css 是额外样式，apply / remove 在选中和换走时调用。
-// 别的插件自己画的入口想用皮肤的图标：给元素写上 data-rph-icon="设置" 这样的名字，里面放一个 svg。
+// 别的插件可以再加皮肤：ctx.use('skins').then((skins) => skins.register({ id, name, note, accent, neutral, colors, art, wide, icons, css, apply, remove }))。
+// accent 是主题色，neutral 定底色的色调，colors 是这套皮肤自己的几个备选主题色；art 是皮肤的图（竖图，一张或几张，每次打开随机用一张，
+// 当开屏图和页面背景），wide 是和 art 一一对应的横版（可以不给），横屏（电脑）时用它。电脑上聊天栏在正中间，横版里人物要靠一边，
+// 并在图片地址末尾写上 #left 或 #right 告诉插件是哪边；icons 是 6 列 4 行的图标表（格子顺序见 ICON_NAMES），
+// css 是额外样式，apply / remove 在选中和换走时调用。
+// 别的插件自己画的入口想用皮肤的图标：给元素写上 data-rph-icon="设置" 这样的名字，里面放一个 svg；画好或重画之后调一下 skins.refreshIcons()。
 (() => {
     'use strict';
 
@@ -11,9 +13,9 @@
 
     const SKINS = [
         // 每套的配色取自角色身上：里见茜是挂绳的钴蓝、眼睛的金、针织衫的炭蓝；谬因是青绿、流苏的红、发色的奶金；莫宁是紫、全息屏的青、眼睛的玫红。
-        { id: 'akane', name: '里见茜', note: '永远的7日之都', accent: '#2f55c8', neutral: '#a39c8f', colors: ['#2f55c8', '#c2901c', '#56627f'], art: SKIN_ART.akane, icons: SKIN_ICONS.akane },
-        { id: 'aphrissa', name: '谬因', note: '明日方舟', accent: '#1f9d93', neutral: '#b3976b', colors: ['#1f9d93', '#c8483c', '#b08a3e'], art: SKIN_ART.aphrissa, icons: SKIN_ICONS.aphrissa },
-        { id: 'mornye', name: '莫宁', note: '鸣潮', accent: '#8b66d9', neutral: '#8c80b8', colors: ['#8b66d9', '#2fa7c9', '#d6557a'], art: SKIN_ART.mornye, icons: SKIN_ICONS.mornye }
+        { id: 'akane', name: '里见茜', note: '永远的7日之都', accent: '#2f55c8', neutral: '#a39c8f', colors: ['#2f55c8', '#c2901c', '#56627f'], art: SKIN_ART.akane, wide: SKIN_WIDE.akane, icons: SKIN_ICONS.akane },
+        { id: 'aphrissa', name: '谬因', note: '明日方舟', accent: '#1f9d93', neutral: '#b3976b', colors: ['#1f9d93', '#c8483c', '#b08a3e'], art: SKIN_ART.aphrissa, wide: SKIN_WIDE.aphrissa, icons: SKIN_ICONS.aphrissa },
+        { id: 'mornye', name: '莫宁', note: '鸣潮', accent: '#8b66d9', neutral: '#8c80b8', colors: ['#8b66d9', '#2fa7c9', '#d6557a'], art: SKIN_ART.mornye, wide: SKIN_WIDE.mornye, icons: SKIN_ICONS.mornye }
     ];
     const CUSTOM = { id: 'custom', name: '自定义', note: '主题色和自己的图', accent: '#5a6ff0' };
     const COLORS = ['#e0527a', '#e2733a', '#c79a1e', '#3f9d5b', '#1f9d93', '#3f8fd6', '#5a6ff0', '#8b66d9'];
@@ -31,6 +33,7 @@
     ];
     const CSS = {
         // 开屏：借官方的开屏层，换成皮肤的图，标志挪到下方；插件没来得及收起时 8 秒后自己消失。图偏暗时用深色底、浅色标志。
+        // 横屏时有横版就铺满，没有就把竖图居中放一条、两边淡出。
         splash: `.entry-transition{align-items:flex-end;animation-delay:8s!important;pointer-events:auto}
 .entry-transition::before{content:"";position:absolute;inset:0 auto 0 50%;width:min(100%,66.7vh);transform:translateX(-50%);background:var(--rph-skin-art) center 20%/cover no-repeat;opacity:0;transition:opacity .5s ease}
 .rph-skin-art .entry-transition::before{opacity:1}
@@ -39,11 +42,15 @@
 .entry-transition-book{display:none}
 .entry-transition.rph-skin-out{animation:entry-screen-out .6s var(--ease-in-out) both!important;pointer-events:none}
 .rph-skin-dark .entry-transition{--rph-skin-scrim:#0e1016;--rph-skin-ink:#f5f5f8;background:#0e1016}
-@media (min-aspect-ratio:1/1){.entry-transition::before{-webkit-mask-image:linear-gradient(to right,transparent,#000 16%,#000 84%,transparent);mask-image:linear-gradient(to right,transparent,#000 16%,#000 84%,transparent)}}`,
+@media (min-aspect-ratio:1/1){.entry-transition::before{-webkit-mask-image:linear-gradient(to right,transparent,#000 16%,#000 84%,transparent);mask-image:linear-gradient(to right,transparent,#000 16%,#000 84%,transparent)}
+.rph-skin-wide .entry-transition::before{inset:0;width:auto;transform:none;background-image:var(--rph-skin-wide);background-position:var(--rph-skin-side,center) 30%;-webkit-mask-image:none;mask-image:none}}`,
         backdrop: `.app-main{isolation:isolate}
 .app-main::before{content:"";position:absolute;inset:0;z-index:-1;background:var(--rph-skin-art) center 18%/cover no-repeat;opacity:var(--rph-skin-fade,.18);pointer-events:none}
-:root[data-app-theme="dark"] .app-main::before{opacity:calc(var(--rph-skin-fade,.18) + .06)}`,
-        chat: '.char-bg-blur{background-image:var(--rph-skin-art)!important;background-position:center 18%!important}',
+:root[data-app-theme="dark"] .app-main::before{opacity:calc(var(--rph-skin-fade,.18) + .06)}
+@media (min-aspect-ratio:1/1){.rph-skin-wide .app-main::before{background-image:var(--rph-skin-wide);background-position:var(--rph-skin-side,center) 30%}}`,
+        // 聊天页：官方把背景图模糊了一层（它用的是小头像）；横版图里人物就在聊天栏旁边，是给人看的，不模糊。
+        chat: `.char-bg-blur{background-image:var(--rph-skin-art)!important;background-position:center 18%!important}
+@media (min-aspect-ratio:1/1){.rph-skin-wide .char-bg-blur{background-image:var(--rph-skin-wide)!important;background-position:var(--rph-skin-side,center) 30%!important;filter:none!important}}`,
         icons: `[data-rph-skin-icon]{padding:0!important;background:var(--rph-skin-icons) calc(var(--rph-skin-x)*20%) calc(var(--rph-skin-y)*33.3333%)/600% 400% no-repeat!important}
 [data-rph-skin-icon]>*{opacity:0}
 .app-navigation-icon[data-rph-skin-icon]{width:34px;height:34px;border-radius:0}
@@ -207,11 +214,22 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
     }
 
     // 这次用皮肤的哪张图：带了几张就随机挑一张，当开屏图和页面背景；图偏暗时开屏用深色底、浅色标志。
+    // 竖图给竖屏（手机），横图给横屏（电脑）：皮肤自带的横版和竖图一一对应，挑同一对；自己放的图各挑各的（横图加进来时带了 #wide 记号）。
+    // 横版地址末尾的 #left / #right 是人物在哪边，图就按那一边对齐。
     function showArt(skin) {
         const list = artOf(skin);
-        const url = list[Math.floor(Math.random() * list.length)];
-        root.classList.remove('rph-skin-art', 'rph-skin-dark');
+        const index = Math.floor(Math.random() * list.length);
+        let url = list[index];
+        let wide = [].concat(skin?.wide || [])[index];
+        if (skin?.id === 'custom') {
+            const pick = (photos) => photos[Math.floor(Math.random() * photos.length)];
+            wide = pick(list.filter((photo) => photo.endsWith('#wide')));
+            url = pick(list.filter((photo) => !photo.endsWith('#wide'))) || wide;
+        }
+        root.classList.remove('rph-skin-art', 'rph-skin-dark', 'rph-skin-wide');
         root.style.removeProperty('--rph-skin-art');
+        root.style.removeProperty('--rph-skin-wide');
+        root.style.removeProperty('--rph-skin-side');
         if (!url) return;
         const image = new Image();
         image.onload = () => {
@@ -222,7 +240,12 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
             let light = 0;
             for (let index = 0; index < pixels.length; index += 4) light += luminance([pixels[index], pixels[index + 1], pixels[index + 2]]);
             root.style.setProperty('--rph-skin-art', `url("${url}")`);
+            if (wide) {
+                root.style.setProperty('--rph-skin-wide', `url("${wide}")`);
+                root.style.setProperty('--rph-skin-side', /#(left|right)$/.exec(wide)?.[1] || 'center');
+            }
             root.classList.add('rph-skin-art');
+            root.classList.toggle('rph-skin-wide', !!wide);
             root.classList.toggle('rph-skin-dark', light / 96 < 0.2);
         };
         image.src = url;
@@ -278,7 +301,8 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
             const scale = Math.min(1, 1440 / Math.max(bitmap.width, bitmap.height));
             const canvas = Object.assign(document.createElement('canvas'), { width: Math.round(bitmap.width * scale), height: Math.round(bitmap.height * scale) });
             canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-            photos.push(canvas.toDataURL('image/jpeg', 0.85));
+            // 横图在地址末尾记一个 #wide（图片地址里 # 后面的部分不影响显示），选图时靠它分横竖。
+            photos.push(canvas.toDataURL('image/jpeg', 0.85) + (canvas.width > canvas.height ? '#wide' : ''));
         }
         await savePhotos();
     }
@@ -390,7 +414,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
     }
 
     RPHubSDK.register({
-        id: 'skins', name: '皮肤', version: '1.0.0', requiresApi: 10,
+        id: 'skins', name: '皮肤', version: '1.1.0', requiresApi: 10,
         beforeMount({ ctx: context }) {
             start(context);
             // 页面挂上后就收起开屏，至少显示 1.6 秒，不用等插件全部就绪。
@@ -425,6 +449,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
                     refresh();
                 },
                 use: select,
+                refreshIcons: tagIcons,
                 get current() { return setting('active'); }
             });
         }
