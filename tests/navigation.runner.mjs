@@ -27,6 +27,9 @@ const state = () => page.evaluate(() => {
         tools: !!document.querySelector('#app-navigation-panel .rph-nav-tools'),
         bar: bar?.offsetParent ? [...bar.children].map((tab) => tab.textContent + (tab.classList.contains('is-current') ? '*' : '')) : null,
         fills: bar?.offsetParent ? Math.round(box(document.querySelector('.app-main')).height + box(bar).height) : 0,
+        // 聊天页的输入框底边到底栏顶边还差多少（不小于 0 就是没被盖住）
+        inputGap: bar?.offsetParent && document.querySelector('.input-area-mobile')?.offsetParent
+            ? Math.round(box(bar).top - box(document.querySelector('.input-area-mobile')).bottom) : null,
         quiet: document.documentElement.classList.contains('rph-nav-quiet')
     };
 });
@@ -110,8 +113,8 @@ try {
     assert.ok(!now.shown.includes('用量统计') && !now.shown.includes('模块管理'));
     console.log('PASS entries picked in the panel are hidden (official, shell and plugin ones alike), an emptied section goes with them, and it survives a reload');
 
-    // 底栏：第一次打开面板时放上默认的几个；聊天页不显示，别的页面显示并把页面往上让，当前页亮着，点一下换页。
-    assert.equal(now.bar, null);
+    // 底栏：第一次打开面板时放上默认的几个；每个页面都有（聊天页也在，页面往上让、输入框在它上面），当前页亮着，点一下换页。
+    assert.deepEqual(now.bar, ['聊天*', '角色卡管理', '预设', '设置', '更多']);
     await item('角色卡管理').click();
     await waitView('characters');
     now = await state();
@@ -125,8 +128,24 @@ try {
     await page.waitForFunction(() => document.querySelector('#app-navigation-panel'));
     await closePanel();
     await tab('聊天').click();
-    assert.equal((await state()).bar, null);
-    console.log('PASS the bottom bar starts with the usual pages, stays off the chat page, marks the current page and switches pages');
+    await page.waitForFunction(() => document.querySelector('.input-area-mobile')?.offsetParent);
+    now = await state();
+    assert.deepEqual(now.bar, ['聊天*', '角色卡管理', '预设', '设置', '更多']);
+    assert.equal(now.fills, 844);
+    assert.ok(now.inputGap >= 0, `the chat input sits above the bar: ${now.inputGap}`);
+    // 键盘弹出、聊天全屏时底栏收起，聊天页回到官方的整屏高度；之后回来。
+    const flag = (name, value) => page.evaluate(([key, next]) => {
+        const app = document.querySelector('#app').__vue_app__;
+        (app._instance || app._container._vnode.component).proxy[key] = next;
+    }, [name, value]);
+    for (const name of ['isMobileKeyboardOpen', 'isChatFullscreen']) {
+        await flag(name, true);
+        await page.waitForFunction(() => !document.querySelector('.rph-nav-bar').offsetParent
+            && Math.round(document.querySelector('.chat-view-root').getBoundingClientRect().height) === 844);
+        await flag(name, false);
+        await page.waitForFunction(() => document.querySelector('.rph-nav-bar').offsetParent);
+    }
+    console.log('PASS the bottom bar starts with the usual pages and is on every page: the chat makes room for it, the current page is marked, a tap switches pages, the keyboard and fullscreen hide it');
 
     // 自己挑底栏放哪些：拿掉两个，放上插件的页面和外壳那样的入口；最多 4 个。这两种由插件替用户在面板里点开，面板全程不露面。
     const settled = () => page.waitForFunction(() => !document.documentElement.classList.contains('rph-nav-quiet') && !document.querySelector('.app-navigation-layer'));
@@ -184,6 +203,14 @@ try {
     assert.ok(now.shown.length && !now.quiet);
     await closePanel();
     console.log('PASS an entry that no longer exists is dropped from the bar and the panel is shown instead; saved icons only keep plain shapes');
+
+    // 官方换了聊天页的写法、没给底栏让出位置：底栏在聊天页收起（不能盖住输入框），别的页面照常。
+    await page.addStyleTag({ content: '#app .app-main .chat-view-root{flex-shrink:0!important}' });
+    await view('chat');
+    await page.waitForFunction(() => !document.querySelector('.rph-nav-bar').offsetParent);
+    await view('settings');
+    await page.waitForFunction(() => document.querySelector('.rph-nav-bar').offsetParent);
+    console.log('PASS a page that leaves no room for the bar does not get it');
 
     // 官方换了写法、读不到页面清单：底栏的入口照样能用，改成替用户在面板里点。
     rewrite = (source) => source.replace(/\bsections\b/g, 'groups');

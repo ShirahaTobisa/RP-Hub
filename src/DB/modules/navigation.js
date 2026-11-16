@@ -1,6 +1,7 @@
-// 导航：导航面板里的入口自己挑显示哪些；手机上把常用的几个固定在底部（聊天页不放，那块地方留给输入框）。
+// 导航：导航面板里的入口自己挑显示哪些；手机上把常用的几个固定在底部，聊天页也在（键盘弹出、全屏时收起）。
 // 入口直接从面板上认：官方的按文字，外壳和别的插件加的按它们登记的编号（文字会变，比如「同步」同步时显示「处理中」），
-// 所以官方加减入口、装卸插件都不用跟着改。哪一步对不上就保持官方原样：找不到放「整理」的地方就什么都不藏；底栏上的入口没了就自动拿掉。
+// 所以官方加减入口、装卸插件都不用跟着改。哪一步对不上就保持官方原样：找不到放「整理」的地方就什么都不藏；底栏上的入口没了就自动拿掉；
+// 哪个页面没给底栏让出位置，底栏就不在那个页面出现。
 (() => {
     'use strict';
 
@@ -23,7 +24,7 @@
 #app-navigation-panel[data-rph-nav-edit="bar"] .app-navigation-item[data-rph-nav-pin]{box-shadow:inset 0 0 0 1.5px rgb(var(--primary-500))}
 #app-navigation-panel[data-rph-nav-edit="bar"] .app-navigation-item[data-rph-nav-pin]::after{content:attr(data-rph-nav-pin);position:absolute;top:5px;right:5px;display:grid;place-items:center;width:17px;height:17px;border-radius:50%;background:rgb(var(--primary-500));color:#fff;font-size:11px;font-weight:700;line-height:1}
 .rph-nav-bar{display:none}
-@media (max-width:767px){#app:not(.mobile-keyboard-active):not(.app-native-fullscreen)>.rph-nav-bar:not([hidden]){order:99;display:flex;flex:none;padding:4px 6px calc(4px + env(safe-area-inset-bottom));border-top:1px solid var(--c-border-soft);background:var(--c-surface)}}
+@media (max-width:767px){#app>.rph-nav-bar:not([hidden]){order:99;display:flex;flex:none;padding:4px 6px calc(4px + env(safe-area-inset-bottom));border-top:1px solid var(--c-border-soft);background:var(--c-surface)}}
 .rph-nav-tab{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;padding:3px 2px;border-radius:var(--r-md);color:var(--c-text-3);font-size:11px;font-weight:500;line-height:1.3;transition:transform var(--dur-2) var(--ease-out)}
 .rph-nav-tab>span:last-child{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .rph-nav-tab.is-current,.rph-nav-tab.is-current .app-navigation-icon{color:var(--c-accent-text)}
@@ -38,6 +39,8 @@
     let views = null;
     let watched = null;
     let busy = false;
+    let skins = null;               // 皮肤插件（装了才有）：底栏画好后让它把图标换成彩绘的
+    const cramped = new Set();      // 没给底栏让出位置的页面，底栏不在这些页面出现
 
     const element = (tag, className = '', text = '') => Object.assign(document.createElement(tag), { className, textContent: text });
     const labelOf = (item) => item.textContent.trim();
@@ -98,13 +101,26 @@
         bar.replaceChildren(...(pins || []).map((pin) => tab(pin.label, pin.icon, () => go(pin))),
             tab('更多', MORE, () => ctx.app.get('toggleNavigation')?.()));
         paint();
+        skins?.refreshIcons?.();
     }
 
-    // 在哪一页，底栏上对应的入口亮着。
+    // 在哪一页，底栏上对应的入口亮着；键盘弹出、聊天全屏时收起（读官方页面的状态，官方写在 #app 上的那两个类名不会生效）。
     function paint() {
         const view = ctx.app.get('currentView');
-        bar.hidden = !pins?.length || view === 'chat';
+        bar.hidden = !pins?.length || cramped.has(view) || ctx.app.get('isMobileKeyboardOpen') === true || ctx.app.get('isChatFullscreen') === true;
         (pins || []).forEach((pin, index) => bar.children[index].classList.toggle('is-current', (viewOf(pin.key) || pin.view) === view));
+        requestAnimationFrame(checkRoom);
+    }
+
+    // 底栏占了主区域下面一条，页面要跟着矮一截（聊天页也会，输入框让到底栏上面）。量一下当前页面真让出来了没有，
+    // 没有（官方换了写法）就不在这个页面放底栏，不能盖住输入框这类贴底的东西。
+    function checkRoom() {
+        const main = document.querySelector('#app .app-main');
+        if (!main || !bar.offsetParent) return;
+        if ([...main.children].some((child) => child.offsetParent === main && child.offsetTop + child.offsetHeight > main.clientHeight + 1)) {
+            cramped.add(ctx.app.get('currentView'));
+            paint();
+        }
     }
 
     // 点底栏的入口。官方页面直接换过去；别的入口（外壳的、插件的）替用户在面板里点一下：面板先藏着打开，找到就点
@@ -212,7 +228,7 @@
     }
 
     RPHubSDK.register({
-        id: 'navigation', name: '导航', version: '1.0.0', requiresApi: 10,
+        id: 'navigation', name: '导航', version: '1.1.0', requiresApi: 10,
         init(context) {
             ctx = context;
             const saved = read('bar');
@@ -229,14 +245,16 @@
                     renderBar();
                 }
             });
-            ctx.app.watch(() => ctx.app.get('currentView'), paint);
+            ctx.app.watch(() => [ctx.app.get('currentView'), ctx.app.get('isMobileKeyboardOpen'), ctx.app.get('isChatFullscreen')].join(), paint);
             ctx.app.watch(() => ctx.app.get('isNavigationOpen'), (open) => {
                 if (!open) mode = '';
                 else requestAnimationFrame(syncPanel);      // 平时面板一出现就处理了，这里兜底
             });
             document.addEventListener('click', pick, true);
+            window.addEventListener('resize', () => requestAnimationFrame(checkRoom));     // 屏幕转向、窗口变窄后底栏才出现
             observer.observe(document.getElementById('app'), { childList: true });
             syncPanel();
+            ctx.use('skins').then((api) => { skins = api; api.refreshIcons?.(); });
         }
     });
 })();
