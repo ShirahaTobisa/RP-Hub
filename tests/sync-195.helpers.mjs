@@ -38,7 +38,8 @@ export function instrument(source, metrics = false) {
     return source.replace(/\}\)\(\);\s*$/, `${timing}globalThis.api = { ${exports.join(', ')} };\n})();`);
 }
 
-export async function startHarness({ upstream, assets = process.env.RPH_PACKAGE_ROOT || root, instrumented = true, metrics = false } = {}) {
+// shell: false 时只给官方原版页面（不带测试版外壳、不打补丁），测油猴版用。
+export async function startHarness({ upstream, assets = process.env.RPH_PACKAGE_ROOT || root, instrumented = true, metrics = false, shell = true } = {}) {
     let snapshot, latency = 0;
     const requests = [];
     const server = http.createServer(async (request, response) => {
@@ -70,7 +71,7 @@ export async function startHarness({ upstream, assets = process.env.RPH_PACKAGE_
                         .replace('<meta name="rphub-update-api"', `<meta name="${RP_HUB_CLOUD_BACKUP_META_NAME}"`);
                     const scripts = ['ui-kit', 'nav-adapter', 'char-store', 'bootstrap', 'image-module', 'module-loader']
                         .map(name => `<script src="/DB/${name}.js"></script>`).join('');
-                    response.end(html.replace('</head>', `<link rel="stylesheet" href="/DB/styles.css">${scripts}</head>`));
+                    response.end(shell ? html.replace('</head>', `<link rel="stylesheet" href="/DB/styles.css">${scripts}</head>`) : html);
                     return;
                 }
                 response.end(`<!doctype html><html><body><div id="app"><aside class="app-sidebar"><button class="menu"><svg viewBox="0 0 24 24"><path d="M0 0"></path></svg><span>设置</span></button></aside></div><script src="/DB/ui-kit.js"></script><script src="/DB/nav-adapter.js"></script><script src="/instrumented.js${url.search}"></script></body></html>`);
@@ -87,8 +88,8 @@ export async function startHarness({ upstream, assets = process.env.RPH_PACKAGE_
             if (!file.startsWith(directory + path.sep)) throw new Error('invalid path');
             response.setHeader('content-type', file.endsWith('.css') ? 'text/css' : 'text/javascript; charset=utf-8');
             let content = await fs.readFile(file);
-            if (upstream && url.pathname === '/assets/js/app.js') content = patchRpHubAppJs(content.toString()).code;
-            if (upstream && url.pathname === `/${RP_HUB_CLOUD_BACKUP_PATH}`) content = patchRpHubCloudBackupJs(content.toString()).code;
+            if (shell && upstream && url.pathname === '/assets/js/app.js') content = patchRpHubAppJs(content.toString()).code;
+            if (shell && upstream && url.pathname === `/${RP_HUB_CLOUD_BACKUP_PATH}`) content = patchRpHubCloudBackupJs(content.toString()).code;
             if (instrumented && url.pathname === '/DB/bootstrap.js') content = instrument(content.toString(), metrics);
             response.end(content);
         } catch { response.statusCode = 404; response.end('not found'); }

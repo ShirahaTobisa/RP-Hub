@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } from './sync-195.helpers.mjs';
+
+// 加 --userscript：在官方原版页面（不带测试版外壳）上装油猴版 userscripts/character-voice.user.js，跑同样的检查。
+const userscript = process.argv.includes('--userscript')
+    ? await fs.readFile(new URL('../userscripts/character-voice.user.js', import.meta.url), 'utf8') : null;
 
 // 角色语音插件：配音表（AI 按资料挑、自己搜、粘贴声音 ID）；状态悬浮窗（点「分析」只分析、显示谁说了几句、正在说谁、能收起和拖动并记住位置）；
 // 只念人物的台词（旁白不念，用户扮演的默认不念），带语气；边播边生成下一段；重听不再分析也不再生成；
@@ -42,12 +47,14 @@ wav.writeUInt32LE(1600, 40);
 const cors = { 'access-control-allow-origin': '*' };
 const reply = (content) => ({ json: { choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }] } });
 
-const harness = await startHarness({ upstream: defaultUpstream });
+const harness = await startHarness({ upstream: defaultUpstream, shell: !userscript });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const errors = [];
 try {
     const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     page.on('pageerror', (error) => errors.push(error.message));
+    // 油猴默认等页面文档加载完才运行脚本，也不进 iframe（@noframes）。
+    if (userscript) await page.addInitScript(`if (window === window.top) document.addEventListener('DOMContentLoaded', () => {\n${userscript}\n});`);
     // 播放换成假的：记下播了什么，由测试控制播完。
     await page.addInitScript(() => {
         const audio = window.__audio = { plays: [], times: [], ended: [], pauses: 0, current: null };
@@ -145,7 +152,7 @@ try {
     }
     await page.goto(harness.url + '/seed.html');
     await initializeFixture(page);
-    await page.evaluate(async ({ base, greeting }) => {
+    await page.evaluate(async ({ base, greeting, plain }) => {
         localStorage.setItem('roleplay_hub_update_id', '9999999990');
         localStorage.setItem('rp_hub_workshop_modules_v1', JSON.stringify([{ url: base + '/DB/modules/character-voice.js', enabled: true }]));
         const uuid = 'voice-card';
@@ -155,17 +162,19 @@ try {
         const user = { uuid: 'voice-user', name: '用户', person: 'second' };
         const db = await fixture.db();
         await fixture.write(db, [
-            ['rp_hub_character_index', { order: [uuid] }], ['rp_hub_character_' + uuid, character],
+            // 官方原版把角色卡存成一整个列表，测试版外壳是一张卡一条。
+            ...(plain ? [['rp_hub_characters', [character]]] : [['rp_hub_character_index', { order: [uuid] }], ['rp_hub_character_' + uuid, character]]),
             ['rp_hub_chat_' + uuid, [{ id: 'greeting', role: 'assistant', name: character.name, content: greeting }]],
             ['rp_hub_settings', { autoFetchModels: false, apiUrl: base + '/v1', apiKey: 'fixture-key', model: 'fixture-model', stream: false }],
             ['rp_hub_global_worldinfo', []], ['rp_hub_worldinfo', []], ['rp_hub_global_regex', []], ['rp_hub_regex', []],
             ['rp_hub_user', user], ['rp_hub_user_profiles', [user]], ['rp_hub_active_profile_id', user.uuid], ['rp_hub_last_active_char', 0]
         ]);
         db.close();
-    }, { base: harness.url, greeting: GREETING });
+    }, { base: harness.url, greeting: GREETING, plain: !!userscript });
     await page.goto(harness.url, { waitUntil: 'domcontentloaded', timeout: 45000 });
     const voiceButton = (index) => page.locator(`[data-chat-index="${index}"] [data-rph-voice]`);
     await voiceButton(0).waitFor({ timeout: 45000 });
+    if (userscript) assert.equal(await page.locator('script[src^="/DB/"]').count(), 0, 'the official page runs without the test-version shell');
     // 设置是导航菜单里单独的「角色语音」页面（插件接口 8），不在「模块管理」里。
     const panel = page.locator('[data-rph-workshop-page="character-voice"]');
     const openSettings = async () => {
@@ -208,6 +217,11 @@ try {
     await panel.locator('[data-models-note]', { hasText: '共 2 个模型' }).waitFor();
     assert.deepEqual(await panel.locator('[data-k="analysisModel"] option').evaluateAll((items) => items.map((item) => item.value)), ['', 'fixture-model', 'analysis-model'],
         'models come from the site AI, without embedding models');
+    // 手机宽度：下拉框用官方的小号字，选项字长（分析模型没选时那句）也不顶出卡片。
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.ok(await dropdown('analysisModel').evaluate((button) => button.getBoundingClientRect().right <= button.closest('.settings-card').getBoundingClientRect().right),
+        'on a phone a dropdown with a long choice stays inside its card');
+    await page.setViewportSize({ width: 1280, height: 900 });
     await dropdown('analysisModel').click();
     await page.getByRole('option', { name: 'analysis-model', exact: true }).click();
     assert.equal((await dropdown('analysisModel').textContent()).trim(), 'analysis-model');

@@ -91,5 +91,12 @@
   ],
   "DB/modules/tts-reader.js": [
     "src/DB/modules/tts-reader.js"
+  ],
+  "userscripts/character-voice.user.js": [
+    "src/userscript/character-voice.header.js",
+    "src/DB/ui-kit.js",
+    "src/DB/nav-adapter.js",
+    "src/userscript/sdk.js",
+    "src/DB/modules/character-voice.js"
   ]
 }

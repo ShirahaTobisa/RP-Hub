@@ -11,6 +11,11 @@ for (const [target, inputs] of Object.entries(map)) {
     for (const match of [...source.matchAll(/\/\* @shared\/([\w-]+) \*\//g)]) {
         source = source.replace(match[0], await fs.readFile(path.join(root, 'src/shared', match[1] + '.js'), 'utf8'));
     }
+    // /* @text/路径 */ 换成 src 下那个文件内容的字符串（油猴版把样式表带进脚本）。
+    for (const match of [...source.matchAll(/\/\* @text\/([\w./-]+) \*\//g)]) {
+        const text = JSON.stringify(await fs.readFile(path.join(root, 'src', match[1]), 'utf8'));
+        source = source.replace(match[0], () => text);
+    }
     if (/\.[cm]?js$/.test(target)) {
         const check = spawnSync(process.execPath, ['--input-type=module', '--check'], {
             input: source, encoding: 'utf8', windowsHide: true

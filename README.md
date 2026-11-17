@@ -34,6 +34,8 @@ npm run build
 
 修改自有模块时编辑 `src/`，运行 `npm run build:modules` 合并回原文件名，并一同提交源码与生成文件。`npm test` 会检查两者一致；没有增加浏览器加载步骤。柳贯一第三方插件继续保留在原目录。
 
+`userscripts/` 是给官方 RPH 页面用的油猴版（目前只有角色语音），同样由 `npm run build:modules` 生成：脚本头 + 测试版的提示条、导航入口和样式 + `src/userscript/sdk.js`（替插件提供 ctx 的小外壳）+ 插件本身。插件改了版本号，脚本头的 `@version` 也要跟着改。
+
 浏览器测试和历史测试的依赖见 [开发与测试](docs/DEVELOPMENT.md)。GitHub Actions 运行核心检查和主站打包检查，不包含自动部署。
 
 ## 测试版发版与一键更新
