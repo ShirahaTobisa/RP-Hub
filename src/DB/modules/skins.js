@@ -1,4 +1,5 @@
-// 皮肤：换整站配色、开屏图、页面背景和图标。自带里见茜、谬因、莫宁三套，每套都能再调主题色、底色浓淡和背景深浅，也可以放自己的图。
+// 皮肤：换整站配色、开屏图、页面背景和图标。自带里见茜一套，别的从分发端的「皮肤工坊」下载（皮肤包只有图和颜色，不带代码）；
+// 每套都能再调主题色、底色浓淡和背景深浅，也可以放自己的图，「自定义」能导出成皮肤包投稿到皮肤工坊。
 // 配色只换官方 theme.css 里那些颜色变量的色相和浓淡，明暗不动，所以官方调好的文字对比度不变，官方改版也照常跟。
 // 别的插件可以再加皮肤：ctx.use('skins').then((skins) => skins.register({ id, name, note, accent, neutral, colors, art, wide, icons, css, apply, remove }))。
 // accent 是主题色，neutral 定底色的色调，colors 是这套皮肤自己的几个备选主题色；art 是皮肤的图（竖图，一张或几张，每次打开随机用一张，
@@ -12,17 +13,15 @@
 /* @shared/skin-art */
 
     const SKINS = [
-        // 每套的配色取自角色身上：里见茜是挂绳的钴蓝、眼睛的金、针织衫的炭蓝；谬因是青绿、流苏的红、发色的奶金；莫宁是紫、全息屏的青、眼睛的玫红。
-        { id: 'akane', name: '里见茜', note: '永远的7日之都', accent: '#2f55c8', neutral: '#a39c8f', colors: ['#2f55c8', '#c2901c', '#56627f'], art: SKIN_ART.akane, wide: SKIN_WIDE.akane, icons: SKIN_ICONS.akane },
-        { id: 'aphrissa', name: '谬因', note: '明日方舟', accent: '#1f9d93', neutral: '#b3976b', colors: ['#1f9d93', '#c8483c', '#b08a3e'], art: SKIN_ART.aphrissa, wide: SKIN_WIDE.aphrissa, icons: SKIN_ICONS.aphrissa },
-        { id: 'mornye', name: '莫宁', note: '鸣潮', accent: '#8b66d9', neutral: '#8c80b8', colors: ['#8b66d9', '#2fa7c9', '#d6557a'], art: SKIN_ART.mornye, wide: SKIN_WIDE.mornye, icons: SKIN_ICONS.mornye }
+        // 配色取自角色身上：挂绳的钴蓝、眼睛的金、针织衫的炭蓝。
+        { id: 'akane', name: '里见茜', note: '永远的7日之都', accent: '#2f55c8', neutral: '#a39c8f', colors: ['#2f55c8', '#c2901c', '#56627f'], art: SKIN_ART.akane, wide: SKIN_WIDE.akane, icons: SKIN_ICONS.akane }
     ];
     const CUSTOM = { id: 'custom', name: '自定义', note: '主题色和自己的图', accent: '#5a6ff0' };
     const COLORS = ['#e0527a', '#e2733a', '#c79a1e', '#3f9d5b', '#1f9d93', '#3f8fd6', '#5a6ff0', '#8b66d9'];
     const RANGE_CLASS = 'compact-range w-full h-1.5 bg-primary-100 rounded-lg appearance-none cursor-pointer accent-primary-500'; // RPH 自己的滑块样式
     const MAX_PHOTOS = 12;
     // 图标表里各格画的是什么，按从左到右、从上到下排；用页面上的文字对应（导航入口、设置页分区、页面标题），一格可以有几个名字。
-    const ICON_NAMES = '聊天,角色卡管理,记忆系统,UI模板,用量统计,设置,角色卡生成,小说生成,万相广场,预设|预设管理,世界书,正则|正则脚本,工具,运行日志,图片管理,模块管理,同步,用户设置,API 连接与服务,高级设置,皮肤,角色语音,生图设置'.split(',');
+    const ICON_NAMES = '聊天,角色卡管理,记忆系统,UI模板,用量统计,设置,角色卡生成,小说生成,万相广场,预设|预设管理,世界书,正则|正则脚本,工具,运行日志,图片管理,模块管理,同步,用户设置,API 连接与服务,高级设置,皮肤,角色语音,生图设置,更多'.split(',');
     const ICON_CELL = new Map(ICON_NAMES.flatMap((names, cell) => names.split('|').map((name) => [name, cell])));
     // 这几项各管一块样式，都默认开着；皮肤栏里可以单独关。
     const OPTIONS = [
@@ -70,7 +69,13 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
 .rph-skin-dot input{position:absolute;inset:0;width:100%;height:100%;opacity:0;cursor:pointer}
 .rph-skin-photo{position:relative;width:3.5rem;aspect-ratio:3/4;border-radius:var(--r-sm);background:center/cover no-repeat}
 .rph-skin-photo button{position:absolute;top:-.375rem;right:-.375rem;width:1.25rem;height:1.25rem;border-radius:999px;background:var(--c-elevated);color:var(--c-text-2);box-shadow:var(--shadow-1);font-size:.75rem;line-height:1}
-.rph-skin-slider{max-width:24rem;margin:1rem 0 0;color:var(--c-text-2);font-size:.8125rem}`;
+.rph-skin-slider{max-width:24rem;margin:1rem 0 0;color:var(--c-text-2);font-size:.8125rem}
+.rph-skin-shop{max-width:40rem;margin-top:1.5rem}
+.rph-skin-shop-title{margin-bottom:.25rem;color:var(--c-text);font-size:.875rem;font-weight:600}
+.rph-skin-shop-item{display:flex;align-items:center;gap:.75rem;padding:.5rem 0;border-top:1px solid var(--c-border-soft)}
+.rph-skin-shop-cover{flex:none;width:2.5rem;aspect-ratio:3/4;border-radius:var(--r-sm);background:rgb(var(--gray-100)) center 18%/cover no-repeat}
+.rph-skin-shop-item>span:nth-child(2){display:grid;flex:1;min-width:0}
+.rph-skin-shop-item .rph-skin-name,.rph-skin-shop-item .rph-skin-note{padding:0}`;
 
     let ctx = null;
     let style = null;
@@ -179,7 +184,9 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
     }
     function currentSkin() {
         const id = setting('active');
-        const skin = id === 'custom' ? { ...CUSTOM, art: photos } : allSkins().find((item) => item.id === id);
+        const wides = photos.filter((photo) => photo.endsWith('#wide'));
+        const talls = photos.filter((photo) => !photo.endsWith('#wide'));
+        const skin = id === 'custom' ? { ...CUSTOM, art: talls.length ? talls : wides, wide: wides } : allSkins().find((item) => item.id === id);
         return skin ? { ...skin, ...tunes()[id] } : null;
     }
     const call = (callback) => { try { callback?.(); } catch (error) { ctx.log('皮肤回调出错', error); } };
@@ -214,18 +221,14 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
     }
 
     // 这次用皮肤的哪张图：带了几张就随机挑一张，当开屏图和页面背景；图偏暗时开屏用深色底、浅色标志。
-    // 竖图给竖屏（手机），横图给横屏（电脑）：皮肤自带的横版和竖图一一对应，挑同一对；自己放的图各挑各的（横图加进来时带了 #wide 记号）。
+    // 竖图给竖屏（手机），横图给横屏（电脑）：横图和竖图一样多就是一一对应的同一幅画，挑同一对；不一样多（自己放的图）就各挑各的。
     // 横版地址末尾的 #left / #right 是人物在哪边，图就按那一边对齐。
     function showArt(skin) {
         const list = artOf(skin);
+        const wides = [].concat(skin?.wide || []);
         const index = Math.floor(Math.random() * list.length);
-        let url = list[index];
-        let wide = [].concat(skin?.wide || [])[index];
-        if (skin?.id === 'custom') {
-            const pick = (photos) => photos[Math.floor(Math.random() * photos.length)];
-            wide = pick(list.filter((photo) => photo.endsWith('#wide')));
-            url = pick(list.filter((photo) => !photo.endsWith('#wide'))) || wide;
-        }
+        const url = list[index];
+        const wide = wides.length === list.length ? wides[index] : wides[Math.floor(Math.random() * wides.length)];
         root.classList.remove('rph-skin-art', 'rph-skin-dark', 'rph-skin-wide');
         root.style.removeProperty('--rph-skin-art');
         root.style.removeProperty('--rph-skin-wide');
@@ -265,6 +268,94 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
         }
     }
 
+    // ---- 皮肤工坊：分发端上的皮肤包。下载后存在插件数据里（跟着云同步走），打开页面时读出来 ----
+    const MIRROR = (typeof globalThis.RPH_R2_MIRROR_BASE === 'string' ? globalThis.RPH_R2_MIRROR_BASE : 'https://update.rph.mornye.uk').replace(/\/+$/, '');
+    const IMAGE = /^data:image\/(webp|png|jpeg);base64,[A-Za-z0-9+/]+={0,2}(#(?:left|right))?$/;
+    const HEX = /^#[0-9a-f]{6}$/i;
+    let catalog = null;             // 皮肤工坊的目录：null 是还没读，'' 是读不到
+    let catalogLoading = null;
+    const busy = new Set();         // 正在下载的皮肤
+    const downloaded = () => { try { return JSON.parse(setting('downloaded', '[]')) || []; } catch (_) { return []; } };
+
+    // 皮肤包里只认图和颜色，别的一概不要。
+    function fromPackage(pack) {
+        const images = (list) => (Array.isArray(list) ? list.filter((item) => typeof item === 'string' && IMAGE.test(item)) : []);
+        if (!/^[a-z0-9-]{3,32}$/.test(pack?.id || '') || pack.id === 'custom' || typeof pack.name !== 'string' || !HEX.test(pack.accent || '') || !images(pack.art).length) throw new Error('皮肤包不完整');
+        return {
+            id: pack.id, version: String(pack.version || ''), name: pack.name.slice(0, 20), note: typeof pack.note === 'string' ? pack.note.slice(0, 40) : '',
+            accent: pack.accent, neutral: HEX.test(pack.neutral || '') ? pack.neutral : undefined,
+            colors: Array.isArray(pack.colors) ? pack.colors.filter((color) => HEX.test(color)).slice(0, 8) : undefined,
+            art: images(pack.art), wide: images(pack.wide), icons: IMAGE.test(pack.icons || '') ? pack.icons : undefined, workshop: true
+        };
+    }
+
+    function keep(skin) {
+        const index = extra.findIndex((item) => item.id === skin.id);
+        if (index >= 0) extra.splice(index, 1, skin); else extra.push(skin);
+    }
+
+    function loadCatalog() {
+        catalogLoading ||= fetch(`${MIRROR}/workshop/skins/index.json`, { credentials: 'omit', signal: AbortSignal.timeout(15000) })
+            .then((response) => (response.ok ? response.json() : { skins: [] }))
+            .then((value) => { catalog = Array.isArray(value?.skins) ? value.skins : []; })
+            .catch(() => { catalog = ''; catalogLoading = null; })
+            .finally(refresh);
+        return catalogLoading;
+    }
+
+    // 下载（或更新）一套皮肤：按目录里的指纹核对，存进插件数据。activate 为真时下载完就换上。
+    async function download(item, activate) {
+        if (busy.has(item.id)) return;
+        busy.add(item.id);
+        refresh();
+        try {
+            const response = await fetch(MIRROR + item.file.path, { credentials: 'omit', cache: 'no-store', signal: AbortSignal.timeout(60000) });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const bytes = await response.arrayBuffer();
+            const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+            if (digest !== item.file.sha256) throw new Error('文件和皮肤工坊的记录对不上，稍后再试');
+            const skin = fromPackage(JSON.parse(new TextDecoder().decode(bytes)));
+            await ctx.data.set(`skin:${skin.id}`, skin);
+            ctx.storage.set('downloaded', JSON.stringify([...downloaded().filter((id) => id !== skin.id), skin.id]));
+            keep(skin);
+            // 正在用的这套更新了：重新挑图。
+            if (activate || setting('active') === skin.id) { applied = null; select(skin.id); }
+        } catch (error) {
+            ctx.ui.toast(`皮肤没下载成功：${error.message}`);
+        } finally {
+            busy.delete(item.id);
+            refresh();
+        }
+    }
+
+    async function forget(id) {
+        await ctx.data.remove(`skin:${id}`);
+        ctx.storage.set('downloaded', JSON.stringify(downloaded().filter((other) => other !== id)));
+        extra.splice(extra.findIndex((item) => item.id === id), 1);
+        if (setting('active') === id) select(''); else refresh();
+    }
+
+    // 正在用的皮肤这台设备上没有（比如以前自带、现在挪进皮肤工坊的谬因、莫宁）：皮肤工坊里有就自动下回来，配色在这之前照旧。
+    function restoreActive() {
+        const id = setting('active');
+        if (!MIRROR || !id || id === 'custom' || currentSkin()) return;
+        loadCatalog().then(() => {
+            const item = catalog && catalog.find((entry) => entry.id === setting('active'));
+            if (item && !currentSkin()) download(item, false);
+        });
+    }
+
+    // 「自定义」导出成皮肤包：一个 .json 文件，到分发端「投稿皮肤」上传；名字和 id 在投稿页改。
+    function exportCustom() {
+        const skin = currentSkin();
+        const strip = (url) => url.replace(/#wide$/, '');
+        const pack = { schema: 1, id: 'my-skin', version: '1.0.0', name: '我的皮肤', note: '', accent: skin.accent, art: skin.art.slice(0, 4).map(strip), wide: skin.wide.slice(0, 4).map(strip) };
+        const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([JSON.stringify(pack)], { type: 'application/json' })), download: 'my-skin.json' });
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+        ctx.ui.toast('已导出皮肤包，到分发站「投稿皮肤」上传就能分享给别人', { kind: 'info' });
+    }
+
     function select(id) {
         ctx.storage.set('active', id);
         apply();
@@ -279,11 +370,16 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
         style = ctx.ui.addStyle(null, { early: true });
         document.querySelector('.entry-transition')?.addEventListener('click', leaveSplash);
         document.addEventListener('load', (event) => { if (event.target.tagName === 'IFRAME') paintFrames([event.target]); }, true);
-        // 上次的配色已经由加载器在第一帧放好了；这里读出自己放的图，再按现在的官方配色重算一遍。
-        ctx.data.get('photos').catch((error) => ctx.log('自己放的图读取失败', error)).then((saved) => {
+        // 上次的配色已经由加载器在第一帧放好了；这里读出自己放的图和下载过的皮肤，再按现在的官方配色重算一遍。
+        const read = (key) => ctx.data.get(key).catch((error) => { ctx.log(`${key} 读取失败`, error); return null; });
+        Promise.all([read('photos'), ...downloaded().map((id) => read(`skin:${id}`))]).then(([saved, ...packs]) => {
             if (Array.isArray(saved)) photos = saved;
+            for (const pack of packs) {
+                try { keep(fromPackage(pack)); } catch (_) { /* 读坏了的包跳过，皮肤工坊里能重新下载 */ }
+            }
             apply();
             refresh();
+            restoreActive();
         });
     }
 
@@ -391,6 +487,12 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
                 add.disabled = photos.length >= MAX_PHOTOS;
                 add.addEventListener('click', () => file.click());
                 gallery.append(add, file);
+                if (photos.length) {
+                    const share = window.RPHubUI.button('导出成皮肤包');
+                    share.dataset.export = '';
+                    share.addEventListener('click', exportCustom);
+                    gallery.appendChild(share);
+                }
                 body.appendChild(gallery);
             }
             if (saved[active]) {
@@ -411,10 +513,44 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
             toggle.append(checkbox, element('span', 'settings-toggle'), document.createTextNode(text));
             body.appendChild(toggle);
         }
+        if (MIRROR) renderShop(body);
+    }
+
+    // 皮肤工坊：能下载的皮肤一行一个；下载过的可以更新、删除（删了还能再下）。皮肤工坊里下架了的也列在这，方便删掉。
+    function renderShop(body) {
+        const shop = element('div', 'rph-skin-shop');
+        shop.dataset.skinShop = '';
+        shop.appendChild(element('div', 'rph-skin-shop-title', '皮肤工坊'));
+        body.appendChild(shop);
+        if (catalog === null) { loadCatalog(); shop.appendChild(element('span', 'rph-skin-note', '正在读取…')); return; }
+        if (catalog === '') {
+            const retry = window.RPHubUI.button('皮肤工坊暂时打不开，点一下重试');
+            retry.addEventListener('click', () => { catalog = null; refresh(); });
+            shop.appendChild(retry);
+            return;
+        }
+        const gone = extra.filter((skin) => skin.workshop && !catalog.some((item) => item.id === skin.id));
+        if (!catalog.length && !gone.length) shop.appendChild(element('span', 'rph-skin-note', '还没有可以下载的皮肤'));
+        for (const item of [...catalog, ...gone]) {
+            const have = extra.find((skin) => skin.workshop && skin.id === item.id);
+            const fresh = have && (!item.file || have.version === item.version);
+            const row = element('div', 'rph-skin-shop-item');
+            row.dataset.shopSkin = item.id;
+            const cover = element('span', 'rph-skin-shop-cover');
+            cover.style.backgroundImage = `url("${item.cover ? MIRROR + item.cover.path : item.art[0]}")`;
+            const info = element('span');
+            const size = item.file ? `${Math.max(1, Math.round(item.file.size / 1024))} KB` : '皮肤工坊里已下架';
+            info.append(element('span', 'rph-skin-name', item.name), element('span', 'rph-skin-note', [item.note, item.author, size].filter(Boolean).join(' · ')));
+            const action = window.RPHubUI.button(busy.has(item.id) ? '下载中…' : fresh ? '删除' : have ? '更新' : '下载', fresh ? 'secondary' : 'primary');
+            action.disabled = busy.has(item.id);
+            action.addEventListener('click', () => (fresh ? forget(item.id) : download(item, !have)));
+            row.append(cover, info, action);
+            shop.appendChild(row);
+        }
     }
 
     RPHubSDK.register({
-        id: 'skins', name: '皮肤', version: '1.1.0', requiresApi: 10,
+        id: 'skins', name: '皮肤', version: '1.2.0', requiresApi: 10,
         beforeMount({ ctx: context }) {
             start(context);
             // 页面挂上后就收起开屏，至少显示 1.6 秒，不用等插件全部就绪。

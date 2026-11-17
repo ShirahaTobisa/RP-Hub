@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } from './sync-195.helpers.mjs';
 
-// 皮肤插件：换配色（明暗不变）、第一帧就生效、开屏图、自定义主题色和开屏图、别的插件登记皮肤。
+// 皮肤插件：换配色（明暗不变）、第一帧就生效、开屏图、横竖屏各用各的图、自带的里见茜、从皮肤工坊下载 / 更新 / 删除皮肤、
+// 自定义主题色和自己的图、导出成皮肤包、别的插件登记皮肤。
 const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
-const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
+const context = await browser.newContext({ viewport: { width: 390, height: 844 }, acceptDownloads: true });
 const page = await context.newPage();
 const errors = [];
 page.on('pageerror', e => errors.push(e.message));
@@ -15,6 +17,14 @@ const probeSource = `RPHubSDK.register({ id:'skin-probe', name:'Skin probe', ver
         skins.register({ id: 'probe-skin', name: '探针皮肤', accent: '#c0392b', css: ':root{--probe-skin:1}', apply() { probe.applied += 1; }, remove() { probe.removed += 1; } });
     });
 } });`;
+// 假的皮肤工坊：两套皮肤包，图都用 1 像素的 webp。
+const WEBP = 'data:image/webp;base64,UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA==';
+const pack = (id, version, accent) => ({ schema: 1, id, version, name: `工坊${id}`, note: '测试', accent, neutral: '#8c80b8', colors: [accent, '#2fa7c9'],
+    art: [WEBP, WEBP], wide: [WEBP + '#left', WEBP + '#right'], icons: WEBP });
+const shop = { lily: pack('lily', '1.0.0', '#c06aa6'), mornye: pack('mornye', '1.0.0', '#2f9d5b') };
+let tamper = false;
+const packText = (id) => JSON.stringify(shop[id]);
+const sha256 = (text) => createHash('sha256').update(text).digest('hex');
 const variable = (name) => page.evaluate((key) => getComputedStyle(document.documentElement).getPropertyValue(key).trim(), name);
 const luminance = (value) => {
     const [r, g, b] = value.split(/[ ,]+/).map(Number).map((channel) => { const v = channel / 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
@@ -27,9 +37,25 @@ const view = (name) => page.evaluate((target) => {
     (app._instance || app._container._vnode.component).proxy.currentView = target;
 }, name);
 const card = (id) => page.locator(`[data-rph-workshop-attach="skins"] .rph-skin-card[data-skin="${id}"]`);
+const shopButton = (id) => page.locator(`[data-rph-workshop-attach="skins"] [data-shop-skin="${id}"] button`);
 const early = () => page.evaluate(() => localStorage.getItem('rph_mod_skins::early-style'));
+const stored = (key) => page.evaluate((name) => localStorage.getItem('rph_mod_skins::' + name), key);
 
 try {
+    await page.addInitScript(() => { window.RPH_R2_MIRROR_BASE = 'https://mirror.test'; });
+    await page.route('https://mirror.test/workshop/skins/**', (route) => {
+        const name = new URL(route.request().url()).pathname.split('/').pop();
+        if (name === 'index.json') {
+            return route.fulfill({ json: { schema: 1, skins: Object.values(shop).map((skin) => ({
+                id: skin.id, name: skin.name, note: skin.note, version: skin.version, accent: skin.accent, author: '测试作者',
+                cover: { path: `/workshop/skins/${skin.id}.webp`, size: 34 },
+                file: { path: `/workshop/skins/${skin.id}.json`, sha256: sha256(packText(skin.id)), size: packText(skin.id).length }
+            })) } });
+        }
+        const [id, extension] = name.split('.');
+        if (extension === 'webp') return route.fulfill({ contentType: 'image/webp', body: Buffer.from(WEBP.split(',')[1], 'base64') });
+        return route.fulfill({ contentType: 'application/json', body: packText(id) + (tamper ? ' ' : '') });
+    });
     await page.route('**/probe-skin.js', route => route.fulfill({ contentType: 'text/javascript', body: probeSource }));
     await page.route('**/v1/**', route => route.fulfill({ json: { data: [] } }));
     await page.goto(harness.url + '/seed.html');
@@ -60,12 +86,12 @@ try {
     official.dark = [await variable('--primary-600'), await variable('--gray-50'), await variable('--primary-text-600')];
     await page.evaluate(() => { document.documentElement.dataset.appTheme = 'light'; });
 
-    // 设置页最下面有「皮肤」栏；点一套，整站颜色变了，明暗和官方一样（文字对比度不变），深色模式也有一套。
+    // 设置页最下面有「皮肤」栏，自带的只有里见茜（探针插件登记了一套）；点它，整站颜色变了，明暗和官方一样（文字对比度不变），深色模式也有一套。
     await view('settings');
-    await card('aphrissa').waitFor();
-    assert.equal(await page.locator('[data-rph-workshop-attach="skins"] .rph-skin-card').count(), 6);
-    await card('aphrissa').click();
-    assert.equal(await card('aphrissa').getAttribute('aria-pressed'), 'true');
+    await card('akane').waitFor();
+    assert.deepEqual(await page.locator('[data-rph-workshop-attach="skins"] .rph-skin-card').evaluateAll((cards) => cards.map((item) => item.dataset.skin)), ['', 'akane', 'probe-skin', 'custom']);
+    await card('akane').click();
+    assert.equal(await card('akane').getAttribute('aria-pressed'), 'true');
     const light = [await variable('--primary-600'), await variable('--gray-50')];
     assert.notEqual(light[0], official.light[0]);
     assert.notEqual(light[1], official.light[1]);
@@ -74,7 +100,7 @@ try {
     const dark = [await variable('--primary-600'), await variable('--gray-50'), await variable('--primary-text-600')];
     dark.forEach((value, index) => { assert.notEqual(value, official.dark[index]); sameBrightness(value, official.dark[index], 'dark'); });
     await page.evaluate(() => { document.documentElement.dataset.appTheme = 'light'; });
-    console.log('PASS choosing a skin recolors both themes and keeps the official brightness of every step');
+    console.log('PASS the built-in skin recolors both themes and keeps the official brightness of every step');
 
     // 小说、角色卡生成是内嵌页面，配色也要送进去。
     await view('novel');
@@ -118,14 +144,14 @@ try {
         return [icon.style.getPropertyValue('--rph-skin-x'), icon.style.getPropertyValue('--rph-skin-y'), getComputedStyle(icon).backgroundImage.startsWith('url("data:image/webp')];
     }), ['5', '0', true]);
     await page.keyboard.press('Escape');
-    // 别的插件自己画的入口：写上名字，画好后叫皮肤插件换一遍，马上就是彩绘的。
-    assert.equal(await page.evaluate(() => {
-        const node = Object.assign(document.createElement('button'), { id: 'probe-icon', innerHTML: '<span class="app-navigation-icon"><svg viewBox="0 0 24 24"></svg></span>' });
-        node.dataset.rphIcon = '设置';
+    // 别的插件自己画的入口（比如导航插件底栏的「设置」「更多」）：写上名字，画好后叫皮肤插件换一遍，马上就是彩绘的。
+    assert.deepEqual(await page.evaluate(() => ['设置', '更多'].map((name) => {
+        const node = Object.assign(document.createElement('button'), { innerHTML: '<span class="app-navigation-icon"><svg viewBox="0 0 24 24"></svg></span>' });
+        node.dataset.rphIcon = name;
         document.body.appendChild(node);
         skinProbe.api.refreshIcons();
-        return node.firstElementChild.style.getPropertyValue('--rph-skin-x');
-    }), '5');
+        return node.firstElementChild.style.getPropertyValue('--rph-skin-x') + ',' + node.firstElementChild.style.getPropertyValue('--rph-skin-y');
+    })), ['5,0', '5,3']);
     await view('settings');
     await page.waitForFunction(() => document.querySelector('.settings-card__title svg[data-rph-skin-icon]'));
     for (const key of ['backdrop', 'chat', 'icons']) await option(key).click();
@@ -134,7 +160,7 @@ try {
     assert.equal(await page.evaluate(() => document.querySelectorAll('[data-rph-skin-icon]').length), 0);
     for (const key of ['backdrop', 'chat', 'icons']) await option(key).click();
     await page.waitForFunction(() => document.querySelector('.settings-card__title svg[data-rph-skin-icon]'));
-    console.log('PASS the skin art sits behind the pages and the chat, painted icons replace the line icons, and each can be switched off');
+    console.log('PASS the skin art sits behind the pages and the chat, painted icons (more as well) replace the line icons, and each can be switched off');
 
     // 调节当前这套皮肤：换主题色、把底色调成纯灰、把背景图调深；恢复原样后回到它自己的配色。
     const skinBar = page.locator('[data-rph-workshop-attach="skins"]');
@@ -167,30 +193,83 @@ try {
     assert.equal(await early(), null);
     console.log('PASS a skin registered by another plugin is applied and removed; the default leaves nothing behind');
 
-    // 自定义：换主题色，放自己的开屏图；关掉开屏图后样式里不再有开屏层。
+    // 皮肤工坊：列出能下载的皮肤；下载完就换上，图和颜色都来自皮肤包，刷新后从插件数据里读回来，不再联网下载。
     await view('settings');
+    await shopButton('lily').waitFor();
+    assert.equal(await shopButton('lily').textContent(), '下载');
+    await shopButton('lily').click();
+    await page.waitForFunction(() => document.querySelector('[data-rph-workshop-attach="skins"] .rph-skin-card[data-skin="lily"]')?.getAttribute('aria-pressed') === 'true');
+    const lily = await variable('--primary-600');
+    assert.notEqual(lily, official.light[0]);
+    sameBrightness(lily, official.light[0], 'downloaded skin');
+    assert.equal(await stored('downloaded'), '["lily"]');
+    assert.equal(await shopButton('lily').textContent(), '删除');
+    let packageRequests = 0;
+    page.on('request', (request) => { if (/\/workshop\/skins\/[a-z-]+\.json$/.test(request.url())) packageRequests += 1; });
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--rph-skin-wide').endsWith('#left")')
+        || document.documentElement.style.getPropertyValue('--rph-skin-wide').endsWith('#right")'), null, { timeout: 20000 });
+    await ready();
+    assert.equal(await variable('--primary-600'), lily);
+    assert.equal(packageRequests, 0);
+    console.log('PASS a skin from the skin workshop downloads, switches on, and comes back after a reload without downloading again');
+
+    // 皮肤工坊里出了新版本：显示「更新」，更新后换上新配色；文件和目录里的指纹对不上就不收。
+    shop.lily = pack('lily', '1.1.0', '#3f8fd6');
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await ready();
+    await view('settings');
+    await shopButton('lily').filter({ hasText: '更新' }).waitFor();
+    await shopButton('lily').click();
+    await page.waitForFunction((previous) => getComputedStyle(document.documentElement).getPropertyValue('--primary-600').trim() !== previous, lily);
+    assert.equal(await card('lily').getAttribute('aria-pressed'), 'true');
+    tamper = true;
+    await shopButton('mornye').click();
+    await page.locator('.toast-item', { hasText: '对不上' }).waitFor();
+    assert.equal(await stored('downloaded'), '["lily"]');
+    assert.equal(await card('mornye').count(), 0);
+    tamper = false;
+    console.log('PASS a newer version shows as an update and replaces the old one; a file that does not match the catalog is refused');
+
+    // 删除下载过的皮肤：正在用的话回到默认；之后还能再下。
+    await shopButton('lily').click();
+    await page.waitForFunction(() => !document.querySelector('[data-rph-workshop-attach="skins"] .rph-skin-card[data-skin="lily"]'));
+    assert.equal(await stored('active'), '');
+    assert.equal(await stored('downloaded'), '[]');
+    assert.equal(await variable('--primary-600'), official.light[0]);
+    assert.equal(await shopButton('lily').textContent(), '下载');
+    // 以前自带、现在挪进皮肤工坊的皮肤（正在用但本机没有）：打开页面时自动下回来，不用重新选。
+    await page.evaluate(() => localStorage.setItem('rph_mod_skins::active', 'mornye'));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await ready();
+    await page.waitForFunction(() => localStorage.getItem('rph_mod_skins::downloaded') === '["mornye"]', null, { timeout: 20000 });
+    await view('settings');
+    await page.waitForFunction(() => document.querySelector('[data-rph-workshop-attach="skins"] .rph-skin-card[data-skin="mornye"]')?.getAttribute('aria-pressed') === 'true');
+    console.log('PASS a downloaded skin can be deleted; a skin in use that is missing on this device is downloaded again by itself');
+
+    // 自定义：换主题色，放自己的图（竖图给竖屏、横图给横屏）；导出成皮肤包；关掉开屏图后样式里不再有开屏层。
     await card('custom').click();
     await page.locator('[data-rph-workshop-attach="skins"] .rph-skin-dot').nth(1).click();
     const custom = await variable('--primary-600');
     assert.notEqual(custom, official.light[0]);
     sameBrightness(custom, official.light[0], 'custom');
     assert.ok(!(await early()).includes('.entry-transition'), 'no splash rules without a photo');
-    const png = await page.evaluate(async () => {
-        const canvas = Object.assign(document.createElement('canvas'), { width: 60, height: 90 });
-        canvas.getContext('2d').fillRect(0, 0, 60, 90);
+    const photo = (width, height) => page.evaluate(([w, h]) => {
+        const canvas = Object.assign(document.createElement('canvas'), { width: w, height: h });
+        canvas.getContext('2d').fillRect(0, 0, w, h);
         return canvas.toDataURL('image/png').split(',')[1];
-    });
-    await page.locator('[data-rph-workshop-attach="skins"] input[type="file"]').setInputFiles({ name: 'photo.png', mimeType: 'image/png', buffer: Buffer.from(png, 'base64') });
+    }, [width, height]);
+    await page.locator('[data-rph-workshop-attach="skins"] input[type="file"]').setInputFiles({ name: 'photo.png', mimeType: 'image/png', buffer: Buffer.from(await photo(60, 90), 'base64') });
     await page.locator('[data-rph-workshop-attach="skins"] .rph-skin-photo').waitFor();
     assert.ok((await early()).includes('.entry-transition'));
-    // 再放一张横图：竖屏还用竖的那张，横图留给横屏。
-    const widePng = await page.evaluate(async () => {
-        const canvas = Object.assign(document.createElement('canvas'), { width: 90, height: 60 });
-        canvas.getContext('2d').fillRect(0, 0, 90, 60);
-        return canvas.toDataURL('image/png').split(',')[1];
-    });
-    await page.locator('[data-rph-workshop-attach="skins"] input[type="file"]').setInputFiles({ name: 'wide.png', mimeType: 'image/png', buffer: Buffer.from(widePng, 'base64') });
+    await page.locator('[data-rph-workshop-attach="skins"] input[type="file"]').setInputFiles({ name: 'wide.png', mimeType: 'image/png', buffer: Buffer.from(await photo(90, 60), 'base64') });
     await page.waitForFunction(() => document.querySelectorAll('[data-rph-workshop-attach="skins"] .rph-skin-photo').length === 2);
+    const [file] = await Promise.all([page.waitForEvent('download'), page.locator('[data-rph-workshop-attach="skins"] [data-export]').click()]);
+    const exported = JSON.parse(await (await import('node:fs/promises')).readFile(await file.path(), 'utf8'));
+    assert.deepEqual([exported.schema, exported.id, exported.art.length, exported.wide.length], [1, 'my-skin', 1, 1]);
+    assert.match(exported.accent, /^#[0-9a-f]{6}$/);
+    assert.match(exported.art[0], /^data:image\/jpeg;base64,[^#]+$/);
+    assert.match(exported.wide[0], /^data:image\/jpeg;base64,[^#]+$/);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => document.documentElement.classList.contains('rph-skin-art'), null, { timeout: 20000 });
     assert.match(await page.evaluate(() => document.documentElement.style.getPropertyValue('--rph-skin-art')), /^url\("data:image\/jpeg[^#]*"\)$/);
@@ -200,7 +279,7 @@ try {
     await card('custom').waitFor();
     await option('splash').click();
     assert.ok(!(await early()).includes('.entry-transition'));
-    console.log('PASS the custom skin takes a theme color and your own photos (upright ones for upright screens, wide ones for wide screens); the splash can be turned off');
+    console.log('PASS the custom skin takes a theme color and your own photos (upright for upright screens, wide for wide screens), exports as a skin package, and the splash can be turned off');
     assert.deepEqual(errors, []);
 } finally {
     await context.close();
