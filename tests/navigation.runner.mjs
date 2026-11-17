@@ -89,8 +89,12 @@ try {
 
     // 面板标题栏多了「整理」。整理中点入口是挑选不是打开；挑掉的入口平时不显示，整个分区都挑掉时分区标题也收起；刷新后还在。
     await load();
-    await openPanel();
+    // 刚装上、还没打开过面板：底栏已经有默认的几个入口，每个都画了图标。
     let now = await state();
+    assert.deepEqual(now.bar, ['聊天*', '角色卡管理', '预设', '设置', '更多']);
+    assert.ok(await page.evaluate(() => [...document.querySelectorAll('.rph-nav-bar .rph-nav-tab svg')].every((svg) => svg.children.length)));
+    await openPanel();
+    now = await state();
     assert.ok(now.tools);
     assert.deepEqual(now.shown.slice(0, 13), all);
     assert.ok(now.shown.includes('探针页') && now.shown.includes('模块管理'));
@@ -113,7 +117,7 @@ try {
     assert.ok(!now.shown.includes('用量统计') && !now.shown.includes('模块管理'));
     console.log('PASS entries picked in the panel are hidden (official, shell and plugin ones alike), an emptied section goes with them, and it survives a reload');
 
-    // 底栏：第一次打开面板时放上默认的几个；每个页面都有（聊天页也在，页面往上让、输入框在它上面），当前页亮着，点一下换页。
+    // 底栏：每个页面都有（聊天页也在，页面往上让、输入框在它上面），当前页亮着，点一下换页。
     assert.deepEqual(now.bar, ['聊天*', '角色卡管理', '预设', '设置', '更多']);
     await item('角色卡管理').click();
     await waitView('characters');

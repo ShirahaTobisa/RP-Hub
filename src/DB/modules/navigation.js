@@ -33,10 +33,10 @@
 
     let ctx;
     let hidden;             // 面板里不显示的入口（记的是 keyOf 认出来的名字）
-    let pins;               // 底栏上的入口 { key 认它用的名字, label 文字, icon 图标, view 插件页面的页面名 }；null 是还没定过，第一次打开面板时放上默认的几个
+    let pins;               // 底栏上的入口 { key 认它用的名字, label 文字, icon 图标, view 插件页面的页面名 }；没挑过时是 defaultPins()，读不到官方清单时是 null，第一次打开面板时从面板上取
     let mode = '';          // 整理中：'show' 挑面板里显示哪些，'bar' 挑底栏放哪些
     let bar;
-    let views = null;
+    let official = null;
     let watched = null;
     let busy = false;
     let skins = null;               // 皮肤插件（装了才有）：底栏画好后让它把图标换成彩绘的
@@ -62,15 +62,27 @@
         return svg;
     }
 
-    // 官方页面的「文字 → 页面名」，直接从页面上的导航组件里读，官方加减页面不用跟着改。读不到时底栏改成替用户在面板里点（见 go）。
-    function viewOf(label) {
-        if (!views) {
+    // 官方导航组件里的页面清单（文字 → { view 页面名, icon 图标 }），直接从页面上读，官方加减页面不用跟着改。
+    // 读不到时底栏改成替用户在面板里点（见 go），默认入口等第一次打开面板时从面板上取（见 syncPanel）。
+    function officialItems() {
+        if (!official) {
             try {
                 const nav = document.getElementById('app')._vnode.component.subTree.children.find((vnode) => vnode?.type === window.RPHubLayoutComponents.AppNavigation);
-                views = new Map(nav.component.setupState.sections.flatMap((section) => section.items.map((item) => [item.label, item.view])));
-            } catch (_) { return undefined; }
+                official = new Map(nav.component.setupState.sections.flatMap((section) => section.items.map((item) => [item.label, item])));
+            } catch (_) { return new Map(); }
         }
-        return views.get(label);
+        return official;
+    }
+    const viewOf = (label) => officialItems().get(label)?.view;
+
+    // 还没挑过底栏时先放上几个常用的，图标照官方面板的画法（有路径画路径，没有的是官方的齿轮）。挑过之后存的是用户自己的。
+    function defaultPins() {
+        const made = BAR_DEFAULT.map((label) => officialItems().get(label)).filter(Boolean).map((item) => ({
+            key: item.label,
+            label: item.label,
+            icon: item.icon ? [['path', [['d', item.icon], ['stroke-width', '1.7'], ['stroke-linecap', 'round'], ['stroke-linejoin', 'round']]]] : [['use', [['href', '#icon-settings']]]]
+        }));
+        return made.length ? made : null;
     }
 
     const capture = (item) => ({
@@ -228,12 +240,12 @@
     }
 
     RPHubSDK.register({
-        id: 'navigation', name: '导航', version: '1.1.0', requiresApi: 10,
+        id: 'navigation', name: '导航', version: '1.1.1', requiresApi: 10,
         init(context) {
             ctx = context;
             const saved = read('bar');
             hidden = new Set([].concat(read('hidden') || []));
-            pins = Array.isArray(saved) ? saved.filter((pin) => typeof pin?.key === 'string' && typeof pin.label === 'string') : null;
+            pins = Array.isArray(saved) ? saved.filter((pin) => typeof pin?.key === 'string' && typeof pin.label === 'string') : defaultPins();
             ctx.ui.addStyle(CSS);
             ctx.ui.attach({
                 anchor: '#app', position: 'append',
