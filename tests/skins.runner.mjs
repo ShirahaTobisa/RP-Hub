@@ -175,7 +175,7 @@ try {
     await slide('tint', 0);
     const gray = (await variable('--gray-100')).split(' ').map(Number);
     assert.ok(Math.max(...gray) - Math.min(...gray) <= 1, `tint 0 gives a neutral gray: ${gray}`);
-    await slide('fade', 40);
+    await slide('fade', 60);   // 透明度 60% = 图的不透明度 40%
     assert.ok((await early()).includes(":root{--rph-skin-fade:0.4}"));
     await skinBar.locator('[data-reset]').click();
     assert.equal(await variable('--primary-600'), light[0]);
@@ -225,7 +225,7 @@ try {
     assert.equal(await card('lily').getAttribute('aria-pressed'), 'true');
     tamper = true;
     await shopButton('mornye').click();
-    await page.locator('.toast-item', { hasText: '对不上' }).waitFor();
+    await page.locator('.toast-item', { hasText: '校验失败' }).waitFor();
     assert.equal(await stored('downloaded'), '["lily"]');
     assert.equal(await card('mornye').count(), 0);
     tamper = false;

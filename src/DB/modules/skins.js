@@ -1,5 +1,5 @@
 // 皮肤：换整站配色、开屏图、页面背景和图标。自带里见茜一套，别的从分发端的「皮肤工坊」下载（皮肤包只有图和颜色，不带代码）；
-// 每套都能再调主题色、底色浓淡和背景深浅，也可以放自己的图，「自定义」能导出成皮肤包投稿到皮肤工坊。
+// 每套都能再调主题色、底色饱和度和背景图透明度，也可以上传自己的图片，「自定义」能导出成皮肤包投稿到皮肤工坊。
 // 配色只换官方 theme.css 里那些颜色变量的色相和浓淡，明暗不动，所以官方调好的文字对比度不变，官方改版也照常跟。
 // 别的插件可以再加皮肤：ctx.use('skins').then((skins) => skins.register({ id, name, note, accent, neutral, colors, art, wide, icons, css, apply, remove }))。
 // accent 是主题色，neutral 定底色的色调，colors 是这套皮肤自己的几个备选主题色；art 是皮肤的图（竖图，一张或几张，每次打开随机用一张，
@@ -16,7 +16,7 @@
         // 配色取自角色身上：挂绳的钴蓝、眼睛的金、针织衫的炭蓝。
         { id: 'akane', name: '里见茜', note: '永远的7日之都', accent: '#2f55c8', neutral: '#a39c8f', colors: ['#2f55c8', '#c2901c', '#56627f'], art: SKIN_ART.akane, wide: SKIN_WIDE.akane, icons: SKIN_ICONS.akane }
     ];
-    const CUSTOM = { id: 'custom', name: '自定义', note: '主题色和自己的图', accent: '#5a6ff0' };
+    const CUSTOM = { id: 'custom', name: '自定义', note: '自选颜色和图片', accent: '#5a6ff0' };
     const COLORS = ['#e0527a', '#e2733a', '#c79a1e', '#3f9d5b', '#1f9d93', '#3f8fd6', '#5a6ff0', '#8b66d9'];
     const RANGE_CLASS = 'compact-range w-full h-1.5 bg-primary-100 rounded-lg appearance-none cursor-pointer accent-primary-500'; // RPH 自己的滑块样式
     const MAX_PHOTOS = 12;
@@ -25,10 +25,10 @@
     const ICON_CELL = new Map(ICON_NAMES.flatMap((names, cell) => names.split('|').map((name) => [name, cell])));
     // 这几项各管一块样式，都默认开着；皮肤栏里可以单独关。
     const OPTIONS = [
-        ['splash', '打开时显示皮肤的开屏图'],
-        ['backdrop', '页面背景垫上皮肤的图'],
-        ['chat', '聊天页也用皮肤的图当背景'],
-        ['icons', '图标换成皮肤的彩绘图标']
+        ['splash', '显示开屏图'],
+        ['backdrop', '页面背景使用皮肤图片'],
+        ['chat', '聊天背景使用皮肤图片'],
+        ['icons', '使用皮肤图标']
     ];
     const CSS = {
         // 开屏：借官方的开屏层，换成皮肤的图，标志挪到下方；插件没来得及收起时 8 秒后自己消失。图偏暗时用深色底、浅色标志。
@@ -171,7 +171,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
     const setting = (key, fallback = '') => ctx.storage.get(key) ?? fallback;
     const allSkins = () => [...SKINS, ...extra];
     const artOf = (skin) => [].concat(skin?.art || []);
-    // 用户对某套皮肤的调节：{ accent 主题色, tint 底色浓淡（百分比，100 是原样）, fade 背景图深浅（百分比） }，按皮肤分别记。
+    // 用户对某套皮肤的调节：{ accent 主题色, tint 底色饱和度（百分比，100 是原样）, fade 背景图的不透明度（百分比，界面上显示成透明度） }，按皮肤分别记。
     function tunes() {
         try { return JSON.parse(setting('tune', '{}')) || {}; } catch (_) { return {}; }
     }
@@ -280,7 +280,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
     // 皮肤包里只认图和颜色，别的一概不要。
     function fromPackage(pack) {
         const images = (list) => (Array.isArray(list) ? list.filter((item) => typeof item === 'string' && IMAGE.test(item)) : []);
-        if (!/^[a-z0-9-]{3,32}$/.test(pack?.id || '') || pack.id === 'custom' || typeof pack.name !== 'string' || !HEX.test(pack.accent || '') || !images(pack.art).length) throw new Error('皮肤包不完整');
+        if (!/^[a-z0-9-]{3,32}$/.test(pack?.id || '') || pack.id === 'custom' || typeof pack.name !== 'string' || !HEX.test(pack.accent || '') || !images(pack.art).length) throw new Error('皮肤包格式不正确');
         return {
             id: pack.id, version: String(pack.version || ''), name: pack.name.slice(0, 20), note: typeof pack.note === 'string' ? pack.note.slice(0, 40) : '',
             accent: pack.accent, neutral: HEX.test(pack.neutral || '') ? pack.neutral : undefined,
@@ -313,7 +313,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const bytes = await response.arrayBuffer();
             const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-            if (digest !== item.file.sha256) throw new Error('文件和皮肤工坊的记录对不上，稍后再试');
+            if (digest !== item.file.sha256) throw new Error('文件校验失败，请稍后重试');
             const skin = fromPackage(JSON.parse(new TextDecoder().decode(bytes)));
             await ctx.data.set(`skin:${skin.id}`, skin);
             ctx.storage.set('downloaded', JSON.stringify([...downloaded().filter((id) => id !== skin.id), skin.id]));
@@ -321,7 +321,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
             // 正在用的这套更新了：重新挑图。
             if (activate || setting('active') === skin.id) { applied = null; select(skin.id); }
         } catch (error) {
-            ctx.ui.toast(`皮肤没下载成功：${error.message}`);
+            ctx.ui.toast(`下载失败：${error.message}`);
         } finally {
             busy.delete(item.id);
             refresh();
@@ -353,7 +353,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
         const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([JSON.stringify(pack)], { type: 'application/json' })), download: 'my-skin.json' });
         link.click();
         setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-        ctx.ui.toast('已导出皮肤包，到分发站「投稿皮肤」上传就能分享给别人', { kind: 'info' });
+        ctx.ui.toast('已导出皮肤包，可以到分发站投稿分享', { kind: 'info' });
     }
 
     function select(id) {
@@ -434,7 +434,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
         body.replaceChildren(grid);
 
         if (skin) {
-            // 当前这套皮肤的调节：主题色（它自己的几个颜色排前面，后面是通用色和自选）、底色浓淡、背景图深浅。
+            // 当前这套皮肤的调节：主题色（它自己的几个颜色排前面，后面是通用色和自选）、底色饱和度、背景图透明度。
             const own = active === 'custom' ? CUSTOM : allSkins().find((item) => item.id === active);
             const choices = [...new Set([...(own.colors || [own.accent]), ...COLORS])];
             const colors = element('div', 'rph-skin-row');
@@ -448,7 +448,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
                 colors.appendChild(dot);
             }
             const other = element('label', 'rph-skin-dot');
-            other.title = '其他颜色';
+            other.title = '自定义颜色';
             other.style.background = choices.includes(skin.accent) ? 'conic-gradient(#e0527a,#c79a1e,#3f9d5b,#3f8fd6,#8b66d9,#e0527a)' : skin.accent;
             other.setAttribute('aria-pressed', String(!choices.includes(skin.accent)));
             const input = Object.assign(element('input'), { type: 'color', value: skin.accent });
@@ -457,17 +457,18 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
             colors.appendChild(other);
             body.appendChild(colors);
 
-            const slider = (key, label, max, value) => {
+            const slider = (key, label, min, max, value, store = (shown) => shown) => {
                 const field = element('label', 'rph-ui-field rph-skin-slider');
-                const range = Object.assign(element('input', RANGE_CLASS), { type: 'range', min: 0, max, step: 1, value });
+                const range = Object.assign(element('input', RANGE_CLASS), { type: 'range', min, max, step: 1, value });
                 range.dataset.tune = key;
                 // 拖动时只换样式、不重画皮肤栏，不然手里的滑块会被换掉。
-                range.addEventListener('input', () => tune(active, { [key]: Number(range.value) }, false));
+                range.addEventListener('input', () => tune(active, { [key]: store(Number(range.value)) }, false));
                 field.append(element('span', '', label), range);
                 body.appendChild(field);
             };
-            slider('tint', '底色浓淡', 200, skin.tint ?? 100);
-            if (artOf(skin).length) slider('fade', '背景图深浅', 60, skin.fade ?? 18);
+            slider('tint', '底色饱和度', 0, 200, skin.tint ?? 100);
+            // 透明度越高图越淡；存的是图的不透明度（百分比）。
+            if (artOf(skin).length) slider('fade', '背景图透明度', 40, 100, 100 - (skin.fade ?? 18), (shown) => 100 - shown);
 
             if (active === 'custom') {
                 const gallery = element('div', 'rph-skin-row');
@@ -476,19 +477,19 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
                     item.style.backgroundImage = `url("${photo}")`;
                     const remove = element('button', '', '×');
                     remove.type = 'button';
-                    remove.setAttribute('aria-label', '删除这张图');
+                    remove.setAttribute('aria-label', '删除图片');
                     remove.addEventListener('click', () => { photos.splice(index, 1); savePhotos(); });
                     item.appendChild(remove);
                     gallery.appendChild(item);
                 });
                 const file = Object.assign(element('input'), { type: 'file', accept: 'image/*', multiple: true, hidden: true });
-                file.addEventListener('change', () => addPhotos(file.files).catch((error) => ctx.ui.toast(`图片没加上：${error.message}`)));
-                const add = window.RPHubUI.button(photos.length ? '再加一张图' : '放自己的图');
+                file.addEventListener('change', () => addPhotos(file.files).catch((error) => ctx.ui.toast(`图片上传失败：${error.message}`)));
+                const add = window.RPHubUI.button('上传图片');
                 add.disabled = photos.length >= MAX_PHOTOS;
                 add.addEventListener('click', () => file.click());
                 gallery.append(add, file);
                 if (photos.length) {
-                    const share = window.RPHubUI.button('导出成皮肤包');
+                    const share = window.RPHubUI.button('导出皮肤包');
                     share.dataset.export = '';
                     share.addEventListener('click', exportCustom);
                     gallery.appendChild(share);
@@ -496,7 +497,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
                 body.appendChild(gallery);
             }
             if (saved[active]) {
-                const reset = window.RPHubUI.button('恢复这套皮肤原样');
+                const reset = window.RPHubUI.button('恢复默认');
                 reset.dataset.reset = '';
                 reset.addEventListener('click', () => tune(active, null));
                 const row = element('div', 'rph-skin-row');
@@ -522,15 +523,15 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
         shop.dataset.skinShop = '';
         shop.appendChild(element('div', 'rph-skin-shop-title', '皮肤工坊'));
         body.appendChild(shop);
-        if (catalog === null) { loadCatalog(); shop.appendChild(element('span', 'rph-skin-note', '正在读取…')); return; }
+        if (catalog === null) { loadCatalog(); shop.appendChild(element('span', 'rph-skin-note', '加载中…')); return; }
         if (catalog === '') {
-            const retry = window.RPHubUI.button('皮肤工坊暂时打不开，点一下重试');
+            const retry = window.RPHubUI.button('加载失败，点击重试');
             retry.addEventListener('click', () => { catalog = null; refresh(); });
             shop.appendChild(retry);
             return;
         }
         const gone = extra.filter((skin) => skin.workshop && !catalog.some((item) => item.id === skin.id));
-        if (!catalog.length && !gone.length) shop.appendChild(element('span', 'rph-skin-note', '还没有可以下载的皮肤'));
+        if (!catalog.length && !gone.length) shop.appendChild(element('span', 'rph-skin-note', '暂无皮肤'));
         for (const item of [...catalog, ...gone]) {
             const have = extra.find((skin) => skin.workshop && skin.id === item.id);
             const fresh = have && (!item.file || have.version === item.version);
@@ -539,7 +540,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
             const cover = element('span', 'rph-skin-shop-cover');
             cover.style.backgroundImage = `url("${item.cover ? MIRROR + item.cover.path : item.art[0]}")`;
             const info = element('span');
-            const size = item.file ? `${Math.max(1, Math.round(item.file.size / 1024))} KB` : '皮肤工坊里已下架';
+            const size = item.file ? `${Math.max(1, Math.round(item.file.size / 1024))} KB` : '已下架';
             info.append(element('span', 'rph-skin-name', item.name), element('span', 'rph-skin-note', [item.note, item.author, size].filter(Boolean).join(' · ')));
             const action = window.RPHubUI.button(busy.has(item.id) ? '下载中…' : fresh ? '删除' : have ? '更新' : '下载', fresh ? 'secondary' : 'primary');
             action.disabled = busy.has(item.id);
@@ -550,7 +551,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
     }
 
     RPHubSDK.register({
-        id: 'skins', name: '皮肤', version: '1.2.0', requiresApi: 10,
+        id: 'skins', name: '皮肤', version: '1.2.1', requiresApi: 10,
         beforeMount({ ctx: context }) {
             start(context);
             // 页面挂上后就收起开屏，至少显示 1.6 秒，不用等插件全部就绪。
