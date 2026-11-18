@@ -33,7 +33,7 @@
                 const data = await response.json().catch(() => ({}));
                 if (response.ok && data.ok) return data;
                 if (response.status === 401 && !options.keepPasswordOnAuthError) clearStoredSyncPassword();
-                throw Object.assign(new Error(data.error || 'HTTP ' + response.status), { response: data, status: response.status });
+                throw Object.assign(new Error(data.error || '请求失败（HTTP ' + response.status + '）'), { response: data, status: response.status });
             } catch (cause) {
                 const error = cause?.name === 'AbortError'
                     ? Object.assign(new Error('请求超时，请检查网络后重试。'), { status: 0 })

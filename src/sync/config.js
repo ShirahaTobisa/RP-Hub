@@ -315,7 +315,6 @@
     let syncEntry = null;
     let syncReturnFocus = null;
     let modalRoot = null;
-    let modalTitle = null;
     let modalStatus = null;
     let modalProgressBar = null;
     let modalProgressValue = null;

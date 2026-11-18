@@ -54,12 +54,12 @@ const stableBootstrapUpdateSegments = [
     ['update check', 'async function checkAppUpdate', 'async function applyAppUpdate', '28703EC74FC6077428B7F57B81A735A748096A9A499E9932A9F132661CF27245'],
     ['update apply', 'async function applyAppUpdate', 'async function rollbackAppUpdate', '16B6F8D494CEDB027FEA1A80EA7E814AB5B2E39BC1535227B1980D53AAF2FC6C'],
     ['update rollback', 'async function rollbackAppUpdate', 'async function submitSyncPassword', 'BB4F09EDCC62E5945E9BB24CAA08E852CB2CBC13AB7764A50C83CA682CA94926'],
-    ['update modal wiring', 'function ensureModal', 'function rememberSyncFocus', '6F73AF66F33DEB9AB14DAE2990BF7F0F78834FF467969F5136756D2C85A42B5E']
+    ['update modal wiring', 'function ensureModal', 'function rememberSyncFocus', '539CCE72BB85B19222DB298B6369EF325AFDE90B120B665C69A5CA6C481BA5C0']
 ];
 
 for (const [label, startMarker, endMarker, expectedHash] of stableBootstrapUpdateSegments) {
     let segment = normalizedWorkerSegment(bootstrapSource, startMarker, endMarker);
-    // Only the close-button lookup/binding changed for navigation focus handling.
+    // Only the close-button lookup/binding changed for navigation focus handling; the hash also covers the title without its English line (2026-11-19).
     if (label === 'update modal wiring') segment = segment
         .replace("closeButton = modalRoot.querySelector('.rp-sync-modal__close');", "closeButton = modalRoot.querySelector('[data-action=\"close\"]');")
         .replace("        modalRoot.querySelector('.rp-sync-modal__backdrop').addEventListener", "        modalRoot.querySelector('.rp-sync-modal__close').addEventListener('click', closeModal);\n        modalRoot.querySelector('.rp-sync-modal__backdrop').addEventListener");

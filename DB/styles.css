@@ -50,19 +50,7 @@
     margin: 0 -1rem 0.875rem;
 }
 
-.rp-sync-modal__eyebrow,
-.rp-sync-modal__title-sub {
-    display: block;
-    margin-bottom: 3px;
-    color: var(--rk-accent);
-    font-size: 11px;
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-}
-
-.rp-sync-modal__title,
-.rp-sync-modal__title-main {
+.rp-sync-modal__title {
     display: block;
     margin: 0;
     color: var(--rk-text);

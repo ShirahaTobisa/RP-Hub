@@ -1230,7 +1230,7 @@ function store(k,v){try{localStorage.setItem(k,v);}catch(e){}}
 function pass(){return stored(passwordStorageKey);}
 function applyTheme(){document.documentElement.dataset.theme=stored(themeStorageKey)==='dark'?'dark':'light';}
 function headers(){return {'x-rp-sync-password':pass(),'content-type':'application/json'};}
-async function api(path,options){var res=await fetch(path,Object.assign({},options||{},{headers:Object.assign(headers(),(options&&options.headers)||{})})),body=await res.json().catch(function(){return {ok:false,error:'响应异常'};});if(!res.ok||body.ok===false)throw new Error(body.error||('HTTP '+res.status));return body;}
+async function api(path,options){var res=await fetch(path,Object.assign({},options||{},{headers:Object.assign(headers(),(options&&options.headers)||{})})),body=await res.json().catch(function(){return {ok:false,error:'响应异常'};});if(!res.ok||body.ok===false)throw new Error(body.error||('请求失败（HTTP '+res.status+'）'));return body;}
 function imgUrl(k){return '/image/api/image?key='+encodeURIComponent(k);}
 function thumbUrl(k){return '/image/api/thumb?key='+encodeURIComponent(k);}
 function fmt(bytes){var u=['B','KB','MB','GB'],v=Math.max(0,Number(bytes)||0),i=0;while(v>=1024&&i<u.length-1){v/=1024;i++;}return v.toFixed(i?2:0)+' '+u[i];}

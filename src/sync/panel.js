@@ -88,10 +88,7 @@
             <div class="rp-sync-modal__backdrop"></div>
             <form class="rp-sync-modal__panel compact-modal-panel rp-sync-password-panel">
                 <div class="rp-sync-modal__header editor-modal-header">
-                    <div>
-                        <div class="rp-sync-modal__eyebrow">Sync Password</div>
-                        <h3 class="rp-sync-modal__title">同步密码</h3>
-                    </div>
+                    <h3 class="rp-sync-modal__title">同步密码</h3>
                     <button type="button" class="rp-sync-modal__close modal-close-button" aria-label="关闭"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
                 </div>
                 <p class="rp-sync-modal__intro">输入一次后，本浏览器会记住密码。</p>
@@ -127,10 +124,10 @@
         });
     }
 
-    function openPasswordModal(message = '请输入同步密码。') {
+    function openPasswordModal() {
         rememberSyncFocus();
         ensurePasswordModal();
-        passwordStatus.textContent = message;
+        passwordStatus.textContent = '';
         passwordInput.value = '';
         passwordSubmitButton.disabled = false;
         passwordModalRoot.classList.add('is-open');
@@ -164,14 +161,6 @@
         if (current.tag) return current.tag;
         if (current.source === 'bundle') return '内置版本';
         return formatShortSha(current.sha);
-    }
-
-    function setModalTitle() {
-        if (!modalTitle) return;
-        modalTitle.innerHTML = `
-            <span class="rp-sync-modal__title-sub">R2 Sync</span>
-            <span class="rp-sync-modal__title-main">云同步</span>
-        `;
     }
 
     function getSelectedAppUpdateTarget() {
@@ -389,11 +378,11 @@
             }
 
             clearStoredSyncPassword();
-            openPasswordModal('请输入同步密码后继续。');
+            openPasswordModal();
         } catch (error) {
             if (error.status === 401) {
                 clearStoredSyncPassword();
-                openPasswordModal('请输入同步密码后继续。');
+                openPasswordModal();
                 return;
             }
 
@@ -412,10 +401,7 @@
             <div class="rp-sync-modal__backdrop"></div>
             <div class="rp-sync-modal__panel compact-modal-panel">
                 <div class="rp-sync-modal__header editor-modal-header">
-                    <h3 class="rp-sync-modal__title">
-                        <span class="rp-sync-modal__title-sub">R2 Sync</span>
-                        <span class="rp-sync-modal__title-main">云同步</span>
-                    </h3>
+                    <h3 class="rp-sync-modal__title">云同步</h3>
                     <button type="button" class="rp-sync-modal__close modal-close-button" aria-label="关闭"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
                 </div>
                 <div class="rp-sync-main-actions">
@@ -472,7 +458,6 @@
         `;
 
         document.body.appendChild(modalRoot);
-        modalTitle = modalRoot.querySelector('.rp-sync-modal__title');
         modalStatus = modalRoot.querySelector('.rp-sync-modal__status');
         modalProgressBar = modalRoot.querySelector('.rp-sync-progress__bar');
         modalProgressValue = modalRoot.querySelector('.rp-sync-progress__value');
@@ -681,7 +666,6 @@
         ensureModal();
         hideFloat();
         modalRoot.classList.add('is-open');
-        setModalTitle();
         updateProgress(state.progress, state.statusText || '请选择上传或下载。');
         setActionButtonsDisabled(state.syncing);
         if (!modalRoot.contains(document.activeElement)) closeButton?.focus();
