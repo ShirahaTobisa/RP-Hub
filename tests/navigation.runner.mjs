@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } from './sync-195.helpers.mjs';
 
-// 导航插件：导航面板里的入口自己挑、手机底栏；官方换了写法时各自退回原样。
+// 导航插件：导航面板里的入口自己挑、底部栏；官方换了写法时各自退回原样。
 const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
 const context = await browser.newContext({ viewport: { width: 390, height: 844 } });
@@ -87,7 +87,7 @@ try {
         db.close();
     }, { base: harness.url });
 
-    // 面板标题栏多了「整理」。整理中点入口是挑选不是打开；挑掉的入口平时不显示，整个分区都挑掉时分区标题也收起；刷新后还在。
+    // 面板标题栏多了「编辑」。编辑中点入口是挑选不是打开；挑掉的入口平时不显示，整个分区都挑掉时分区标题也收起；刷新后还在。
     await load();
     // 刚装上、还没打开过面板：底栏已经有默认的几个入口，每个都画了图标。
     let now = await state();
@@ -99,7 +99,7 @@ try {
     assert.deepEqual(now.shown.slice(0, 13), all);
     assert.ok(now.shown.includes('探针页') && now.shown.includes('模块管理'));
     assert.ok(now.panelBottom <= 844 - 12, `the panel stays on screen after the late entries arrive: ${now.panelBottom}`);
-    await tool('整理').click();
+    await tool('编辑').click();
     for (const name of ['角色卡生成', '小说生成', '万相广场', '用量统计', '模块管理']) await item(name).click();
     now = await state();
     assert.equal(now.view, 'chat');
@@ -154,12 +154,12 @@ try {
     // 自己挑底栏放哪些：拿掉两个，放上插件的页面和外壳那样的入口；最多 4 个。这两种由插件替用户在面板里点开，面板全程不露面。
     const settled = () => page.waitForFunction(() => !document.documentElement.classList.contains('rph-nav-quiet') && !document.querySelector('.app-navigation-layer'));
     await openPanel();
-    await tool('整理').click();
-    await tool('手机底栏').click();
+    await tool('编辑').click();
+    await tool('底部栏').click();
     assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('#app-navigation-panel [data-rph-nav-pin]')].map((node) => node.textContent.trim() + node.dataset.rphNavPin)),
         ['聊天1', '角色卡管理2', '设置4', '预设3']);
     for (const name of ['预设', '设置', '探针页', '探针入口', '世界书']) await item(name).click();
-    await page.locator('.toast-item', { hasText: '底栏最多放 4 个' }).waitFor();
+    await page.locator('.toast-item', { hasText: '底部栏最多放 4 个' }).waitFor();
     await tool('完成').click();
     await closePanel();
     await view('settings');
@@ -201,7 +201,7 @@ try {
     await tab('没有的入口').waitFor();
     assert.equal(await page.evaluate(() => document.querySelector('.rph-nav-bar .rph-nav-tab:nth-child(4) svg').innerHTML), '<path d="M4 4h16"></path>');
     await tab('没有的入口').click();
-    await page.locator('.toast-item', { hasText: '这个入口现在没有了' }).waitFor();
+    await page.locator('.toast-item', { hasText: '已不存在' }).waitFor();
     now = await state();
     assert.deepEqual(now.bar, ['聊天', '角色卡管理', '探针页', '更多']);
     assert.ok(now.shown.length && !now.quiet);
@@ -226,7 +226,7 @@ try {
     await page.waitForFunction(() => !document.documentElement.classList.contains('rph-nav-quiet') && !document.querySelector('.app-navigation-layer'));
     console.log('PASS when the official page list cannot be read, bar entries still work by clicking in the panel');
 
-    // 官方换了面板的写法、找不到放「整理」的地方：什么都不藏，面板和官方一样。
+    // 官方换了面板的写法、找不到放「编辑」的地方：什么都不藏，面板和官方一样。
     rewrite = (source) => source.replaceAll('app-navigation-close', 'app-navigation-shut');
     await load();
     await page.evaluate(() => [...document.querySelectorAll('.app-nav-trigger')].find((trigger) => trigger.offsetParent).click());

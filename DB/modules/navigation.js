@@ -1,6 +1,6 @@
 // 导航：导航面板里的入口自己挑显示哪些；手机上把常用的几个固定在底部，聊天页也在（键盘弹出、全屏时收起）。
 // 入口直接从面板上认：官方的按文字，外壳和别的插件加的按它们登记的编号（文字会变，比如「同步」同步时显示「处理中」），
-// 所以官方加减入口、装卸插件都不用跟着改。哪一步对不上就保持官方原样：找不到放「整理」的地方就什么都不藏；底栏上的入口没了就自动拿掉；
+// 所以官方加减入口、装卸插件都不用跟着改。哪一步对不上就保持官方原样：找不到放「编辑」的地方就什么都不藏；底栏上的入口没了就自动拿掉；
 // 哪个页面没给底栏让出位置，底栏就不在那个页面出现。
 (() => {
     'use strict';
@@ -34,7 +34,7 @@
     let ctx;
     let hidden;             // 面板里不显示的入口（记的是 keyOf 认出来的名字）
     let pins;               // 底栏上的入口 { key 认它用的名字, label 文字, icon 图标, view 插件页面的页面名 }；没挑过时是 defaultPins()，读不到官方清单时是 null，第一次打开面板时从面板上取
-    let mode = '';          // 整理中：'show' 挑面板里显示哪些，'bar' 挑底栏放哪些
+    let mode = '';          // 编辑中：'show' 挑面板里显示哪些，'bar' 挑底栏放哪些
     let bar;
     let official = null;
     let watched = null;
@@ -158,7 +158,7 @@
             } else {
                 pins = pins.filter((other) => other !== pin);
                 savePins();
-                ctx.ui.toast(`「${pin.label}」这个入口现在没有了，已从底栏拿掉`, { kind: 'info' });
+                ctx.ui.toast(`「${pin.label}」已不存在，已从底部栏移除`, { kind: 'info' });
             }
         } finally {
             document.documentElement.classList.remove('rph-nav-quiet');
@@ -166,8 +166,8 @@
         }
     }
 
-    // 面板标题栏里的「整理」，点开后多出两个选项：挑面板里显示哪些、挑手机底栏放哪些。
-    // 「整理」排在最前（样式把它摆到最右）：官方拿面板里第一个按钮接 Tab 键，它得是一直看得见的那个。
+    // 面板标题栏里的「编辑」，点开后多出两个选项：挑面板里显示哪些、挑底部栏放哪些。
+    // 「编辑」排在最前（样式把它摆到最右）：官方拿面板里第一个按钮接 Tab 键，它得是一直看得见的那个。
     const tools = element('div', 'rph-nav-tools');
     const toolButton = (text, next, name = '') => {
         const button = element('button', '', text);
@@ -176,11 +176,11 @@
         button.addEventListener('click', () => { mode = next(); syncPanel(); });
         return tools.appendChild(button);
     };
-    const toggle = toolButton('整理', () => (mode ? '' : 'show'));
-    toolButton('导航里显示', () => 'show', 'show');
-    toolButton('手机底栏', () => 'bar', 'bar');
+    const toggle = toolButton('编辑', () => (mode ? '' : 'show'));
+    toolButton('显示/隐藏', () => 'show', 'show');
+    toolButton('底部栏', () => 'bar', 'bar');
 
-    // 面板每次打开都是新画的：放上「整理」，按记下的把入口标成不显示 / 在底栏上，样式照着标记收起或标出来。
+    // 面板每次打开都是新画的：放上「编辑」，按记下的把入口标成不显示 / 在底栏上，样式照着标记收起或标出来。
     function syncPanel() {
         const panel = document.getElementById('app-navigation-panel');
         const close = panel?.querySelector('.app-navigation-close');
@@ -197,7 +197,7 @@
         }
         if (mode) panel.dataset.rphNavEdit = mode; else delete panel.dataset.rphNavEdit;
         // 文字没变就不写：写一次算一次面板内容变动，会再触发这个函数，停不下来。
-        const text = mode ? '完成' : '整理';
+        const text = mode ? '完成' : '编辑';
         if (toggle.textContent !== text) toggle.textContent = text;
         for (const button of tools.querySelectorAll('[data-mode]')) button.setAttribute('aria-pressed', String(button.dataset.mode === mode));
         for (const section of panel.querySelectorAll('.app-navigation-section')) {
@@ -211,13 +211,13 @@
             }
             section.toggleAttribute('data-rph-nav-empty', !shown);
         }
-        // 面板是按打开那一刻的高度摆的位置，之后变高（外壳的入口晚到、进了整理）会伸出屏幕，往上挪回来。
+        // 面板是按打开那一刻的高度摆的位置，之后变高（外壳的入口晚到、进了编辑）会伸出屏幕，往上挪回来。
         const over = panel.offsetTop + panel.offsetHeight + 12 - window.innerHeight;
         if (over > 0 && getComputedStyle(panel).position === 'absolute') panel.style.top = `${Math.max(12, panel.offsetTop - over)}px`;
     }
     const observer = new MutationObserver(syncPanel);
 
-    // 整理中点入口是挑选，不是打开：抢在官方和外壳的点击处理之前拦下。
+    // 编辑中点入口是挑选，不是打开：抢在官方和外壳的点击处理之前拦下。
     function pick(event) {
         const item = mode && event.target.closest('#app-navigation-panel .app-navigation-item');
         if (!item) return;
@@ -234,13 +234,13 @@
             pins.push(capture(item));
             savePins();
         } else {
-            ctx.ui.toast(`底栏最多放 ${BAR_MAX} 个，先拿掉一个`, { kind: 'info' });
+            ctx.ui.toast(`底部栏最多放 ${BAR_MAX} 个`, { kind: 'info' });
         }
         syncPanel();
     }
 
     RPHubSDK.register({
-        id: 'navigation', name: '导航', version: '1.1.1', requiresApi: 10,
+        id: 'navigation', name: '导航', version: '1.1.2', requiresApi: 10,
         init(context) {
             ctx = context;
             const saved = read('bar');
