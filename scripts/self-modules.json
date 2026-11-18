@@ -65,6 +65,9 @@
   "DB/modules/character-voice.js": [
     "src/DB/modules/character-voice.js"
   ],
+  "DB/modules/custom-image.js": [
+    "src/DB/modules/custom-image.js"
+  ],
   "DB/modules/multi-provider.js": [
     "src/DB/modules/multi-provider.js"
   ],

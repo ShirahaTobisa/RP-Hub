@@ -18,6 +18,7 @@ const tests = [
     'self-update.test.mjs',
     'image-storage.test.mjs',
     'nai2api-plugin.test.mjs',
+    'custom-image-plugin.test.mjs',
     'update-notice.test.mjs',
     'static-cache.test.mjs', 'sync-gzip.test.mjs', 'fork-migration.test.mjs', 'cloud-backup-patch.test.mjs'
 ];
