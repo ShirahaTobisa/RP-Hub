@@ -136,7 +136,7 @@ try {
     const invalidJson = (databases) => Buffer.from(JSON.stringify({ __rphub_backup__: 1, version: 8, databases }));
     const failures = [
         ['missing.zip', await zipFailure('missing-chunk'), '备份缺少文件：records.jsonl'],
-        ['truncated.zip', await zipFailure('wrong-count'), '备份记录数不符'],
+        ['truncated.zip', await zipFailure('wrong-count'), '备份记录数不一致'],
         ['storage.zip', await zipFailure('missing-storage'), '备份缺少文件：storage/localStorage.json'],
         ['binary.json', invalidJson({ RPHubDB: { store: [{ k: 'replacement', v: 'new' }] }, Broken: { store: [{ k: 'bad', v: { __rphub_bin__: '%' } }] } }), 'atob'],
         ['key.json', invalidJson({ RPHubDB: { store: [{ k: 'replacement', v: 'new' }, { v: 'missing key' }] } }), 'key']

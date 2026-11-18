@@ -40,6 +40,8 @@ await assert.rejects(context.api.postSyncBinary({}, { shouldStop: () => true }),
 assert.equal(requests.length, count);
 replies.push(init => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('timeout', 'AbortError')))));
 await assert.rejects(context.api.postSync({}, { timeoutMs: 5, retryCount: 0 }), /超时/);
+replies.push(() => { throw new TypeError('Failed to fetch'); });
+await assert.rejects(context.api.postSync({}, { retryCount: 0 }), /网络连接失败/);
 replies.push(() => Response.json({ ok: true, partNumber: 3, key: 'chunk' }));
 const uploaded = await context.api.postUploadPart({ index: 2, length: 20, checksum: 'raw', body: new Uint8Array([1]), encoding: 'gzip', storedLength: 1, storedChecksum: 'zip' });
 assert.equal(uploaded.index, 2);

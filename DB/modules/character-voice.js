@@ -64,7 +64,7 @@
     const LIMIT = 200; // 每段最多 200 字：太长等得久，太短请求多
     const CACHE_SIZE = 80; // 重听不重新生成（不再花钱），最多留 80 段，刷新页面后清空
     const ANALYSIS_KEEP = 40; // 每张卡最多存 40 条回复的分析结果
-    const ERROR_HINTS = { 400: '多半是声音或模型填错了', 401: '密钥不对', 402: '余额不足', 403: '密钥没有权限', 429: '请求太频繁或额度用完了' };
+    const ERROR_HINTS = { 400: '请检查声音和模型', 401: '密钥无效', 402: '余额不足', 403: '密钥权限不足', 429: '请求过于频繁或额度已用完' };
     const TIMEOUT = 60000; // 接口一分钟没回应算超时
     const RETRYABLE = [429, 500, 502, 503, 504]; // 等一下多半就好的错，自动再试一次
     const SKIPPABLE = [400, 408, 422, ...RETRYABLE]; // 只坏这一句的错（内容被拒、超时、重试后还是不行）：跳过接着说
@@ -145,7 +145,7 @@ ${translate ? `
 .rph-voice-widget.is-busy .rph-voice-widget__dot{box-shadow:0 0 0 3px rgba(96,165,250,.45),0 6px 18px rgba(0,0,0,.16)}`;
 
     RPHubSDK.register({
-        id: 'character-voice', name: '角色语音', version: '1.3.1', requiresApi: 7,
+        id: 'character-voice', name: '角色语音', version: '1.3.2', requiresApi: 7,
         init(ctx) {
             const player = new Audio(); // 都用这一个播放器：手机上点过一次以后，自动播放也能出声
             const preview = new Audio(); // 声音库的试听
@@ -362,7 +362,7 @@ ${translate ? `
                 failures.delete(index);
                 renderWidget();
                 try {
-                    if (!widgetVisible()) ctx.ui.toast('正在分析每句是谁说的、用什么语气……', { kind: 'info' });
+                    if (!widgetVisible()) ctx.ui.toast('正在分析说话人和语气…', { kind: 'info' });
                     // 角色设定的前几百字，帮模型认人名。
                     const profile = String(character().description || '').replace(/\s+/g, ' ').trim().slice(0, 600);
                     // 声音标了语言的人物：让模型顺便把他的台词译过去。
@@ -383,7 +383,7 @@ ${translate ? `
                         ]
                     });
                     const rows = (parseJson(reply, '[') || [...reply.matchAll(ROW)].map((match) => JSON.parse(match[0]))).filter(Array.isArray);
-                    if (!rows.length) throw new Error(reply.trim() ? 'AI 没有按格式回答' : 'AI 没有返回内容，换个分析模型试试');
+                    if (!rows.length) throw new Error(reply.trim() ? 'AI 返回的格式不正确' : 'AI 未返回内容，请更换分析模型');
                     const labels = fallback.map((item, i) => {
                         const row = rows.find((entry) => Number(entry[0]) === i + 1);
                         if (!row) return item;
@@ -412,7 +412,7 @@ ${translate ? `
                 } catch (error) {
                     if (characterId() !== card) return fallback;
                     failures.set(index, error?.message || String(error));
-                    ctx.ui.toast(`分析说话人失败：${error?.message || error}。这次引号里的话先用默认声音念`, { kind: 'warning' });
+                    ctx.ui.toast(`分析失败，本次引号内的台词使用默认声音：${error?.message || error}`, { kind: 'warning' });
                     return fallback;
                 } finally {
                     if (characterId() === card && analyzing === index) analyzing = null;
@@ -502,7 +502,7 @@ ${translate ? `
             function apiUrl(address, compat) {
                 let url = null;
                 try { url = new URL(address); } catch (_) { /* 和协议不对一起报 */ }
-                if (!/^https?:$/.test(url?.protocol)) throw new Error('接口地址要以 http:// 或 https:// 开头');
+                if (!/^https?:$/.test(url?.protocol)) throw new Error('接口地址必须以 http:// 或 https:// 开头');
                 const path = url.pathname.replace(/\/+$/, '').replace(/\/audio\/speech$/, '');
                 const base = path.replace(/\/v1$/, '');
                 url.pathname = `${compat && base === path ? `${base.replace(/\/compat$/, '')}/compat` : base}/v1/audio/speech`;
@@ -511,12 +511,12 @@ ${translate ? `
             // 这一段向哪个接口要、带什么去要。语气：Fish 和选了「句首方括号」的接口写在句首；选了 instructions 的放那个字段（tts-1 不认，不传）。
             function speechRequest({ text, voice, tone }) {
                 if (isFish()) {
-                    return { name: 'Fish', url: apiUrl(fishUrl(), true), key: get('fishKey').trim(),
+                    return { url: apiUrl(fishUrl(), true), key: get('fishKey').trim(),
                         body: { model: get('fishModel'), input: tone ? `[${tone}] ${text}` : text, voice, response_format: 'mp3' } };
                 }
                 const mode = get('openaiTone');
                 const model = get('openaiModel').trim();
-                return { name: '语音接口', url: apiUrl(get('openaiUrl').trim(), false), key: get('openaiKey').trim(), body: {
+                return { url: apiUrl(get('openaiUrl').trim(), false), key: get('openaiKey').trim(), body: {
                     model, input: mode === 'bracket' && tone ? `[${tone}] ${text}` : text,
                     voice: voice || get('openaiVoice').trim() || template().voices[0] || 'alloy', response_format: get('openaiFormat'),
                     ...(mode === 'instructions' && tone && !/^tts-1/.test(model) ? { instructions: tone } : {})
@@ -526,7 +526,7 @@ ${translate ? `
             const cache = new Map();
             const failure = (message, status) => Object.assign(new Error(message), { status });
             // 向接口要一段语音。出错时带上状态码，播放那边据此决定重试、跳过还是停。
-            async function request({ name, url, key, body }, signal) {
+            async function request({ url, key, body }, signal) {
                 const controller = new AbortController();
                 const cancel = () => controller.abort();
                 if (signal.aborted) cancel(); else signal.addEventListener('abort', cancel, { once: true });
@@ -546,16 +546,16 @@ ${translate ? `
                             reason = [json.error?.message, json.message, json.detail, json.error].find((item) => typeof item === 'string' && item) || detail;
                         } catch (_) { /* 不是 JSON，用原文 */ }
                         const status = ERROR_HINTS[response.status] ? `${response.status}，${ERROR_HINTS[response.status]}` : response.status;
-                        throw failure(`${name} 报错（${status}）：${String(reason).slice(0, 200) || response.statusText}`, response.status);
+                        throw failure(`语音合成失败（${status}）：${String(reason).slice(0, 200) || response.statusText}`, response.status);
                     }
                     const blob = await response.blob();
                     // 回的是一段文字（出错了却没给错误码）或者空的：不当成语音存下来。
-                    if (!blob.size || /json|^text\//i.test(blob.type)) throw failure(`${name} 返回的不是语音`);
+                    if (!blob.size || /json|^text\//i.test(blob.type)) throw failure('语音接口返回的不是音频');
                     return blob;
                 } catch (error) {
-                    if (controller.signal.aborted && !signal.aborted) throw failure(`${name} 一分钟没回应`, 408);
+                    if (controller.signal.aborted && !signal.aborted) throw failure('语音接口响应超时', 408);
                     // 浏览器只说 Failed to fetch：地址写错、接口不通，或者接口不让网页直接调用。
-                    throw error instanceof TypeError ? failure(`${name} 连不上：检查接口地址，或者它不让网页直接调用`) : error;
+                    throw error instanceof TypeError ? failure('无法连接语音接口：请检查接口地址，或该接口不支持网页直接调用') : error;
                 } finally {
                     clearTimeout(timer);
                     signal.removeEventListener('abort', cancel);
@@ -587,7 +587,7 @@ ${translate ? `
                     };
                     current.finish = () => finish();
                     player.onended = () => finish();
-                    player.onerror = () => finish(new Error('这段语音放不出来，接口返回的可能不是音频'));
+                    player.onerror = () => finish(new Error('播放失败，接口返回的可能不是音频'));
                     player.src = url;
                     tune();
                     player.play().catch(finish);
@@ -609,7 +609,7 @@ ${translate ? `
             // from 是从第几句开始，only 为 true 时只说这一句（点台词时用）。
             async function speak(index, { from = 0, only = false } = {}) {
                 stop();
-                if (isFish() && official() && !get('fishKey').trim()) return ctx.ui.toast('先在「角色语音」设置里填好 Fish Audio 的密钥', { kind: 'warning' });
+                if (isFish() && official() && !get('fishKey').trim()) return ctx.ui.toast('请先在角色语音设置中填写 Fish Audio 密钥', { kind: 'warning' });
                 const current = session = { index, stopped: false, abort: new AbortController(), speaker: '', paused: false, at: 0, seek: null };
                 const signal = current.abort.signal;
                 let finished = false; // 自己说完的（没被停、没出错）才接着说后面的回复
@@ -619,7 +619,7 @@ ${translate ? `
                     const { lines, labels } = await analyze(index);
                     if (current.stopped) return;
                     const items = itemsOf(lines, labels, from, only);
-                    if (!items.length) ctx.ui.toast('这条回复里没有人物说的话', { kind: 'info' });
+                    if (!items.length) ctx.ui.toast('这条回复里没有人物台词', { kind: 'info' });
                     const loads = [];
                     const load = (i) => (loads[i] ??= synthesize(items[i], signal));
                     let failed = 0; // 连着几句没合成出来
@@ -636,8 +636,8 @@ ${translate ? `
                         } catch (error) {
                             failed += 1;
                             if (current.stopped || !SKIPPABLE.includes(error.status)) throw error;
-                            if (failed >= 3) throw new Error(`连着三句都没合成出来，停了：${error.message}`);
-                            ctx.ui.toast(`有一句没合成出来，跳过了：${error.message}`, { kind: 'warning' });
+                            if (failed >= 3) throw new Error(`连续 3 句合成失败，已停止：${error.message}`);
+                            ctx.ui.toast(`已跳过一句：${error.message}`, { kind: 'warning' });
                             i += 1;
                             continue;
                         }
@@ -660,7 +660,7 @@ ${translate ? `
                     finished = !current.stopped;
                 } catch (error) {
                     if (!current.stopped) {
-                        ctx.ui.toast(error?.name === 'NotAllowedError' ? '浏览器拦住了自动播放，点一下「角色语音」就能听' : error?.message || String(error), { kind: 'error' });
+                        ctx.ui.toast(error?.name === 'NotAllowedError' ? '浏览器阻止了自动播放，请手动点击播放' : error?.message || String(error), { kind: 'error' });
                     }
                 } finally {
                     if (session === current) {
@@ -677,7 +677,7 @@ ${translate ? `
             }
             function toggleSpeaking(index) {
                 if (session?.index === index) return stop();
-                if (!messageBody(index)) return ctx.ui.toast('这条消息没有能念的文字', { kind: 'info' });
+                if (!messageBody(index)) return ctx.ui.toast('这条消息没有可播放的文字', { kind: 'info' });
                 unlock();
                 speak(index).catch((error) => ctx.log('角色语音失败', error));
             }
@@ -746,8 +746,8 @@ ${translate ? `
                         <button type="button" class="modal-primary-button rph-ui-button" data-from>从这句开始</button>
                     </div>`;
                 popover.querySelector('strong').textContent = mark.speaker;
-                popover.querySelector('.rph-voice-pop__tone').textContent = mark.tone ? `AI 分析的语气：${mark.tone}` : 'AI 没给这句标语气';
-                popover.querySelector('.rph-voice-pop__said').textContent = mark.translation ? `念的是：${mark.translation}` : '';
+                popover.querySelector('.rph-voice-pop__tone').textContent = mark.tone ? `语气：${mark.tone}` : '未标注语气';
+                popover.querySelector('.rph-voice-pop__said').textContent = mark.translation ? `译文：${mark.translation}` : '';
                 const start = (only) => {
                     closePopover();
                     unlock();
@@ -895,14 +895,14 @@ ${translate ? `
                 root.querySelector('[data-pause]').textContent = session?.paused ? '继续' : '暂停';
                 analyzeButton.textContent = '分析';
                 analyzeButton.disabled = generating || index < 0 || analyzing !== null;
-                if (analyzing !== null) return void (status.textContent = '正在分析每句是谁说的……');
-                if (session) return void (status.textContent = `${session.paused ? '已暂停' : '正在说'}：${session.speaker || '……'}`);
-                if (generating) return void (status.textContent = '等回复写完……');
-                if (index < 0) return void (status.textContent = '还没有 AI 回复');
+                if (analyzing !== null) return void (status.textContent = '分析中…');
+                if (session) return void (status.textContent = `${session.paused ? '已暂停' : '正在播放'}：${session.speaker || '…'}`);
+                if (generating) return void (status.textContent = '回复生成中…');
+                if (index < 0) return void (status.textContent = '暂无 AI 回复');
                 const lines = linesOf(index);
                 const labels = cachedLabels(lines, true);
                 if (!labels) {
-                    status.textContent = failures.has(index) ? `分析失败：${failures.get(index)}` : (lines.length ? '最新回复还没分析' : '最新回复里没有能念的文字');
+                    status.textContent = failures.has(index) ? `分析失败：${failures.get(index)}` : (lines.length ? '最新回复未分析' : '最新回复里没有可播放的文字');
                     return;
                 }
                 analyzeButton.textContent = '重新分析';
@@ -975,10 +975,10 @@ ${translate ? `
                 const key = official() ? get('fishKey').trim() : '';
                 const response = await fetch(`${FISH_LIBRARY}/${id}`, key ? { headers: { Authorization: `Bearer ${key}` } } : {});
                 if (response.status === 404 && !official()) return { id, title: id, tags: [], sample: '' };
-                if (!response.ok) throw new Error(response.status === 404 ? '没找到这个声音，检查一下 ID' : `查声音失败（${response.status}）`);
+                if (!response.ok) throw new Error(response.status === 404 ? '未找到该声音，请检查声音 ID' : `查询声音失败（${response.status}）`);
                 return toVoice(await response.json());
             }
-            // AI 挑：几组条件各搜一页，合在一起按对得上的程度排，取前 8 个。
+            // AI 推荐：几组条件各搜一页，合在一起按对得上的程度排，取前 8 个。
             async function searchLibrary(queries, want = {}) {
                 const found = new Map();
                 for (const data of await Promise.all(queries.map((query) => libraryPage(query)))) {
@@ -1000,9 +1000,9 @@ ${translate ? `
                 const settings = ctx.app.get('settings') || {};
                 const endpoint = globalThis.RPHubApiUtils?.buildApiEndpoint;
                 const client = globalThis.RPHubApiClient;
-                if (!endpoint || !client?.requestJson) throw new Error('这个版本的 RPH 取不到模型列表');
+                if (!endpoint || !client?.requestJson) throw new Error('当前版本的 RPH 不支持获取模型列表');
                 const apiKey = String(settings.apiKey || '').trim();
-                if (!apiKey) throw new Error('先在 RPH 设置里填好 AI 接口的密钥');
+                if (!apiKey) throw new Error('请先在 RPH 设置中填写 AI 接口密钥');
                 const data = await client.requestJson({ url: endpoint(settings.apiUrl, 'models'), apiKey });
                 return (data?.data || []).map((model) => String(model?.id || '')).filter((id) => id && !/embedding/i.test(id));
             }
@@ -1025,7 +1025,7 @@ ${translate ? `
                     messages: [{ role: 'system', content: PICK_PROMPT }, { role: 'user', content: `人物：${name}\n资料：\n${aboutPerson(name) || '（世界书里没找到这个人的资料，按名字推测）'}` }]
                 });
                 const want = parseJson(reply, '{');
-                if (!want) throw new Error('AI 没有按格式回答');
+                if (!want) throw new Error('AI 返回的格式不正确');
                 const keywords = (Array.isArray(want.keywords) ? want.keywords : []).map(String).filter(Boolean).slice(0, 2);
                 const gender = ['male', 'female'].includes(want.gender) ? want.gender : '';
                 const age = ['young', 'middle-aged', 'old'].includes(want.age) ? want.age : '';
@@ -1089,32 +1089,32 @@ ${translate ? `
                     const toggle = (key, label) => `<div class="rph-ui-field"><label class="rph-ui-check" style="white-space:normal"><input type="checkbox" class="settings-toggle-input sr-only" data-k="${key}"><span class="settings-toggle" style="flex-shrink:0"></span><span>${label}</span></label></div>`;
                     const range = (key, label, min, max) => `<label class="rph-ui-field"><span>${label} <span data-show="${key}"></span></span><input type="range" min="${min}" max="${max}" step="0.05" class="${RANGE_CLASS}" data-k="${key}"></label>`;
                     body.innerHTML = card('语音接口', [SPEAKER_PATH], select('provider', '接口', [['fish', 'Fish Audio'], ['openai', 'OpenAI 兼容接口']]) + (fish
-                        ? text('fishUrl', '接口地址', '留空用官方，或填中转的地址')
-                            + text('fishKey', '密钥', '官方的在 fish.audio 申请', SECRET)
+                        ? text('fishUrl', '接口地址', '留空使用官方地址，或填写中转地址')
+                            + text('fishKey', '密钥', '官方密钥在 fish.audio 获取', SECRET)
                             + select('fishModel', '模型', [['fish-audio/s2.1-pro-free', 'S2.1 Pro 免费版'], ['fish-audio/s2.1-pro', 'S2.1 Pro（按字数收费）']])
                         : select('openaiTemplate', '常用提供商', TEMPLATES.map((item) => [item.id, item.label]))
-                            + text('openaiUrl', '接口地址', 'https://…，填域名或填到 /v1 都行')
-                            + text('openaiKey', '密钥', '不用密钥的接口留空', SECRET)
-                            + text('openaiModel', '模型', '照接口文档填')
-                            + text('openaiVoice', '默认声音', `人物没配声音时用，留空是 ${template().voices[0] || 'alloy'}`)
-                            + select('openaiTone', '语气怎么传', [['instructions', '放 instructions（gpt-4o-mini-tts 这类）'], ['bracket', '放句首方括号（Fish 风格）'], ['none', '不传']])
+                            + text('openaiUrl', '接口地址', 'https://…，可填域名或 /v1 地址')
+                            + text('openaiKey', '密钥', '无需密钥的接口可留空', SECRET)
+                            + text('openaiModel', '模型', '按接口文档填写')
+                            + text('openaiVoice', '默认声音', `留空使用 ${template().voices[0] || 'alloy'}`)
+                            + select('openaiTone', '语气传递方式', [['instructions', 'instructions 字段（gpt-4o-mini-tts 等）'], ['bracket', '句首方括号（Fish 格式）'], ['none', '不传递']])
                             + select('openaiFormat', '音频格式', ['mp3', 'wav', 'opus', 'aac', 'flac'].map((name) => [name, name]))))
                         + card('基本设置', GEAR_PATHS, `
-                        <div class="rph-ui-field"><span>分析用的模型</span><select class="rph-ui-input" data-k="analysisModel"></select></div>
+                        <div class="rph-ui-field"><span>分析模型</span><select class="rph-ui-input" data-k="analysisModel"></select></div>
                         <div class="rph-ui-actions" style="justify-content:space-between;align-items:center;margin:-0.25rem 0 0.75rem"><span class="rph-ui-muted" data-models-note></span><button type="button" class="modal-secondary-button rph-ui-button" data-refresh-models>刷新模型列表</button></div>
-                        ${select('analyzeMode', '什么时候分析', [['click', '点「分析」或播放时才分析'], ['auto', '每条回复结束后自动分析']])}
-                        ${toggle('autoPlay', '回复结束后自动说')}
-                        ${toggle('continuous', '说完这条接着说后面的回复')}
-                        ${toggle('userLines', '你扮演的角色的台词也念')}
-                        ${toggle('widget', '在聊天页显示状态悬浮窗')}
+                        ${select('analyzeMode', '分析时机', [['click', '点击「分析」或播放时'], ['auto', '回复完成后自动分析']])}
+                        ${toggle('autoPlay', '自动播放')}
+                        ${toggle('continuous', '连续播放')}
+                        ${toggle('userLines', '播放用户台词')}
+                        ${toggle('widget', '显示悬浮窗')}
                         ${range('volume', '音量', 0, 1)}
                         ${range('speed', '语速', 0.5, 2)}`)
-                        + card('读音替换', [SWAP_PATH], '<div data-rules></div><div class="rph-ui-actions" style="margin-top:0.75rem"><button type="button" class="modal-secondary-button rph-ui-button" data-add-rule>加一条</button></div>')
+                        + card('读音替换', [SWAP_PATH], '<div data-rules></div><div class="rph-ui-actions" style="margin-top:0.75rem"><button type="button" class="modal-secondary-button rph-ui-button" data-add-rule>添加</button></div>')
                         + card('配音表', [PEOPLE_PATH], `
                             <div data-cast></div>
-                            <div class="rph-ui-actions" style="margin-top:0.75rem"><input class="rph-ui-input" data-new-person placeholder="人物名字" style="flex:1;min-width:0"><button type="button" class="modal-secondary-button rph-ui-button" data-add-person>添加人物</button></div>`,
+                            <div class="rph-ui-actions" style="margin-top:0.75rem"><input class="rph-ui-input" data-new-person placeholder="人物名称" style="flex:1;min-width:0"><button type="button" class="modal-secondary-button rph-ui-button" data-add-person>添加人物</button></div>`,
                         '<span class="rph-ui-muted" style="margin-left:0.5rem;font-weight:400" data-card-name></span>');
-                    body.querySelector('[data-card-name]').textContent = character().name ? `当前角色卡：${character().name}` : '先打开一张角色卡';
+                    body.querySelector('[data-card-name]').textContent = character().name ? `当前角色卡：${character().name}` : '请先打开角色卡';
 
                     // 分析用的模型：从站点的 AI 接口取模型列表（和 RPH 自己获取模型一样，去掉嵌入模型），这次打开页面只取一次。
                     const modelSelect = body.querySelector('[data-k="analysisModel"]');
@@ -1122,12 +1122,12 @@ ${translate ? `
                     const fillModels = () => {
                         const saved = get('analysisModel');
                         const list = models || [];
-                        modelSelect.replaceChildren(new Option('跟随 RPH 的分析模型（没设就用主模型）', ''), ...list.map((id) => new Option(id, id)));
+                        modelSelect.replaceChildren(new Option('跟随 RPH 分析模型（未设置时使用主模型）', ''), ...list.map((id) => new Option(id, id)));
                         if (saved && !list.includes(saved)) modelSelect.appendChild(new Option(`${saved}（不在列表里）`, saved));
                         modelSelect.value = saved;
                     };
                     const loadModels = async () => {
-                        modelsNote.textContent = '正在获取模型列表……';
+                        modelsNote.textContent = '正在获取模型列表…';
                         try {
                             models = await listModels();
                             modelsNote.textContent = `共 ${models.length} 个模型`;
@@ -1191,7 +1191,7 @@ ${translate ? `
                     const renderRules = () => {
                         const rules = readJson('pronunciations', []);
                         rulesBox.replaceChildren();
-                        if (!rules.length) rulesBox.appendChild(element('p', 'rph-ui-muted', '人名、多音字念错了，在这里换成好念的字，比如「黍 → 蜀」。'));
+                        if (!rules.length) rulesBox.appendChild(element('p', 'rph-ui-muted', '人名或多音字读错时，可在此替换为读音正确的字，如「黍 → 蜀」。'));
                         rules.forEach((rule, i) => {
                             const cell = (key, placeholder) => {
                                 const input = Object.assign(element('input', 'rph-ui-input'), { value: rule[key] || '', placeholder });
@@ -1204,7 +1204,7 @@ ${translate ? `
                             };
                             const line = element('div', 'rph-ui-actions');
                             line.style.cssText = 'margin-bottom:0.5rem;align-items:center';
-                            line.append(cell('from', '原文'), element('span', 'rph-ui-muted', '→'), cell('to', '念成'), smallButton('删除', () => {
+                            line.append(cell('from', '原文'), element('span', 'rph-ui-muted', '→'), cell('to', '替换为'), smallButton('删除', () => {
                                 saveRules(rules.filter((_, n) => n !== i));
                                 renderRules();
                             }));
@@ -1218,7 +1218,7 @@ ${translate ? `
                         rulesBox.querySelector('div:last-child input')?.focus();
                     };
 
-                    // 配音表：每行一个人物，选声音念什么语言，可以让 AI 挑、自己搜或填声音名、试听、删除。
+                    // 配音表：每行一个人物，选声音念什么语言，可以 AI 推荐、自己搜或填声音名、试听、删除。
                     const castBox = body.querySelector('[data-cast]');
                     // 试听：声音自带试听就放它的；没有就用现在的接口合成一句（同一句再点不重复合成）。
                     let sampleUrl = '';
@@ -1232,7 +1232,7 @@ ${translate ? `
                             preview.src = sample || sampleUrl;
                             await preview.play();
                         } catch (error) {
-                            ctx.ui.toast(`试听放不出来：${error?.message || error}`);
+                            ctx.ui.toast(`试听失败：${error?.message || error}`);
                         }
                     };
                     // 选了声音，这个人就念这个声音的语言；声音没带语言的（填的名字、私有声音）不动他原来选的。
@@ -1248,14 +1248,14 @@ ${translate ? `
                         const main = element('div', 'rph-ui-row-main');
                         main.append(element('strong', '', voice.title), element('div', 'rph-ui-muted', [LANGS[voice.lang], ...voice.tags].filter(Boolean).join(' · ')));
                         const actions = element('div', 'rph-ui-row-actions');
-                        actions.append(smallButton('试听', () => playSample(voice)), smallButton('用这个', () => assign(name, voice)));
+                        actions.append(smallButton('试听', () => playSample(voice)), smallButton('使用', () => assign(name, voice)));
                         row.append(main, actions);
                         return row;
                     };
                     const showVoices = (area, name, voices, note = '') => {
                         area.replaceChildren();
                         if (note) area.appendChild(element('p', 'rph-ui-muted', note));
-                        if (!voices.length) area.appendChild(element('p', 'rph-ui-muted', '没找到合适的声音，换个词搜搜。'));
+                        if (!voices.length) area.appendChild(element('p', 'rph-ui-muted', '未找到合适的声音，请尝试手动搜索。'));
                         voices.forEach((voice) => area.appendChild(voiceRow(name, voice)));
                     };
                     // 自己搜：选在哪种语言的声音里搜（先按这个人现在的语言，没选过是中文），每页 20 个，写出一共多少个，底下「加载更多」往后翻。
@@ -1265,7 +1265,7 @@ ${translate ? `
                         const form = element('div', 'rph-ui-actions');
                         form.style.cssText = 'margin-top:0.5rem;flex-wrap:wrap'; // 手机上搜索框占一行，语言和按钮换到下一行
                         const input = element('input', 'rph-ui-input');
-                        input.placeholder = '搜声音，或粘贴声音 ID、网址';
+                        input.placeholder = '搜索声音，或粘贴声音 ID / 链接';
                         input.style.cssText = 'flex:1 1 12rem;min-width:0';
                         const scope = languageSelect('全部语言', language || 'zh', () => load(true));
                         const results = element('div');
@@ -1275,7 +1275,7 @@ ${translate ? `
                         const load = async (fresh) => {
                             if (fresh) {
                                 page = 0;
-                                results.replaceChildren(element('p', 'rph-ui-muted', '正在搜……'));
+                                results.replaceChildren(element('p', 'rph-ui-muted', '搜索中…'));
                             }
                             more.disabled = true;
                             try {
@@ -1283,7 +1283,7 @@ ${translate ? `
                                 const id = text.match(/(?:^|\/m\/)([0-9a-f]{32})\b/i)?.[1];
                                 const { voices, total } = id ? { voices: [await lookupVoice(id)], total: 1 } : await searchPage(text, page + 1, scope.select.value);
                                 page += 1;
-                                if (fresh) results.replaceChildren(element('p', 'rph-ui-muted', total ? `一共 ${total} 个声音` : '没找到声音，换个词搜搜。'));
+                                if (fresh) results.replaceChildren(element('p', 'rph-ui-muted', total ? `共 ${total} 个声音` : '未找到相关声音，请更换关键词。'));
                                 more.remove();
                                 voices.forEach((voice) => results.appendChild(voiceRow(name, voice)));
                                 if (page * PAGE_SIZE < total) results.appendChild(more);
@@ -1305,10 +1305,10 @@ ${translate ? `
                         const form = element('div', 'rph-ui-actions');
                         form.style.marginTop = '0.5rem';
                         const input = element('input', 'rph-ui-input');
-                        input.placeholder = '声音名字，照接口文档填';
+                        input.placeholder = '声音名称，按接口文档填写';
                         input.style.cssText = 'flex:1;min-width:0';
                         input.onkeydown = (event) => { if (event.key === 'Enter' && !event.isComposing) pick(input.value.trim()); };
-                        form.append(input, smallButton('用这个', () => pick(input.value.trim())));
+                        form.append(input, smallButton('使用', () => pick(input.value.trim())));
                         const presets = element('div', 'rph-ui-actions');
                         presets.style.cssText = 'justify-content:flex-start;flex-wrap:wrap;margin-top:0.5rem';
                         template().voices.forEach((voice) => presets.appendChild(smallButton(voice, () => pick(voice))));
@@ -1320,7 +1320,7 @@ ${translate ? `
                         castSelects = [];
                         castBox.replaceChildren();
                         const people = readCast();
-                        if (!people.length) castBox.appendChild(element('p', 'rph-ui-muted', '还没有人物，分析回复后会自动加进来。'));
+                        if (!people.length) castBox.appendChild(element('p', 'rph-ui-muted', '还没有人物，分析回复后会自动加入。'));
                         people.forEach((person) => {
                             const row = element('div', 'rph-ui-row');
                             row.dataset.person = person.name;
@@ -1331,19 +1331,19 @@ ${translate ? `
                             area.dataset.pick = person.name;
                             area.style.marginBottom = '0.5rem';
                             // 这个人的声音念什么语言：选声音时跟着声音带过来，也可以在这里改。和正文不是一种语言时，分析会把他的台词译过去再念。
-                            const lang = languageSelect('跟正文一样', person.lang, () => saveCast(readCast().map((item) => (item.name === person.name ? { ...item, lang: lang.select.value || undefined } : item))));
-                            lang.box.title = '这个声音念什么语言';
+                            const lang = languageSelect('与正文相同', person.lang, () => saveCast(readCast().map((item) => (item.name === person.name ? { ...item, lang: lang.select.value || undefined } : item))));
+                            lang.box.title = '声音语言';
                             actions.append(lang.box);
-                            if (!fish) actions.append(smallButton('填声音', () => nameBox(area, person.name)));
-                            else actions.append(smallButton('AI 挑', async () => {
-                                area.replaceChildren(element('p', 'rph-ui-muted', '正在按世界书找声音……'));
+                            if (!fish) actions.append(smallButton('选择声音', () => nameBox(area, person.name)));
+                            else actions.append(smallButton('AI 推荐', async () => {
+                                area.replaceChildren(element('p', 'rph-ui-muted', '推荐中…'));
                                 try {
                                     const { voices, reason } = await aiPick(person.name, lang.select.value || 'zh');
                                     if (voices[0]) assign(person.name, voices[0]);
                                     const fresh = castBox.querySelector(`[data-pick="${CSS.escape(person.name)}"]`);
                                     showVoices(fresh, person.name, voices, voices[0] ? `已选「${voices[0].title}」。${reason}` : reason);
                                 } catch (error) {
-                                    area.replaceChildren(element('p', 'rph-ui-muted', `没挑成：${error?.message || error}`));
+                                    area.replaceChildren(element('p', 'rph-ui-muted', `推荐失败：${error?.message || error}`));
                                 }
                             }), smallButton('搜索', () => searchBox(area, person.name, lang.select.value)));
                             actions.append(smallButton('试听', () => playSample(person)), smallButton('删除', () => {

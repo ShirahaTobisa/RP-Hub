@@ -248,12 +248,12 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
     function reportAttributionFailure(detail = '') {
         log('image attribution failed; generation refused', detail);
         incrementPerformance('attributionFailureToasts');
-        showImageToast('无法确认图片所属角色，已拒绝生图');
+        showImageToast('图片生成失败：无法确定所属角色');
     }
 
     function reportRecordFlushFailure(error = null) {
         log('image record flush failed; sync will continue', error);
-        showImageToast('图片记录保存失败，可能影响同步');
+        showImageToast('图片记录保存失败');
     }
 
     function describeGenerationError(error) {
@@ -280,7 +280,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             generationFailures.reasons.clear();
             generationFailures.errors.clear();
             generationFailures.count = 0;
-            if (!first) return showImageToast('图片生成失败，请检查密钥或服务状态');
+            if (!first) return showImageToast('图片生成失败，请检查生图密钥或稍后重试');
             showImageToast(`图片生成失败${count > 1 ? `（${count} 张）` : ''}：${first}${others.length ? `；另有 ${others.length} 种原因` : ''}`);
         }, 800);
     }
@@ -589,7 +589,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             safeLocalSet(IMAGE_GEN_KEY_ADOPTED_STORAGE_KEY, settingsKey);
             main = getImageToken();
             if (main) {
-                state.keyRecoveryNotice = '已采纳原生设置中的图片密钥；下次推送会带上该密钥。';
+                state.keyRecoveryNotice = '已更新生图密钥';
                 source = 'settings';
             }
         } else if (main) {
@@ -598,7 +598,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         } else if (shadow) {
             safeLocalSet(IMAGE_GEN_KEY_STORAGE_KEY, shadow);
             if (getImageToken()) {
-                state.keyRecoveryNotice = '已从本机保护副本恢复密钥；下次推送会带上该密钥。';
+                state.keyRecoveryNotice = '已恢复生图密钥';
                 source = 'shadow';
             }
         }
@@ -1540,13 +1540,13 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         frame.style.cssText = 'width:auto;height:auto;max-width:100%;box-sizing:border-box;padding:2px;border:1px solid rgba(148,163,184,.35);background:rgba(255,255,255,.55);position:relative;border-radius:8px;overflow:hidden;display:inline-flex;justify-content:center;align-items:center;box-shadow:0 4px 14px rgba(15,23,42,.08);vertical-align:middle;';
         if (manual) {
             const label = document.createElement('span');
-            label.textContent = '未生成，点击按钮生成';
+            label.textContent = '图片未生成，点击右上角按钮生成';
             label.style.cssText = 'min-width:180px;min-height:96px;display:flex;align-items:center;justify-content:center;padding:16px 44px 16px 16px;color:#475569;text-align:center;';
             frame.appendChild(label);
         } else {
             const image = document.createElement('img');
             image.src = buildImageRenderUrl(record.paramsSnapshot);
-            image.alt = '生成图片';
+            image.alt = '生成的图片';
             image.loading = 'lazy';
             image.decoding = 'async';
             image.referrerPolicy = 'no-referrer';
@@ -1931,9 +1931,9 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             } else {
                 // 选了插件提供的生图接口：插件在浏览器里生成，外壳把图片上传存进 R2（存放位置和直链生图相同）。
                 const provider = generation.providers.get(generator);
-                if (!provider) throw new Error(`生图接口「${generator}」的插件没有加载，请在模块管理里启用它，或在设置里改回直链`);
+                if (!provider) throw new Error(`生图接口「${generator}」未加载，请在模块管理中启用对应插件，或改回直链`);
                 const blob = await provider.generate({ params: Object.fromEntries(url.searchParams), token });
-                if (!(blob instanceof Blob) || !blob.type.startsWith('image/')) throw new Error(`生图接口「${provider.label}」没有返回图片`);
+                if (!(blob instanceof Blob) || !blob.type.startsWith('image/')) throw new Error(`生图接口「${provider.label}」未返回图片`);
                 response = await fetch(url, { method: 'PUT', headers: { ...headers, 'content-type': blob.type }, body: blob });
             }
             if (!response.ok) {
@@ -1959,7 +1959,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         const currentState = image.dataset.rphImageGenerationState || '';
         if (image.dataset.rphImageReadOnly === '1') {
             image.dataset.rphImageGenerationState = 'missing';
-            image.alt = '原图读取失败，可点击重新生成';
+            image.alt = '图片加载失败，可重新生成';
             frame.style.minHeight = '96px';
             return;
         }
@@ -1976,7 +1976,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             image.src = retryUrl.toString();
         }).catch((error) => {
             image.dataset.rphImageGenerationState = 'failed';
-            image.alt = `生图失败：${describeGenerationError(error) || '请检查密钥或服务状态'}`;
+            image.alt = `图片生成失败：${describeGenerationError(error) || '请检查生图密钥或稍后重试'}`;
             reportImageGenerationFailure(error);
         });
     }
@@ -2784,7 +2784,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         negative.rows = 4;
         negative.style.resize = 'vertical';
         const negativeCell = cell('负面提示词', negative, true);
-        const resetNegative = element('button', 'text-xs text-primary-600 mt-1', '恢复默认负面提示词');
+        const resetNegative = element('button', 'text-xs text-primary-600 mt-1', '恢复默认');
         resetNegative.type = 'button';
         const status = element('p', 'text-xs text-gray-500 md:col-span-2');
         status.setAttribute(FIELD_ATTR, '');
@@ -2814,10 +2814,10 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             let cost = '';
             try { cost = provider?.costHint?.(query) || ''; } catch (_) { cost = ''; }
             if (!provider && generator.value !== 'direct') {
-                cost = `「${generator.value}」插件没有加载，这个页面现在生不了图；请在模块管理里启用它，或改回直链。`;
+                cost = `「${generator.value}」插件未加载，请在模块管理中启用，或改回直链`;
             } else if (!cost && !provider) {
                 const points = imageModule()?.estimateImagePoints?.(query.model, query.size, Math.min(28, query.steps));
-                cost = `直链最高按 28 步生成${points ? `，当前设置每张图约 ${points} 点` : ''}。`;
+                cost = points ? `每张图约 ${points} 点` : '';
             }
             steps.hint.textContent = cost;
         };
@@ -2865,10 +2865,10 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                 try {
                     const result = await api('/image/api/settings', { method: 'PUT', body: JSON.stringify(body) });
                     imageModule()?.applyGenerationSettings?.(result.settings);
-                    status.textContent = '生图参数已保存，所有设备共用；只影响之后的新图，已生成的图不会重新生成。';
+                    status.textContent = '已保存';
                 } catch (error) {
                     // 没存上：提示出来，并把设置页恢复成站点上的真实值，免得以为已经改好了。
-                    window.RPHubUI?.toast(`生图设置没有保存成功：${error.message}。已恢复为站点上的设置，请检查同步密码后重试。`, { kind: 'error', duration: 8000 });
+                    window.RPHubUI?.toast(`生图设置保存失败：${error.message}`, { kind: 'error', duration: 8000 });
                     await imageModule()?.reloadGenerationSettings?.();
                     rebuildFields();
                 }
@@ -2948,8 +2948,8 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
         try { localStorage.setItem(CHECK_KEY, String(Date.now())); } catch (_) { /* storage blocked */ }
         if (!report.over || !report.cleanup.count) return;
         const ok = await window.RPHubUI.confirm({
-            title: 'R2 存储超出清理上限',
-            message: `已用 ${report.totalHuman}，清理上限 ${report.limitHuman}（免费额度 10 GB，超出会收费）。\n\n要从最早的图开始删除 ${report.cleanup.count} 张，腾出 ${report.cleanup.human} 吗？删除的图在聊天里显示为「已删除」，不会重新生成。`,
+            title: '清理图片',
+            message: `已用 ${report.totalHuman}，超过清理上限 ${report.limitHuman}。将删除最早的 ${report.cleanup.count} 张图片，释放 ${report.cleanup.human}，删除后无法恢复。`,
             confirmText: '清理',
             cancelText: '今天不再提醒',
             danger: true
@@ -2962,7 +2962,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
                 deleted += result.deletedCount;
                 if (!result.remaining || !result.deletedCount) break;
             }
-            window.RPHubUI.toast(`已清理 ${deleted} 张旧图。`, { kind: 'success' });
+            window.RPHubUI.toast(`已清理 ${deleted} 张图片`, { kind: 'success' });
         } catch (error) {
             window.RPHubUI.toast(`清理失败：${error.message}`, { kind: 'error' });
         }

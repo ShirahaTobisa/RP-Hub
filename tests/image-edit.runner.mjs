@@ -222,7 +222,7 @@ try {
         await page.reload({waitUntil:'domcontentloaded'}); await ready(page);
         await page.waitForFunction(()=>document.querySelector('.rp-generated-image-frame img')?.dataset.rphImageGenerationState==='missing');
         await page.waitForTimeout(700); assert.equal(posts(),postLimit);
-        assert.match(await frame(page).locator('img').getAttribute('alt'),/原图读取失败/);
+        assert.match(await frame(page).locator('img').getAttribute('alt'),/图片加载失败/);
         await page.screenshot({path:path.join(evidence,'missing-original.png')});
         await frame(page).locator('.rp-image-reroll-button').click();
         const regenerated = await imageUrl(page); assert.notEqual(regenerated,rerolled); assert.equal(posts(),postLimit+1);
@@ -273,7 +273,7 @@ try {
         await frame(page).first().waitFor();
         assert.equal(await frame(page).first().getAttribute('data-character-uuid'), uuid);
         assert.equal(posts(), beforePosts);
-        assert.equal(await page.locator('.toast-item', { hasText: '无法确认图片所属角色' }).count(), 0);
+        assert.equal(await page.locator('.toast-item', { hasText: '无法确定所属角色' }).count(), 0);
         passed('display-only regex that rewrites the image prompt still attributes the row without errors or generation');
     }
     // 选了插件提供的生图接口：插件在浏览器里生成图片，外壳用 PUT 上传到同一个存放位置，不再走直链 POST。

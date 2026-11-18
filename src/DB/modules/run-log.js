@@ -1,7 +1,7 @@
 // 运行日志：记下页面上的警告、报错和未捕获的异常，存在本机（不进云同步），手机上没有控制台也能查看和复制。
 // 插件加载后才开始记录，页面刚打开那一瞬间（插件加载前）的报错记不到。
 RPHubSDK.register({
-    id: 'run-log', name: '运行日志', version: '1.0.0', requiresApi: 1,
+    id: 'run-log', name: '运行日志', version: '1.0.1', requiresApi: 1,
     init(ctx) {
         'use strict';
         // 测试版 2026.10.11 外壳自带运行日志，两份同时记录会互相覆盖，这时插件不做任何事。
@@ -47,7 +47,7 @@ RPHubSDK.register({
                     title: '运行日志',
                     render(body) {
                         body.innerHTML = `
-                            <p class="rph-ui-muted">最近 ${LOG_LIMIT} 条警告和报错，只存在这台设备上。遇到问题时复制发给开发者。</p>
+                            <p class="rph-ui-muted">最近 ${LOG_LIMIT} 条警告和报错，遇到问题时可复制发给开发者。</p>
                             <textarea class="rph-ui-input" readonly data-log style="width:100%;min-height:50vh;margin:0.75rem 0;font:12px/1.5 ui-monospace,monospace;white-space:pre-wrap"></textarea>
                             <div class="rph-ui-actions">
                                 <button type="button" class="modal-secondary-button rph-ui-button rph-ui-danger" data-act="clear">清空</button>

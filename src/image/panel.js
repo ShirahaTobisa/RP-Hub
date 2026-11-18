@@ -97,7 +97,7 @@
         negative.rows = 4;
         negative.style.resize = 'vertical';
         const negativeCell = cell('负面提示词', negative, true);
-        const resetNegative = element('button', 'text-xs text-primary-600 mt-1', '恢复默认负面提示词');
+        const resetNegative = element('button', 'text-xs text-primary-600 mt-1', '恢复默认');
         resetNegative.type = 'button';
         const status = element('p', 'text-xs text-gray-500 md:col-span-2');
         status.setAttribute(FIELD_ATTR, '');
@@ -127,10 +127,10 @@
             let cost = '';
             try { cost = provider?.costHint?.(query) || ''; } catch (_) { cost = ''; }
             if (!provider && generator.value !== 'direct') {
-                cost = `「${generator.value}」插件没有加载，这个页面现在生不了图；请在模块管理里启用它，或改回直链。`;
+                cost = `「${generator.value}」插件未加载，请在模块管理中启用，或改回直链`;
             } else if (!cost && !provider) {
                 const points = imageModule()?.estimateImagePoints?.(query.model, query.size, Math.min(28, query.steps));
-                cost = `直链最高按 28 步生成${points ? `，当前设置每张图约 ${points} 点` : ''}。`;
+                cost = points ? `每张图约 ${points} 点` : '';
             }
             steps.hint.textContent = cost;
         };
@@ -178,10 +178,10 @@
                 try {
                     const result = await api('/image/api/settings', { method: 'PUT', body: JSON.stringify(body) });
                     imageModule()?.applyGenerationSettings?.(result.settings);
-                    status.textContent = '生图参数已保存，所有设备共用；只影响之后的新图，已生成的图不会重新生成。';
+                    status.textContent = '已保存';
                 } catch (error) {
                     // 没存上：提示出来，并把设置页恢复成站点上的真实值，免得以为已经改好了。
-                    window.RPHubUI?.toast(`生图设置没有保存成功：${error.message}。已恢复为站点上的设置，请检查同步密码后重试。`, { kind: 'error', duration: 8000 });
+                    window.RPHubUI?.toast(`生图设置保存失败：${error.message}`, { kind: 'error', duration: 8000 });
                     await imageModule()?.reloadGenerationSettings?.();
                     rebuildFields();
                 }
@@ -261,8 +261,8 @@
         try { localStorage.setItem(CHECK_KEY, String(Date.now())); } catch (_) { /* storage blocked */ }
         if (!report.over || !report.cleanup.count) return;
         const ok = await window.RPHubUI.confirm({
-            title: 'R2 存储超出清理上限',
-            message: `已用 ${report.totalHuman}，清理上限 ${report.limitHuman}（免费额度 10 GB，超出会收费）。\n\n要从最早的图开始删除 ${report.cleanup.count} 张，腾出 ${report.cleanup.human} 吗？删除的图在聊天里显示为「已删除」，不会重新生成。`,
+            title: '清理图片',
+            message: `已用 ${report.totalHuman}，超过清理上限 ${report.limitHuman}。将删除最早的 ${report.cleanup.count} 张图片，释放 ${report.cleanup.human}，删除后无法恢复。`,
             confirmText: '清理',
             cancelText: '今天不再提醒',
             danger: true
@@ -275,7 +275,7 @@
                 deleted += result.deletedCount;
                 if (!result.remaining || !result.deletedCount) break;
             }
-            window.RPHubUI.toast(`已清理 ${deleted} 张旧图。`, { kind: 'success' });
+            window.RPHubUI.toast(`已清理 ${deleted} 张图片`, { kind: 'success' });
         } catch (error) {
             window.RPHubUI.toast(`清理失败：${error.message}`, { kind: 'error' });
         }

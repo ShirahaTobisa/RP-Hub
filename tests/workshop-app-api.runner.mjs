@@ -211,7 +211,7 @@ try {
     assert.equal(await marketAction('market-future').isDisabled(), true);
     await marketAction('market-bad').click();
     await acceptConfirm();
-    await page.waitForFunction(() => [...document.querySelectorAll('.toast-item')].some((toast) => toast.textContent.includes('不一致')));
+    await page.waitForFunction(() => [...document.querySelectorAll('.toast-item')].some((toast) => toast.textContent.includes('校验失败')));
     assert.equal((await installations()).some((entry) => entry.url.endsWith('market-bad.js')), false);
     await marketAction('market-demo').click();
     await acceptConfirm();
@@ -225,7 +225,7 @@ try {
     assert.equal(await marketAction('market-demo').textContent(), '更新');
     await marketAction('market-demo').click();
     await page.waitForFunction(() => JSON.parse(localStorage.getItem('rp_hub_workshop_modules_v1')).some((entry) => entry.id === 'market-demo' && entry.version === '1.0.1'));
-    await page.waitForFunction(() => document.querySelector('[data-rph-workshop-market-action="market-demo"]')?.textContent === '已更新，刷新后生效');
+    await page.waitForFunction(() => document.querySelector('[data-rph-workshop-market-action="market-demo"]')?.textContent === '刷新后生效');
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => globalThis.marketDemoVersion === '1.0.1', null, { timeout: 45000 });
     const marketEntries = (await installations()).filter((entry) => entry.id === 'market-demo');

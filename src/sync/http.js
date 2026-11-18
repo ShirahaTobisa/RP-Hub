@@ -36,7 +36,8 @@
                 throw Object.assign(new Error(data.error || 'HTTP ' + response.status), { response: data, status: response.status });
             } catch (cause) {
                 const error = cause?.name === 'AbortError'
-                    ? Object.assign(new Error((options.upload ? '上传' : '同步请求') + '超时，请检查网络后重试。'), { status: 0 })
+                    ? Object.assign(new Error('请求超时，请检查网络后重试。'), { status: 0 })
+                    : cause?.name === 'TypeError' ? Object.assign(new Error('网络连接失败，请检查网络后重试。'), { status: 0 })
                     : cause instanceof Error ? cause : new Error(String(cause));
                 if (attempt >= retries || !shouldRetrySyncError(error)) throw error;
             } finally { clearTimeout(timer); }
@@ -65,7 +66,7 @@
             'x-rp-part-stored-checksum': chunk.storedChecksum } : {}) };
         const params = new URLSearchParams({ action: 'upload-part', index: String(chunk.index), partNumber: String(chunk.index + 1) });
         const data = await requestSync(CONFIG.apiEndpoint + '?' + params, { headers, body: chunk.body }, {
-            timeoutMs: transferTimeout(chunk.body.byteLength), upload: true });
+            timeoutMs: transferTimeout(chunk.body.byteLength) });
         return { partNumber: Number(data.partNumber), index: chunk.index, byteLength: chunk.length, checksum: chunk.checksum, key: data.key };
     }
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } from './sync-195.helpers.mjs';
 
-// 「转成魔改版的数据」按钮：上游 2.0.3 及更早放在设置页的「空间管理」里；2.0.4 起上游删了那一段，
+// 「转换数据」按钮（迁移到魔改版）：上游 2.0.3 及更早放在设置页的「空间管理」里；2.0.4 起上游删了那一段，
 // 按钮要自己补在设置页最底下。离开设置页再回来，按钮只能有一个。
 const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
@@ -33,7 +33,7 @@ try {
     await setView('settings');
     await page.waitForSelector('[data-action="fork-export"]', { timeout: 15000 });
     const first = await inspect();
-    assert.equal(first.count, 1, '设置页应有且只有一个「转成魔改版的数据」按钮');
+    assert.equal(first.count, 1, '设置页应有且只有一个「转换数据」按钮');
     const upstreamHasStorageSection = first.headings.includes('空间管理');
     if (upstreamHasStorageSection) assert.equal(first.sectionHeading, '空间管理', '上游还有「空间管理」时按钮放在那一段里');
     else assert.equal(first.sectionHeading, '', '上游没有「空间管理」时按钮自成一段');

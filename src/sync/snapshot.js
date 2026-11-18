@@ -16,7 +16,7 @@
 
     function serializeSnapshotLine(value) {
         const json = JSON.stringify(value);
-        if (typeof json !== 'string') throw new Error('本地数据包含无法序列化的内容。');
+        if (typeof json !== 'string') throw new Error('本地数据中有无法上传的内容。');
         return `${json}\n`;
     }
 
@@ -24,7 +24,7 @@
 
     function serializeStreamRecord(metadata, key, value) {
         const serialized = JSON.stringify(value);
-        if (typeof serialized !== 'string') throw new Error(`记录 ${String(key)} 无法序列化。`);
+        if (typeof serialized !== 'string') throw new Error(`数据「${String(key)}」无法上传。`);
         const prefix = JSON.stringify(metadata).slice(0, -1) + ',"value":';
         // toJSON may depend on its key; retain the old semantics for it.
         if (value && typeof value.toJSON === 'function') {
@@ -38,7 +38,7 @@
 
     function checkStreamRecordSize(key, size) {
         if (size > CONFIG.maxRecordBytes) {
-            throw new Error(`上传已取消：记录 ${String(key)} 约 ${(size / 1024 / 1024).toFixed(2)}MB，超过 Chrome/Edge/安卓浏览器能存的单条上限（127MB），同步到那些设备会失败。`);
+            throw new Error(`数据「${String(key)}」约 ${(size / 1024 / 1024).toFixed(2)}MB，超过浏览器单条 127MB 的上限。`);
         }
         if (size > CONFIG.warnRecordBytes) {
             console.warn(`[RP Sync] Large record ${String(key)}: ${(size / 1024 / 1024).toFixed(2)}MB`);
@@ -139,7 +139,7 @@
                 const dbEndRef = { k: 'de', d: dbName };
                 if (inRange(dbEndRef)) yield unit(dbEndRef, [serializeSnapshotLine({ type: 'databaseEnd', name: dbName })]);
             } catch (error) {
-                throw new Error(`读取本地数据库 ${dbName} 失败，已取消上传以避免云端数据缺失。`, { cause: error });
+                throw new Error(`读取本地数据库 ${dbName} 失败。`, { cause: error });
             } finally {
                 if (db) db.close();
             }
@@ -192,7 +192,7 @@
         flushBuffer(completed) {
             if (this.bufferLength === 0) return;
             if (this.bufferLength > this.hardMaxBytes) {
-                throw new CdcChunkingError('CDC 生成了越界块。');
+                throw new CdcChunkingError('数据分块失败。');
             }
             const bytes = new Uint8Array(this.bufferLength);
             let offset = 0;
@@ -268,7 +268,7 @@
         let lastRef = null;
         const starts = []; // 还没归到哪一块的记录起点：[字节位置, 记录数]
         const emit = (bytes, ref, lineStart, lineIndex) => {
-            if (bytes.byteLength <= 0 || bytes.byteLength > hardMaxBytes) throw new CdcChunkingError('CDC 生成了越界块。');
+            if (bytes.byteLength <= 0 || bytes.byteLength > hardMaxBytes) throw new CdcChunkingError('数据分块失败。');
             const chunkEnd = chunkStart + bytes.byteLength;
             let records = 0;
             while (starts.length && starts[0][0] < chunkEnd) records += starts.shift()[1];
@@ -281,7 +281,7 @@
             chunkStart = chunkEnd;
             from = chunkEnd < writer.totalBytes ? { ref, line: lineIndex } : null; // 这条线还有字节没进块，下一块从它开始
             index += 1;
-            if (index > 10_000) throw new CdcChunkingError('CDC 块数量超过10000。');
+            if (index > 10_000) throw new CdcChunkingError('数据块数量超过 10000 个的上限。');
             return chunk;
         };
 
@@ -296,7 +296,7 @@
                 try {
                     completed = writer.appendLine(line);
                 } catch (error) {
-                    if (profile === 'cdc' && !(error instanceof CdcChunkingError)) throw new CdcChunkingError('CDC 切块内部异常。', { cause: error });
+                    if (profile === 'cdc' && !(error instanceof CdcChunkingError)) throw new CdcChunkingError('数据分块失败。', { cause: error });
                     throw error;
                 }
                 for (const bytes of completed) {
@@ -313,7 +313,7 @@
             yield { ...chunk, checksum: await sha256Bytes(bytes) };
         }
         stats.totalBytes = writer.totalBytes;
-        if (index === 0 && bounds.start === undefined && bounds.stop === undefined) throw new CdcChunkingError('本地快照没有生成有效分片。');
+        if (index === 0 && bounds.start === undefined && bounds.stop === undefined) throw new CdcChunkingError('没有可上传的数据。');
     }
 
     function buildStreamSnapshotChecksumSource(snapshot) {
@@ -335,10 +335,10 @@
         const chunks = [];
         for await (const chunk of iterateSnapshotChunks(stats, profile, { localEntries })) {
             chunks.push(describeChunk(chunk));
-            updateProgress(16, `正在扫描本地数据，已处理 ${chunks.length} 个分片...`);
+            updateProgress(16, `正在扫描本地数据，已处理 ${chunks.length} 个数据块…`);
         }
         if (chunks.reduce((sum, chunk) => sum + chunk.length, 0) !== stats.totalBytes || chunks.length > 10_000) {
-            throw new CdcChunkingError('CDC 块集合无法无损重组。');
+            throw new CdcChunkingError('数据分块失败。');
         }
         return chunks;
     }
@@ -357,7 +357,7 @@
                 }
             };
             request.onerror = () => reject(request.error);
-            request.onblocked = () => reject(new Error('RPHubSyncState blocked'));
+            request.onblocked = () => reject(new Error('请关闭其他标签页后重试。'));
             request.onsuccess = () => {
                 const db = request.result;
                 withStore(db, storeName, mode, operation)
@@ -469,14 +469,14 @@
             const bounds = { ...region.bounds, localEntries, recordCount: () => cleanRecords + generated + stats.recordCount };
             for await (const chunk of iterateSnapshotChunks(stats, 'cdc', bounds)) {
                 chunks.push(describeChunk(chunk));
-                updateProgress(16, `正在重做改过的分片，已处理 ${chunks.length - start} 个...`);
+                updateProgress(16, `正在处理改动，已处理 ${chunks.length - start} 个数据块…`);
             }
             generated += stats.recordCount;
             if (chunks.length > start) rebuilt.push({ start, end: chunks.length - 1 });
             cursor = region.end + 1;
         }
         while (cursor < old.length) chunks.push(old[cursor++]);
-        if (chunks.length > 10_000) throw new CdcChunkingError('CDC 块数量超过10000。');
+        if (chunks.length > 10_000) throw new CdcChunkingError('数据块数量超过 10000 个的上限。');
         return { chunks, rebuilt };
     }
 
@@ -495,15 +495,15 @@
         let rebuilt = null;
         let reason = '';
         if (mode === 'fast') {
-            if (!layout) reason = '还没有上次上传的记录，这次完整扫描一遍。';
-            else if (dirtyState.full) reason = '改动太多，这次完整扫描一遍。';
+            if (!layout) reason = '没有上次上传的记录，改为完整上传…';
+            else if (dirtyState.full) reason = '改动较多，改为完整上传…';
             else {
                 try {
                     ({ chunks, rebuilt } = await rebuildDirtyRegions(layout, tokens, localEntries));
                 } catch (error) {
                     if (!(error instanceof CdcChunkingError)) throw error;
                     console.warn('[RP Sync] 快速上传切块失败，改为完整扫描。', error);
-                    reason = '快速上传出了岔子，这次完整扫描一遍。';
+                    reason = '快速上传失败，改为完整上传…';
                 }
             }
             if (reason) updateProgress(16, reason);
@@ -546,12 +546,14 @@
         return snapshot;
     }
 
+    // 两遍扫描对不上：本地数据还在变（上传遇到这句会自动重新扫描一次）
+    const LOCAL_DATA_CHANGED = '本地数据仍在变化，请稍后重试。';
     function assertChunkMatchesManifest(chunk, expected) {
         if (!expected
             || chunk.index !== expected.index
             || chunk.length !== expected.length
             || chunk.checksum !== expected.checksum) {
-            throw new Error('两次扫描结果不一致，本地数据可能仍在变化，已取消提交。');
+            throw new Error(LOCAL_DATA_CHANGED);
         }
     }
 
@@ -575,11 +577,11 @@
                     const part = await preparePart({ ...chunk, index }, gzip);
                     await syncStateStore('parts', 'readwrite', (store) => store.put(part, index));
                     staged += 1;
-                    updateProgress(36, `正在整理要上传的分片 ${staged}/${missing.size}...`);
+                    updateProgress(36, `正在准备上传 ${staged}/${missing.size}…`);
                 }
                 index += 1;
             }
-            if (index !== region.end + 1) throw new Error('两次扫描结果不一致，本地数据可能仍在变化，已取消提交。');
+            if (index !== region.end + 1) throw new Error(LOCAL_DATA_CHANGED);
         }
     }
 
@@ -596,7 +598,7 @@
                 const index = queue.shift();
                 try {
                     const part = await syncStateStore('parts', 'readonly', (store) => store.get(index));
-                    if (!part) throw new Error('本机暂存的上传数据不见了，请再点一次上传。');
+                    if (!part) throw new Error('待上传的数据丢失，请重新上传。');
                     const id = `${part.checksum}.${part.encoding === 'gzip' ? 'gz' : 'bin'}`;
                     const uploadedAt = await syncStateStore('uploaded', 'readonly', (store) => store.get(id));
                     if (!(uploadedAt > Date.now() - UPLOADED_TRUST_MS)) {
@@ -608,7 +610,7 @@
                     throw error;
                 }
                 done += 1;
-                updateProgress(36 + Math.round((done / indices.length) * 52), `正在上传 ${done}/${indices.length}，可以关掉这个窗口接着玩`);
+                updateProgress(36 + Math.round((done / indices.length) * 52), `正在上传 ${done}/${indices.length}，可关闭此窗口`);
             }
         };
         await Promise.all(Array.from({ length: Math.min(CONFIG.uploadPartConcurrency, queue.length) }, worker));

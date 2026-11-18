@@ -74,9 +74,9 @@
             method: 'POST', headers: { 'content-type': 'application/json', ...(password ? { 'x-rp-sync-password': password } : {}) },
             body: JSON.stringify({ action, ...(report ? { report } : {}) }), signal: AbortSignal.timeout(10000)
         });
-        if (response.status === 401) throw new Error('请先在云同步中填写同步密码，或下载报告文件。');
+        if (response.status === 401) throw new Error('请先在云同步中填写同步密码');
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || '发送失败，请稍后重试或下载报告文件。');
+        if (!response.ok) throw new Error(result.error || '请稍后重试');
         return result;
     }
 
@@ -107,7 +107,7 @@
         set enabled(value) { settings.enabled = value; saveSettings(); if (value) usage(); },
         start() {
             if (window.RPH_R2_DIAGNOSTICS?.usage && !settings.notified) {
-                window.RPHubUI.toast('测试版按 Cloudflare 账户统计活跃量，可在「运行日志」关闭。问题日志仅在你点击发送后上传。', { duration: 12000 });
+                window.RPHubUI.toast('测试版会收集使用统计，可在「运行日志」中关闭', { duration: 12000 });
                 settings.notified = true;
                 saveSettings();
             }
@@ -364,7 +364,7 @@
 })();
 (() => {
     const diagnostics = window.RPHubDiagnostics;
-    const ISSUES = { image: '图片不对', save: '保存失败', sync: '同步异常', voice: '朗读异常', startup: '打不开或卡住', other: '其他问题' };
+    const ISSUES = { image: '图片异常', save: '保存失败', sync: '同步异常', voice: '朗读异常', startup: '无法打开或卡住', other: '其他问题' };
     const CHEVRON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"></path></svg>';
     diagnostics.openPanel = () => {
         let issueApp;
@@ -379,7 +379,7 @@
                         ${Object.entries(ISSUES).map(([value, label]) => `<option value="${value}"${value === report.issue ? ' selected' : ''}>${label}</option>`).join('')}
                     </select></div>
                     <label class="rph-ui-field">补充说明（选填）
-                        <textarea class="rph-ui-input" data-note maxlength="500" rows="3" placeholder="哪里不对，原本希望怎样？"></textarea>
+                        <textarea class="rph-ui-input" data-note maxlength="500" rows="3" placeholder="描述问题和期望的结果"></textarea>
                     </label>
                     <p class="rph-ui-note" data-result role="status" hidden></p>
                     <div class="rph-ui-actions">
@@ -391,11 +391,11 @@
                             <summary class="rph-ui-row"><div class="rph-ui-row-main"><div>报告内容</div><div class="rph-ui-muted" data-count></div></div>${CHEVRON}</summary>
                             <div class="rph-ui-row">
                                 <textarea class="rph-ui-input rph-ui-code" readonly data-preview rows="10" aria-label="报告内容"></textarea>
-                                <button type="button" class="modal-secondary-button rph-ui-button rph-ui-danger" data-clear>清空本机日志</button>
+                                <button type="button" class="modal-secondary-button rph-ui-button rph-ui-danger" data-clear>清空日志</button>
                             </div>
                         </details>
                         <div class="rph-ui-row">
-                            <div class="rph-ui-row-main"><div>使用统计</div><div class="rph-ui-muted">每天一次，按 Cloudflare 账户去重，不含原始 ID。</div></div>
+                            <div class="rph-ui-row-main"><div>使用统计</div></div>
                             <label class="rph-ui-check"><input type="checkbox" class="settings-toggle-input sr-only" data-usage aria-label="参与使用统计"><span class="settings-toggle"></span></label>
                         </div>
                     </div>`;
@@ -407,7 +407,7 @@
                     report.note = note.value.trim();
                     preview.value = JSON.stringify(report, null, 2);
                     const errors = report.events.filter(event => /error|rejection/.test(event.kind)).length;
-                    body.querySelector('[data-count]').textContent = `版本、插件和 ${report.events.length} 条运行记录${errors ? `（${errors} 条报错）` : ''}，不含聊天、角色和密钥。`;
+                    body.querySelector('[data-count]').textContent = `${report.events.length} 条记录${errors ? `，${errors} 条错误` : ''}`;
                 };
                 const usage = body.querySelector('[data-usage]');
                 usage.checked = diagnostics.enabled;
@@ -427,7 +427,7 @@
                     issueApp.mount(host);
                 }
                 body.querySelector('[data-clear]').onclick = () => {
-                    diagnostics.clear(); report.events = []; update(); showResult('本机日志已清空。');
+                    diagnostics.clear(); report.events = []; update(); showResult('已清空');
                 };
                 body.querySelector('[data-download]').onclick = () => {
                     const link = document.createElement('a');
@@ -439,14 +439,14 @@
                 const send = body.querySelector('[data-send]');
                 send.onclick = async () => {
                     send.disabled = true;
-                    showResult('正在发送…');
+                    showResult('发送中…');
                     try {
                         const { id } = await diagnostics.send('report', report);
-                        showResult(['已发送，编号 ', Object.assign(document.createElement('b'), { textContent: id }), '。把编号转给开发者即可。']);
+                        showResult(['已发送，编号 ', Object.assign(document.createElement('b'), { textContent: id }), '，请将编号发给开发者']);
                         // 发送成功后这个按钮改成复制编号，避免重复发送。
                         send.textContent = '复制编号';
                         send.onclick = () => navigator.clipboard.writeText(id).then(
-                            () => window.RPHubUI.toast('编号已复制', { kind: 'success' }),
+                            () => window.RPHubUI.toast('已复制', { kind: 'success' }),
                             () => window.RPHubUI.toast('复制失败，请长按编号手动复制', { kind: 'error' }));
                     } catch (error) { showResult('发送失败：' + error.message, 'error'); }
                     send.disabled = false;

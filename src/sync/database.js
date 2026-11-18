@@ -3,7 +3,7 @@
             const request = typeof version === 'number'
                 ? indexedDB.open(dbName, version)
                 : indexedDB.open(dbName);
-            request.onerror = () => reject(request.error || new Error('IndexedDB open failed.'));
+            request.onerror = () => reject(request.error || new Error('打开本地数据库失败。'));
             request.onsuccess = () => resolve(request.result);
         });
     }
@@ -26,7 +26,7 @@
         return new Promise((resolve, reject) => {
             const request = indexedDB.open(dbDef.name);
 
-            request.onerror = () => reject(request.error || new Error('IndexedDB restore open failed.'));
+            request.onerror = () => reject(request.error || new Error('打开本地数据库失败。'));
             request.onupgradeneeded = () => {
                 const db = request.result;
                 for (const storeDef of dbDef.stores || []) {
@@ -47,7 +47,7 @@
                 db.close();
 
                 const upgradeRequest = indexedDB.open(dbDef.name, nextVersion);
-                upgradeRequest.onerror = () => reject(upgradeRequest.error || new Error('IndexedDB restore upgrade failed.'));
+                upgradeRequest.onerror = () => reject(upgradeRequest.error || new Error('打开本地数据库失败。'));
                 upgradeRequest.onupgradeneeded = () => {
                     const upgradedDb = upgradeRequest.result;
                     for (const storeDef of dbDef.stores || []) {
@@ -137,7 +137,7 @@
             const records = [];
             const request = store.openCursor(range);
 
-            request.onerror = () => reject(request.error || new Error('IndexedDB cursor read failed.'));
+            request.onerror = () => reject(request.error || new Error('读取本地数据失败。'));
             request.onsuccess = () => {
                 const cursor = request.result;
                 if (!cursor) {
@@ -198,7 +198,7 @@
             const keys = [];
             const request = tx.objectStore(storeName).openKeyCursor();
 
-            request.onerror = () => reject(request.error || new Error('IndexedDB key read failed.'));
+            request.onerror = () => reject(request.error || new Error('读取本地数据失败。'));
             request.onsuccess = () => {
                 const cursor = request.result;
                 if (!cursor) {
@@ -224,12 +224,12 @@
                     try { tx.abort(); } catch {}
                 };
                 tx.oncomplete = () => resolve();
-                tx.onerror = () => { firstError ||= tx.error || new Error('IndexedDB cleanup failed.'); };
-                tx.onabort = () => reject(firstError || tx.error || new Error('IndexedDB cleanup failed.'));
+                tx.onerror = () => { firstError ||= tx.error || new Error('清理本地数据失败。'); };
+                tx.onabort = () => reject(firstError || tx.error || new Error('清理本地数据失败。'));
                 for (const key of batch) {
                     const request = store.delete(key);
                     request.onerror = (event) => abortWith(
-                        new Error(`清理本地多余记录 ${String(key)} 失败。`, { cause: request.error }),
+                        new Error('清理本地数据失败。', { cause: request.error }),
                         event
                     );
                 }
@@ -253,7 +253,7 @@
                 const request = storeDef.keyPath != null ? store.put(record.value) : store.put(record.value, record.key);
                 request.onerror = event => {
                     event.preventDefault();
-                    abort(new Error('恢复记录 ' + record.key + ' 失败。', { cause: request.error }));
+                    abort(new Error('写入本地数据失败。', { cause: request.error }));
                 };
             }
         });
@@ -287,7 +287,7 @@
         const seen = new Set();
         for (const [index, character] of record.value.entries()) {
             if (!character || typeof character !== 'object' || Array.isArray(character)) {
-                throw new TypeError(`旧快照第 ${index + 1} 张角色卡格式无效，已取消恢复。`);
+                throw new TypeError(`第 ${index + 1} 张角色卡格式不正确。`);
             }
             const rawUuid = character.uuid;
             let uuid;
@@ -295,15 +295,15 @@
                 uuid = crypto.randomUUID();
                 character.uuid = uuid;
             } else if (typeof rawUuid !== 'string') {
-                throw new TypeError(`旧快照第 ${index + 1} 张角色卡 UUID 不是字符串，已取消恢复。`);
+                throw new TypeError(`第 ${index + 1} 张角色卡的 ID 格式不正确。`);
             } else {
                 uuid = rawUuid;
             }
             if (uuid === 'index') {
-                throw new Error('旧快照角色卡 UUID index 与角色卡索引键冲突，已取消恢复。');
+                throw new Error('角色卡 ID 不能为 index。');
             }
             if (seen.has(uuid)) {
-                throw new Error(`旧快照角色卡 UUID 重复：${uuid}。为避免合并存档，已取消恢复。`);
+                throw new Error(`角色卡 ID 重复：${uuid}。`);
             }
             seen.add(uuid);
             order.push(uuid);
@@ -331,15 +331,15 @@
                 request.onerror = (event) => {
                     const serialized = JSON.stringify(record.value);
                     const size = new TextEncoder().encode(serialized).byteLength;
-                    abortWith(new Error(`恢复失败:记录 ${record.key}(约 ${(size / 1024 / 1024).toFixed(2)}MB)写入被浏览器拒绝(单条记录上限约127MB)。`), event);
+                    abortWith(new Error(`写入数据「${record.key}」失败（约 ${(size / 1024 / 1024).toFixed(2)}MB，浏览器单条上限约 127MB）。`), event);
                 };
             };
 
             tx.oncomplete = () => resolve();
             tx.onerror = () => {
-                firstError ||= tx.error || new Error('IndexedDB restore failed.');
+                firstError ||= tx.error || new Error('写入本地数据失败。');
             };
-            tx.onabort = () => reject(firstError || tx.error || new Error('IndexedDB restore failed.'));
+            tx.onabort = () => reject(firstError || tx.error || new Error('写入本地数据失败。'));
 
             for (const record of records) {
                 const request = storeDef.keyPath !== null && typeof storeDef.keyPath !== 'undefined'
@@ -350,7 +350,7 @@
 
             const cursorRequest = store.openCursor();
             cursorRequest.onerror = (event) => abortWith(
-                cursorRequest.error || new Error('IndexedDB cleanup scan failed.'),
+                cursorRequest.error || new Error('清理本地数据失败。'),
                 event
             );
             cursorRequest.onsuccess = () => {
@@ -360,7 +360,7 @@
                     const key = cursor.key;
                     const deleteRequest = cursor.delete();
                     deleteRequest.onerror = (event) => abortWith(
-                        new Error(`清理本地多余记录 ${String(key)} 失败。`, { cause: deleteRequest.error }),
+                        new Error('清理本地数据失败。', { cause: deleteRequest.error }),
                         event
                     );
                 }

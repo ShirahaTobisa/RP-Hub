@@ -60,6 +60,9 @@
     const FNV1A_OFFSET_BASIS = 0x811c9dc5;
     const FNV1A_PRIME = 0x01000193;
     const UINT32_RANGE = 0x100000000;
+    // 下载时云端数据有问题统一这样提示（具体哪一步出错，运行日志里有位置）
+    const CLOUD_DATA_INVALID = '云端数据格式不正确。';
+    const CLOUD_DATA_MISMATCH = '云端数据校验失败。';
 
     // ---- 快速上传的记账：哪些键改过了 ----
     // 写库的地方太多（官方代码、插件、生图模块都写），所以挂在 IndexedDB 的原型上记，谁写都记得到。
@@ -185,7 +188,7 @@
         syncLockHeld: false,
         reloadPending: false,
         progress: 0,
-        statusText: '请选择同步方向。'
+        statusText: '请选择上传或下载。'
     };
 
     const deferredPersistenceWrites = [];
@@ -370,7 +373,7 @@
             const request = typeof version === 'number'
                 ? indexedDB.open(dbName, version)
                 : indexedDB.open(dbName);
-            request.onerror = () => reject(request.error || new Error('IndexedDB open failed.'));
+            request.onerror = () => reject(request.error || new Error('打开本地数据库失败。'));
             request.onsuccess = () => resolve(request.result);
         });
     }
@@ -393,7 +396,7 @@
         return new Promise((resolve, reject) => {
             const request = indexedDB.open(dbDef.name);
 
-            request.onerror = () => reject(request.error || new Error('IndexedDB restore open failed.'));
+            request.onerror = () => reject(request.error || new Error('打开本地数据库失败。'));
             request.onupgradeneeded = () => {
                 const db = request.result;
                 for (const storeDef of dbDef.stores || []) {
@@ -414,7 +417,7 @@
                 db.close();
 
                 const upgradeRequest = indexedDB.open(dbDef.name, nextVersion);
-                upgradeRequest.onerror = () => reject(upgradeRequest.error || new Error('IndexedDB restore upgrade failed.'));
+                upgradeRequest.onerror = () => reject(upgradeRequest.error || new Error('打开本地数据库失败。'));
                 upgradeRequest.onupgradeneeded = () => {
                     const upgradedDb = upgradeRequest.result;
                     for (const storeDef of dbDef.stores || []) {
@@ -504,7 +507,7 @@
             const records = [];
             const request = store.openCursor(range);
 
-            request.onerror = () => reject(request.error || new Error('IndexedDB cursor read failed.'));
+            request.onerror = () => reject(request.error || new Error('读取本地数据失败。'));
             request.onsuccess = () => {
                 const cursor = request.result;
                 if (!cursor) {
@@ -565,7 +568,7 @@
             const keys = [];
             const request = tx.objectStore(storeName).openKeyCursor();
 
-            request.onerror = () => reject(request.error || new Error('IndexedDB key read failed.'));
+            request.onerror = () => reject(request.error || new Error('读取本地数据失败。'));
             request.onsuccess = () => {
                 const cursor = request.result;
                 if (!cursor) {
@@ -591,12 +594,12 @@
                     try { tx.abort(); } catch {}
                 };
                 tx.oncomplete = () => resolve();
-                tx.onerror = () => { firstError ||= tx.error || new Error('IndexedDB cleanup failed.'); };
-                tx.onabort = () => reject(firstError || tx.error || new Error('IndexedDB cleanup failed.'));
+                tx.onerror = () => { firstError ||= tx.error || new Error('清理本地数据失败。'); };
+                tx.onabort = () => reject(firstError || tx.error || new Error('清理本地数据失败。'));
                 for (const key of batch) {
                     const request = store.delete(key);
                     request.onerror = (event) => abortWith(
-                        new Error(`清理本地多余记录 ${String(key)} 失败。`, { cause: request.error }),
+                        new Error('清理本地数据失败。', { cause: request.error }),
                         event
                     );
                 }
@@ -641,7 +644,7 @@
                 const request = storeDef.keyPath != null ? store.put(record.value) : store.put(record.value, record.key);
                 request.onerror = event => {
                     event.preventDefault();
-                    abort(new Error('恢复记录 ' + record.key + ' 失败。', { cause: request.error }));
+                    abort(new Error('写入本地数据失败。', { cause: request.error }));
                 };
             }
         });
@@ -675,7 +678,7 @@
         const seen = new Set();
         for (const [index, character] of record.value.entries()) {
             if (!character || typeof character !== 'object' || Array.isArray(character)) {
-                throw new TypeError(`旧快照第 ${index + 1} 张角色卡格式无效，已取消恢复。`);
+                throw new TypeError(`第 ${index + 1} 张角色卡格式不正确。`);
             }
             const rawUuid = character.uuid;
             let uuid;
@@ -683,15 +686,15 @@
                 uuid = crypto.randomUUID();
                 character.uuid = uuid;
             } else if (typeof rawUuid !== 'string') {
-                throw new TypeError(`旧快照第 ${index + 1} 张角色卡 UUID 不是字符串，已取消恢复。`);
+                throw new TypeError(`第 ${index + 1} 张角色卡的 ID 格式不正确。`);
             } else {
                 uuid = rawUuid;
             }
             if (uuid === 'index') {
-                throw new Error('旧快照角色卡 UUID index 与角色卡索引键冲突，已取消恢复。');
+                throw new Error('角色卡 ID 不能为 index。');
             }
             if (seen.has(uuid)) {
-                throw new Error(`旧快照角色卡 UUID 重复：${uuid}。为避免合并存档，已取消恢复。`);
+                throw new Error(`角色卡 ID 重复：${uuid}。`);
             }
             seen.add(uuid);
             order.push(uuid);
@@ -719,15 +722,15 @@
                 request.onerror = (event) => {
                     const serialized = JSON.stringify(record.value);
                     const size = new TextEncoder().encode(serialized).byteLength;
-                    abortWith(new Error(`恢复失败:记录 ${record.key}(约 ${(size / 1024 / 1024).toFixed(2)}MB)写入被浏览器拒绝(单条记录上限约127MB)。`), event);
+                    abortWith(new Error(`写入数据「${record.key}」失败（约 ${(size / 1024 / 1024).toFixed(2)}MB，浏览器单条上限约 127MB）。`), event);
                 };
             };
 
             tx.oncomplete = () => resolve();
             tx.onerror = () => {
-                firstError ||= tx.error || new Error('IndexedDB restore failed.');
+                firstError ||= tx.error || new Error('写入本地数据失败。');
             };
-            tx.onabort = () => reject(firstError || tx.error || new Error('IndexedDB restore failed.'));
+            tx.onabort = () => reject(firstError || tx.error || new Error('写入本地数据失败。'));
 
             for (const record of records) {
                 const request = storeDef.keyPath !== null && typeof storeDef.keyPath !== 'undefined'
@@ -738,7 +741,7 @@
 
             const cursorRequest = store.openCursor();
             cursorRequest.onerror = (event) => abortWith(
-                cursorRequest.error || new Error('IndexedDB cleanup scan failed.'),
+                cursorRequest.error || new Error('清理本地数据失败。'),
                 event
             );
             cursorRequest.onsuccess = () => {
@@ -748,7 +751,7 @@
                     const key = cursor.key;
                     const deleteRequest = cursor.delete();
                     deleteRequest.onerror = (event) => abortWith(
-                        new Error(`清理本地多余记录 ${String(key)} 失败。`, { cause: deleteRequest.error }),
+                        new Error('清理本地数据失败。', { cause: deleteRequest.error }),
                         event
                     );
                 }
@@ -828,7 +831,7 @@
 
     function serializeSnapshotLine(value) {
         const json = JSON.stringify(value);
-        if (typeof json !== 'string') throw new Error('本地数据包含无法序列化的内容。');
+        if (typeof json !== 'string') throw new Error('本地数据中有无法上传的内容。');
         return `${json}\n`;
     }
 
@@ -836,7 +839,7 @@
 
     function serializeStreamRecord(metadata, key, value) {
         const serialized = JSON.stringify(value);
-        if (typeof serialized !== 'string') throw new Error(`记录 ${String(key)} 无法序列化。`);
+        if (typeof serialized !== 'string') throw new Error(`数据「${String(key)}」无法上传。`);
         const prefix = JSON.stringify(metadata).slice(0, -1) + ',"value":';
         // toJSON may depend on its key; retain the old semantics for it.
         if (value && typeof value.toJSON === 'function') {
@@ -850,7 +853,7 @@
 
     function checkStreamRecordSize(key, size) {
         if (size > CONFIG.maxRecordBytes) {
-            throw new Error(`上传已取消：记录 ${String(key)} 约 ${(size / 1024 / 1024).toFixed(2)}MB，超过 Chrome/Edge/安卓浏览器能存的单条上限（127MB），同步到那些设备会失败。`);
+            throw new Error(`数据「${String(key)}」约 ${(size / 1024 / 1024).toFixed(2)}MB，超过浏览器单条 127MB 的上限。`);
         }
         if (size > CONFIG.warnRecordBytes) {
             console.warn(`[RP Sync] Large record ${String(key)}: ${(size / 1024 / 1024).toFixed(2)}MB`);
@@ -951,7 +954,7 @@
                 const dbEndRef = { k: 'de', d: dbName };
                 if (inRange(dbEndRef)) yield unit(dbEndRef, [serializeSnapshotLine({ type: 'databaseEnd', name: dbName })]);
             } catch (error) {
-                throw new Error(`读取本地数据库 ${dbName} 失败，已取消上传以避免云端数据缺失。`, { cause: error });
+                throw new Error(`读取本地数据库 ${dbName} 失败。`, { cause: error });
             } finally {
                 if (db) db.close();
             }
@@ -1004,7 +1007,7 @@
         flushBuffer(completed) {
             if (this.bufferLength === 0) return;
             if (this.bufferLength > this.hardMaxBytes) {
-                throw new CdcChunkingError('CDC 生成了越界块。');
+                throw new CdcChunkingError('数据分块失败。');
             }
             const bytes = new Uint8Array(this.bufferLength);
             let offset = 0;
@@ -1080,7 +1083,7 @@
         let lastRef = null;
         const starts = []; // 还没归到哪一块的记录起点：[字节位置, 记录数]
         const emit = (bytes, ref, lineStart, lineIndex) => {
-            if (bytes.byteLength <= 0 || bytes.byteLength > hardMaxBytes) throw new CdcChunkingError('CDC 生成了越界块。');
+            if (bytes.byteLength <= 0 || bytes.byteLength > hardMaxBytes) throw new CdcChunkingError('数据分块失败。');
             const chunkEnd = chunkStart + bytes.byteLength;
             let records = 0;
             while (starts.length && starts[0][0] < chunkEnd) records += starts.shift()[1];
@@ -1093,7 +1096,7 @@
             chunkStart = chunkEnd;
             from = chunkEnd < writer.totalBytes ? { ref, line: lineIndex } : null; // 这条线还有字节没进块，下一块从它开始
             index += 1;
-            if (index > 10_000) throw new CdcChunkingError('CDC 块数量超过10000。');
+            if (index > 10_000) throw new CdcChunkingError('数据块数量超过 10000 个的上限。');
             return chunk;
         };
 
@@ -1108,7 +1111,7 @@
                 try {
                     completed = writer.appendLine(line);
                 } catch (error) {
-                    if (profile === 'cdc' && !(error instanceof CdcChunkingError)) throw new CdcChunkingError('CDC 切块内部异常。', { cause: error });
+                    if (profile === 'cdc' && !(error instanceof CdcChunkingError)) throw new CdcChunkingError('数据分块失败。', { cause: error });
                     throw error;
                 }
                 for (const bytes of completed) {
@@ -1125,7 +1128,7 @@
             yield { ...chunk, checksum: await sha256Bytes(bytes) };
         }
         stats.totalBytes = writer.totalBytes;
-        if (index === 0 && bounds.start === undefined && bounds.stop === undefined) throw new CdcChunkingError('本地快照没有生成有效分片。');
+        if (index === 0 && bounds.start === undefined && bounds.stop === undefined) throw new CdcChunkingError('没有可上传的数据。');
     }
 
     function buildStreamSnapshotChecksumSource(snapshot) {
@@ -1147,10 +1150,10 @@
         const chunks = [];
         for await (const chunk of iterateSnapshotChunks(stats, profile, { localEntries })) {
             chunks.push(describeChunk(chunk));
-            updateProgress(16, `正在扫描本地数据，已处理 ${chunks.length} 个分片...`);
+            updateProgress(16, `正在扫描本地数据，已处理 ${chunks.length} 个数据块…`);
         }
         if (chunks.reduce((sum, chunk) => sum + chunk.length, 0) !== stats.totalBytes || chunks.length > 10_000) {
-            throw new CdcChunkingError('CDC 块集合无法无损重组。');
+            throw new CdcChunkingError('数据分块失败。');
         }
         return chunks;
     }
@@ -1169,7 +1172,7 @@
                 }
             };
             request.onerror = () => reject(request.error);
-            request.onblocked = () => reject(new Error('RPHubSyncState blocked'));
+            request.onblocked = () => reject(new Error('请关闭其他标签页后重试。'));
             request.onsuccess = () => {
                 const db = request.result;
                 withStore(db, storeName, mode, operation)
@@ -1281,14 +1284,14 @@
             const bounds = { ...region.bounds, localEntries, recordCount: () => cleanRecords + generated + stats.recordCount };
             for await (const chunk of iterateSnapshotChunks(stats, 'cdc', bounds)) {
                 chunks.push(describeChunk(chunk));
-                updateProgress(16, `正在重做改过的分片，已处理 ${chunks.length - start} 个...`);
+                updateProgress(16, `正在处理改动，已处理 ${chunks.length - start} 个数据块…`);
             }
             generated += stats.recordCount;
             if (chunks.length > start) rebuilt.push({ start, end: chunks.length - 1 });
             cursor = region.end + 1;
         }
         while (cursor < old.length) chunks.push(old[cursor++]);
-        if (chunks.length > 10_000) throw new CdcChunkingError('CDC 块数量超过10000。');
+        if (chunks.length > 10_000) throw new CdcChunkingError('数据块数量超过 10000 个的上限。');
         return { chunks, rebuilt };
     }
 
@@ -1307,15 +1310,15 @@
         let rebuilt = null;
         let reason = '';
         if (mode === 'fast') {
-            if (!layout) reason = '还没有上次上传的记录，这次完整扫描一遍。';
-            else if (dirtyState.full) reason = '改动太多，这次完整扫描一遍。';
+            if (!layout) reason = '没有上次上传的记录，改为完整上传…';
+            else if (dirtyState.full) reason = '改动较多，改为完整上传…';
             else {
                 try {
                     ({ chunks, rebuilt } = await rebuildDirtyRegions(layout, tokens, localEntries));
                 } catch (error) {
                     if (!(error instanceof CdcChunkingError)) throw error;
                     console.warn('[RP Sync] 快速上传切块失败，改为完整扫描。', error);
-                    reason = '快速上传出了岔子，这次完整扫描一遍。';
+                    reason = '快速上传失败，改为完整上传…';
                 }
             }
             if (reason) updateProgress(16, reason);
@@ -1358,12 +1361,14 @@
         return snapshot;
     }
 
+    // 两遍扫描对不上：本地数据还在变（上传遇到这句会自动重新扫描一次）
+    const LOCAL_DATA_CHANGED = '本地数据仍在变化，请稍后重试。';
     function assertChunkMatchesManifest(chunk, expected) {
         if (!expected
             || chunk.index !== expected.index
             || chunk.length !== expected.length
             || chunk.checksum !== expected.checksum) {
-            throw new Error('两次扫描结果不一致，本地数据可能仍在变化，已取消提交。');
+            throw new Error(LOCAL_DATA_CHANGED);
         }
     }
 
@@ -1387,11 +1392,11 @@
                     const part = await preparePart({ ...chunk, index }, gzip);
                     await syncStateStore('parts', 'readwrite', (store) => store.put(part, index));
                     staged += 1;
-                    updateProgress(36, `正在整理要上传的分片 ${staged}/${missing.size}...`);
+                    updateProgress(36, `正在准备上传 ${staged}/${missing.size}…`);
                 }
                 index += 1;
             }
-            if (index !== region.end + 1) throw new Error('两次扫描结果不一致，本地数据可能仍在变化，已取消提交。');
+            if (index !== region.end + 1) throw new Error(LOCAL_DATA_CHANGED);
         }
     }
 
@@ -1408,7 +1413,7 @@
                 const index = queue.shift();
                 try {
                     const part = await syncStateStore('parts', 'readonly', (store) => store.get(index));
-                    if (!part) throw new Error('本机暂存的上传数据不见了，请再点一次上传。');
+                    if (!part) throw new Error('待上传的数据丢失，请重新上传。');
                     const id = `${part.checksum}.${part.encoding === 'gzip' ? 'gz' : 'bin'}`;
                     const uploadedAt = await syncStateStore('uploaded', 'readonly', (store) => store.get(id));
                     if (!(uploadedAt > Date.now() - UPLOADED_TRUST_MS)) {
@@ -1420,7 +1425,7 @@
                     throw error;
                 }
                 done += 1;
-                updateProgress(36 + Math.round((done / indices.length) * 52), `正在上传 ${done}/${indices.length}，可以关掉这个窗口接着玩`);
+                updateProgress(36 + Math.round((done / indices.length) * 52), `正在上传 ${done}/${indices.length}，可关闭此窗口`);
             }
         };
         await Promise.all(Array.from({ length: Math.min(CONFIG.uploadPartConcurrency, queue.length) }, worker));
@@ -1440,7 +1445,7 @@
                 const retryResponse = await postSync({ action: 'pull-manifest' });
                 const retryRemote = retryResponse.remote;
                 if (retryRemote?.snapshotFormat && retryRemote.snapshotFormat !== LEGACY_SNAPSHOT_FORMAT) {
-                    throw Object.assign(new Error('服务器同步版本已变化，请重新拉取。'), { status: 409 });
+                    throw Object.assign(new Error('云端数据已更新，请重新下载。'), { status: 409 });
                 }
                 return downloadLegacyRemoteSnapshot(retryRemote, false);
             }
@@ -1449,7 +1454,7 @@
 
         const json = payload;
         if (remote.checksum && await sha256(json) !== remote.checksum) {
-            throw new Error('服务器数据整体校验失败。');
+            throw new Error(CLOUD_DATA_MISMATCH);
         }
 
         return {
@@ -1461,7 +1466,7 @@
     async function downloadLegacySnapshotJsonParts(remote) {
         const chunkCount = Number(remote.chunkCount || 0);
         if (!Number.isInteger(chunkCount) || chunkCount <= 0) {
-            throw new Error('服务器数据格式不正确。');
+            throw new Error(CLOUD_DATA_INVALID);
         }
 
         const ranges = [];
@@ -1487,25 +1492,25 @@
                     count: range.count
                 }, { timeoutMs: transferTimeout(range.bytes) });
                 if (!response.bytes || !(response.bytes instanceof Uint8Array)) {
-                    throw new Error('服务器分批数据格式不正确。');
+                    throw new Error(CLOUD_DATA_INVALID);
                 }
                 const bytes = response.bytes;
                 const expectedBytes = Number(response.byteLength || 0);
                 if (expectedBytes > 0 && bytes.byteLength !== expectedBytes) {
-                    throw new Error('服务器分批数据大小不正确。');
+                    throw new Error(CLOUD_DATA_MISMATCH);
                 }
                 byteParts[rangeIndex] = bytes;
                 completed += 1;
                 updateProgress(
                     15 + Math.round((completed / ranges.length) * 35),
-                    `正在下载服务器数据 ${Math.round((completed / ranges.length) * 100)}%...`
+                    `正在下载… ${Math.round((completed / ranges.length) * 100)}%`
                 );
                 await wait(0);
             }
         }
 
         await Promise.all(Array.from({ length: workerCount }, () => downloadNextRange()));
-        updateProgress(52, '服务器数据下载完成，正在校验...');
+        updateProgress(52, '正在校验数据…');
         const totalBytes = byteParts.reduce((sum, part) => sum + part.byteLength, 0);
         const merged = new Uint8Array(totalBytes);
         let offset = 0;
@@ -1520,7 +1525,7 @@
         const chunkCount = Number(remote?.chunkCount || 0);
         const manifest = Array.isArray(remote?.chunkManifest) ? remote.chunkManifest : [];
         if (!Number.isInteger(chunkCount) || chunkCount <= 0 || manifest.length !== chunkCount) {
-            throw new Error('服务器分片清单不完整。');
+            throw new Error(CLOUD_DATA_INVALID);
         }
 
         let totalBytes = 0;
@@ -1528,31 +1533,31 @@
             const checksum = String(chunk?.checksum || '').toLowerCase();
             const length = Number(chunk?.length || chunk?.byteLength || 0);
             if (Number(chunk?.index) !== index || !/^[a-f0-9]{64}$/.test(checksum)) {
-                throw new Error(`服务器第 ${index + 1} 个分片信息不正确。`);
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (!Number.isInteger(length) || length <= 0 || length > CDC_HARD_MAX_BYTES) {
-                throw new Error(`服务器第 ${index + 1} 个分片大小不正确。`);
+                throw new Error(CLOUD_DATA_INVALID);
             }
             totalBytes += length;
             return { index, checksum, length };
         });
 
         if (totalBytes !== Number(remote.totalBytes)) {
-            throw new Error('服务器分片总大小校验失败。');
+            throw new Error(CLOUD_DATA_MISMATCH);
         }
         return normalized;
     }
 
     async function validateStreamSnapshotManifest(remote) {
         if (remote?.snapshotFormat !== SNAPSHOT_FORMAT || !isStreamSchema(remote?.schemaVersion)) {
-            throw new Error('服务器快照格式不受支持。');
+            throw new Error('云端数据格式不受支持。');
         }
         if (Number(remote.schemaVersion) === GZIP_SCHEMA_VERSION && typeof DecompressionStream !== 'function') {
-            throw new Error('这个浏览器版本太旧，读不了压缩的同步数据，请更新浏览器后再拉取。');
+            throw new Error('浏览器版本过旧，请更新浏览器后重试。');
         }
         const recordCount = Number(remote.recordCount || 0);
         if (!Number.isInteger(recordCount) || recordCount < 0) {
-            throw new Error('服务器快照记录数量不正确。');
+            throw new Error(CLOUD_DATA_INVALID);
         }
         const chunkManifest = normalizeRemoteChunkManifest(remote);
         const snapshot = {
@@ -1563,7 +1568,7 @@
         };
         const expectedChecksum = await sha256(buildStreamSnapshotChecksumSource(snapshot));
         if (expectedChecksum !== String(remote.checksum || '').toLowerCase()) {
-            throw new Error('服务器快照清单校验失败。');
+            throw new Error(CLOUD_DATA_MISMATCH);
         }
         return chunkManifest;
     }
@@ -1571,7 +1576,7 @@
     function openDownloadStagingDb(name = DOWNLOAD_STAGING_DB) {
         return new Promise((resolve, reject) => {
             const request = indexedDB.open(name, 1);
-            request.onerror = () => reject(request.error || new Error('同步临时数据库打开失败。'));
+            request.onerror = () => reject(request.error || new Error('打开本地临时存储失败。'));
             request.onupgradeneeded = () => {
                 const stagingDb = request.result;
                 if (!stagingDb.objectStoreNames.contains(DOWNLOAD_STAGING_STORE)) {
@@ -1613,10 +1618,10 @@
                 } else if (value instanceof ArrayBuffer) {
                     resolve(new Uint8Array(value));
                 } else {
-                    reject(Object.assign(new Error(`同步临时分片 ${index} 不存在。`), { chunkUnavailable: true }));
+                    reject(Object.assign(new Error('临时数据丢失，请重试。'), { chunkUnavailable: true }));
                 }
             };
-            request.onerror = () => reject(request.error || new Error('同步临时数据读取失败。'));
+            request.onerror = () => reject(request.error || new Error('读取临时数据失败。'));
         });
     }
 
@@ -1634,7 +1639,7 @@
             || storedLengths.some((length) => !Number.isInteger(length) || length <= 0)
             || response.bytes.byteLength !== expectedLength
             || (Number(response.byteLength || 0) > 0 && Number(response.byteLength) !== expectedLength)) {
-            throw new Error(`服务器第 ${start + 1}-${start + count} 个分片大小校验失败。`);
+            throw new Error(CLOUD_DATA_MISMATCH);
         }
 
         const chunks = [];
@@ -1644,7 +1649,7 @@
             offset += storedLengths[index];
             const bytes = gzip ? await gunzipBytes(stored).catch(() => null) : stored;
             if (!bytes || bytes.byteLength !== chunk.length || await sha256Bytes(bytes) !== chunk.checksum) {
-                throw new Error(`服务器第 ${chunk.index + 1} 个分片内容校验失败。`);
+                throw new Error(CLOUD_DATA_MISMATCH);
             }
             chunks.push({ ...chunk, bytes });
         }
@@ -1680,7 +1685,7 @@
                 cursor.continue();
             };
             tx.oncomplete = () => resolve(present);
-            tx.onabort = () => reject(tx.error || new Error('同步缓存清理失败。'));
+            tx.onabort = () => reject(tx.error || new Error('清理缓存失败。'));
         });
     }
 
@@ -1730,7 +1735,7 @@
                     for (const chunk of chunks) options.verified?.add(chunkCacheKey(chunk));
                     completedChunks += chunks.length;
                     const percent = Math.round(completedChunks / Math.max(1, totalChunks) * 100);
-                    updateProgress(percent, `正在拉取服务器分片 ${percent}%...`);
+                    updateProgress(percent, `正在下载… ${percent}%`);
                 }).catch((error) => { failure ||= error; }).finally(() => {
                     pendingBytes -= range.bytes;
                     active.delete(task);
@@ -1751,7 +1756,7 @@
                     stagingDb.name === DOWNLOAD_CACHE_DB ? key : chunk.index);
                 if (bytes.byteLength !== chunk.length
                     || (verifyChecksum && await sha256Bytes(bytes) !== chunk.checksum)) {
-                    throw Object.assign(new Error(`同步临时分片 ${chunk.index + 1} 校验失败。`), { chunkUnavailable: true });
+                    throw Object.assign(new Error('临时数据校验失败，请重试。'), { chunkUnavailable: true });
                 }
                 return bytes;
             };
@@ -1828,7 +1833,7 @@
 
     function normalizeLegacyCharacterForStream(character, index, seen, assignMissingUuid) {
         if (!character || typeof character !== 'object' || Array.isArray(character)) {
-            throw new TypeError(`旧快照第 ${index + 1} 张角色卡格式无效，已取消恢复。`);
+            throw new TypeError(`第 ${index + 1} 张角色卡格式不正确。`);
         }
         const rawUuid = character.uuid;
         let uuid = rawUuid;
@@ -1837,13 +1842,13 @@
             uuid = crypto.randomUUID();
             character.uuid = uuid;
         } else if (typeof rawUuid !== 'string') {
-            throw new TypeError(`旧快照第 ${index + 1} 张角色卡 UUID 不是字符串，已取消恢复。`);
+            throw new TypeError(`第 ${index + 1} 张角色卡的 ID 格式不正确。`);
         }
         if (uuid === 'index') {
-            throw new Error('旧快照角色卡 UUID index 与角色卡索引键冲突，已取消恢复。');
+            throw new Error('角色卡 ID 不能为 index。');
         }
         if (seen.has(uuid)) {
-            throw new Error(`旧快照角色卡 UUID 重复：${uuid}。为避免合并存档，已取消恢复。`);
+            throw new Error(`角色卡 ID 重复：${uuid}。`);
         }
         seen.add(uuid);
         return uuid;
@@ -1872,7 +1877,7 @@
             try {
                 line = JSON.parse(lineText);
             } catch (_) {
-                throw new Error('服务器快照记录格式不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
 
             switch (line?.type) {
@@ -1903,7 +1908,7 @@
                 case 'snapshotEnd':
                     return this.finishSnapshot(line);
                 default:
-                    throw new Error('服务器快照包含未知记录。');
+                    throw new Error(CLOUD_DATA_INVALID);
             }
         }
 
@@ -1911,7 +1916,7 @@
             if (this.snapshotStarted
                 || line.format !== SNAPSHOT_FORMAT
                 || !isStreamSchema(line.schemaVersion)) {
-                throw new Error('服务器快照头信息不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             this.snapshotStarted = true;
             this.workshopVersion = line.workshopVersion;
@@ -1919,9 +1924,9 @@
 
         restoreLocalStorageEntry(line) {
             if (!this.snapshotStarted || this.localStorageEnded || this.currentDatabase || typeof line.key !== 'string') {
-                throw new Error('服务器本地设置记录顺序不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
-            if (!isAppLocalStorageKey(line.key)) throw new Error('服务器包含无效的本地设置。');
+            if (!isAppLocalStorageKey(line.key)) throw new Error(CLOUD_DATA_INVALID);
             localStorage.setItem(line.key, String(line.value ?? ''));
             this.localStorageKeys.add(line.key);
             this.recordCount += 1;
@@ -1929,7 +1934,7 @@
 
         finishLocalStorage() {
             if (!this.snapshotStarted || this.localStorageEnded || this.currentDatabase) {
-                throw new Error('服务器本地设置结束标记不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             for (const entry of readLocalStorageSnapshot()) {
                 if (this.workshopVersion !== 1 && isWorkshopLocalStorageKey(entry.key)) continue;
@@ -1940,7 +1945,7 @@
 
         async startDatabase(line) {
             if (!this.localStorageEnded || this.currentDatabase || typeof line.name !== 'string') {
-                throw new Error('服务器数据库记录顺序不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
 
             const knownDb = CONFIG.knownDatabases.find((dbDef) => dbDef.name === line.name);
@@ -1979,11 +1984,11 @@
         getStoreState(line) {
             const current = this.currentDatabase;
             if (!current || line.database !== current.name || typeof line.store !== 'string') {
-                throw new Error('服务器数据库记录归属不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (current.ignored) return null;
             const storeState = current.stores.get(line.store);
-            if (!storeState || storeState.finished) throw new Error('服务器对象存储记录顺序不正确。');
+            if (!storeState || storeState.finished) throw new Error(CLOUD_DATA_INVALID);
             return storeState;
         }
 
@@ -2000,7 +2005,7 @@
                 this.recordCount += 1;
                 return;
             }
-            if (storeState.arrayRecord) throw new Error('服务器数组记录尚未结束。');
+            if (storeState.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
             const record = {
                 key: line.key,
                 value: Object.prototype.hasOwnProperty.call(line, 'value') ? line.value : undefined
@@ -2018,14 +2023,14 @@
             const storeState = this.getStoreState(line);
             const length = Number(line.length);
             if (!Number.isInteger(length) || length < 0) {
-                throw new Error('服务器数组记录头信息不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (!storeState) {
-                if (this.currentDatabase.arrayRecord) throw new Error('服务器数组记录头信息不正确。');
+                if (this.currentDatabase.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
                 this.currentDatabase.arrayRecord = { expectedLength: length, nextIndex: 0 };
                 return;
             }
-            if (storeState.arrayRecord) throw new Error('服务器数组记录头信息不正确。');
+            if (storeState.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
             const splitLegacyCharacters = isLegacyCharacterArrayLine(
                 this.currentDatabase.name,
                 line.store,
@@ -2047,14 +2052,14 @@
             if (!storeState) {
                 const arrayRecord = this.currentDatabase.arrayRecord;
                 if (!arrayRecord || Number(line.index) !== arrayRecord.nextIndex) {
-                    throw new Error('服务器数组记录顺序不正确。');
+                    throw new Error(CLOUD_DATA_INVALID);
                 }
                 arrayRecord.nextIndex += 1;
                 return;
             }
             const arrayRecord = storeState.arrayRecord;
             if (!arrayRecord || Number(line.index) !== arrayRecord.nextIndex) {
-                throw new Error('服务器数组记录顺序不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             const value = Object.prototype.hasOwnProperty.call(line, 'value') ? line.value : null;
             let pending;
@@ -2082,7 +2087,7 @@
             if (!storeState) {
                 const arrayRecord = this.currentDatabase.arrayRecord;
                 if (!arrayRecord || arrayRecord.nextIndex !== arrayRecord.expectedLength) {
-                    throw new Error('服务器数组记录数据不完整。');
+                    throw new Error(CLOUD_DATA_INVALID);
                 }
                 this.currentDatabase.arrayRecord = null;
                 this.recordCount += 1;
@@ -2090,7 +2095,7 @@
             }
             const arrayRecord = storeState.arrayRecord;
             if (!arrayRecord || arrayRecord.nextIndex !== arrayRecord.expectedLength) {
-                throw new Error('服务器数组记录数据不完整。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             storeState.arrayRecord = null;
             if (arrayRecord.splitLegacyCharacters) {
@@ -2119,15 +2124,15 @@
         async finishStore(line) {
             const current = this.currentDatabase;
             if (!current || line.database !== current.name || typeof line.store !== 'string') {
-                throw new Error('服务器对象存储结束标记不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (current.ignored) {
-                if (current.arrayRecord) throw new Error('服务器数组记录尚未结束。');
+                if (current.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
                 return;
             }
             const storeState = current.stores.get(line.store);
-            if (!storeState || storeState.finished) throw new Error('服务器对象存储结束顺序不正确。');
-            if (storeState.arrayRecord) throw new Error('服务器数组记录尚未结束。');
+            if (!storeState || storeState.finished) throw new Error(CLOUD_DATA_INVALID);
+            if (storeState.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
             await this.flushStore(storeState);
             await deleteMissingObjectStoreRecords(current.db, line.store, storeState.incomingKeys);
             storeState.incomingKeys.clear();
@@ -2136,10 +2141,10 @@
 
         async finishDatabase(line) {
             const current = this.currentDatabase;
-            if (!current || line.name !== current.name) throw new Error('服务器数据库结束标记不正确。');
+            if (!current || line.name !== current.name) throw new Error(CLOUD_DATA_INVALID);
             if (!current.ignored) {
                 if ([...current.stores.values()].some((storeState) => !storeState.finished)) {
-                    throw new Error('服务器对象存储数据不完整。');
+                    throw new Error(CLOUD_DATA_INVALID);
                 }
                 if (current.db) current.db.close();
                 const missingStores = current.knownDb.stores.filter((storeName) => !current.stores.has(storeName));
@@ -2150,10 +2155,10 @@
 
         async finishSnapshot(line) {
             if (!this.snapshotStarted || this.snapshotEnded || !this.localStorageEnded || this.currentDatabase) {
-                throw new Error('服务器快照结束标记不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (Number(line.recordCount) !== this.recordCount || this.recordCount !== this.expectedRecordCount) {
-                throw new Error('服务器快照记录数量校验失败。');
+                throw new Error(CLOUD_DATA_MISMATCH);
             }
             for (const knownDb of CONFIG.knownDatabases) {
                 if (knownDb.workshop && this.workshopVersion !== 1) continue;
@@ -2165,7 +2170,7 @@
         }
 
         finish() {
-            if (!this.snapshotEnded) throw new Error('服务器快照数据不完整。');
+            if (!this.snapshotEnded) throw new Error(CLOUD_DATA_INVALID);
         }
 
         abort() {
@@ -2191,7 +2196,7 @@
             try {
                 line = JSON.parse(lineText);
             } catch (_) {
-                throw new Error('服务器快照记录格式不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
 
             switch (line?.type) {
@@ -2200,7 +2205,7 @@
                         || line.format !== SNAPSHOT_FORMAT
                         || !isStreamSchema(line.schemaVersion)
                         || (line.workshopVersion !== undefined && line.workshopVersion !== 1)) {
-                        throw new Error('服务器快照头信息不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.snapshotStarted = true;
                     break;
@@ -2210,13 +2215,13 @@
                         || this.currentDatabase
                         || typeof line.key !== 'string'
                         || !isAppLocalStorageKey(line.key)) {
-                        throw new Error('服务器本地设置记录顺序不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.recordCount += 1;
                     break;
                 case 'localStorageEnd':
                     if (!this.snapshotStarted || this.localStorageEnded || this.currentDatabase) {
-                        throw new Error('服务器本地设置结束标记不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.localStorageEnded = true;
                     break;
@@ -2225,12 +2230,12 @@
                         || this.currentDatabase
                         || typeof line.name !== 'string'
                         || !Array.isArray(line.stores)) {
-                        throw new Error('服务器数据库记录顺序不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     const storeNames = line.stores.map((store) => store?.name);
                     if (storeNames.some((name) => typeof name !== 'string')
                         || new Set(storeNames).size !== storeNames.length) {
-                        throw new Error('服务器对象存储定义不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.currentDatabase = {
                         name: line.name,
@@ -2241,9 +2246,9 @@
                 }
                 case 'record':
                     this.validateStoreLine(line);
-                    if (this.arrayRecord) throw new Error('服务器数组记录尚未结束。');
+                    if (this.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
                     if (isLegacyCharacterArrayLine(this.currentDatabase.name, line.store, line.key)) {
-                        if (!Array.isArray(line.value)) throw new Error('旧快照角色卡记录格式无效。');
+                        if (!Array.isArray(line.value)) throw new Error('角色卡数据格式不正确。');
                         const seen = new Set();
                         line.value.forEach((character, index) => {
                             normalizeLegacyCharacterForStream(character, index, seen, false);
@@ -2255,7 +2260,7 @@
                     this.validateStoreLine(line);
                     const length = Number(line.length);
                     if (this.arrayRecord || !Number.isInteger(length) || length < 0) {
-                        throw new Error('服务器数组记录头信息不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.arrayRecord = {
                         length,
@@ -2272,7 +2277,7 @@
                 case 'recordArrayItem':
                     this.validateStoreLine(line);
                     if (!this.arrayRecord || Number(line.index) !== this.arrayRecord.nextIndex) {
-                        throw new Error('服务器数组记录顺序不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     if (this.arrayRecord.splitLegacyCharacters) {
                         normalizeLegacyCharacterForStream(
@@ -2287,14 +2292,14 @@
                 case 'recordArrayEnd':
                     this.validateStoreLine(line);
                     if (!this.arrayRecord || this.arrayRecord.nextIndex !== this.arrayRecord.length) {
-                        throw new Error('服务器数组记录数据不完整。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.arrayRecord = null;
                     this.recordCount += 1;
                     break;
                 case 'storeEnd':
                     this.validateStoreLine(line);
-                    if (this.arrayRecord) throw new Error('服务器数组记录尚未结束。');
+                    if (this.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
                     this.currentDatabase.finishedStores.add(line.store);
                     this.currentStore = null;
                     break;
@@ -2304,7 +2309,7 @@
                         || this.currentStore
                         || this.arrayRecord
                         || this.currentDatabase.finishedStores.size !== this.currentDatabase.stores.size) {
-                        throw new Error('服务器数据库结束标记不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.currentDatabase = null;
                     break;
@@ -2315,12 +2320,12 @@
                         || this.currentDatabase
                         || Number(line.recordCount) !== this.recordCount
                         || this.recordCount !== this.expectedRecordCount) {
-                        throw new Error('服务器快照记录数量校验失败。');
+                        throw new Error(CLOUD_DATA_MISMATCH);
                     }
                     this.snapshotEnded = true;
                     break;
                 default:
-                    throw new Error('服务器快照包含未知记录。');
+                    throw new Error(CLOUD_DATA_INVALID);
             }
         }
 
@@ -2330,16 +2335,16 @@
                 || typeof line.store !== 'string'
                 || !this.currentDatabase.stores.has(line.store)
                 || this.currentDatabase.finishedStores.has(line.store)) {
-                throw new Error('服务器数据库记录归属不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (this.currentStore && this.currentStore !== line.store) {
-                throw new Error('服务器对象存储记录顺序不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (!this.currentStore) this.currentStore = line.store;
         }
 
         finish() {
-            if (!this.snapshotEnded) throw new Error('服务器快照数据不完整。');
+            if (!this.snapshotEnded) throw new Error(CLOUD_DATA_INVALID);
         }
     }
 
@@ -2376,7 +2381,7 @@
         }
         const checksum = await sha256(JSON.stringify([FORK_SNAPSHOT_FORMAT, 13, root.totalBytes, packs.length,
             root.entryCount, root.pageCount, chain, root.bloomChecksum]));
-        if (chain !== root.pageRoot || checksum !== root.checksum) throw new Error('魔改版云端清单校验失败。');
+        if (chain !== root.pageRoot || checksum !== root.checksum) throw new Error('魔改版云端数据校验失败。');
         return packs.map((pack, index) => ({ index, checksum: pack.checksum, length: pack.length }));
     }
 
@@ -2411,7 +2416,7 @@
 
         async consume(lineText) {
             let line;
-            try { line = JSON.parse(lineText); } catch (_) { throw new Error('魔改版数据包记录格式不正确。'); }
+            try { line = JSON.parse(lineText); } catch (_) { throw new Error('魔改版云端数据格式不正确。'); }
             await this.start();
             if (line?.type === 'recordArrayStart') {
                 this.array = { start: line, items: [] };
@@ -2423,7 +2428,7 @@
                     return;
                 }
                 const { start, items } = this.array;
-                if (line?.type !== 'recordArrayEnd' || Number(line.length) !== items.length) throw new Error('魔改版数组记录不完整。');
+                if (line?.type !== 'recordArrayEnd' || Number(line.length) !== items.length) throw new Error('魔改版云端数据格式不正确。');
                 this.array = null;
                 await this.emit({ ...start, length: items.length });
                 for (const text of items) await this.emit({ type: 'recordArrayItem' }, text);
@@ -2613,7 +2618,7 @@
 
         add(value) {
             const bytes = new TextEncoder().encode(JSON.stringify(canonicalJson(value)));
-            if (bytes.byteLength > 64 * 1024 * 1024) throw new Error('有一条数据超过魔改版 64MB 的上限，没法转过去。');
+            if (bytes.byteLength > 64 * 1024 * 1024) throw new Error('有一条数据超过魔改版单条 64MB 的上限，无法转换。');
             const { group, bucketKey, sortKey } = forkPlacement(value);
             if (!this.groups.includes(group)) this.groups.push(group);
             if (!this.buckets.has(bucketKey)) this.buckets.set(bucketKey, { group, entries: [] });
@@ -2631,22 +2636,22 @@
                 method: 'POST', headers: { ...buildSyncHeaders(), 'content-type': 'application/octet-stream' }, body: pack.bytes, credentials: 'same-origin'
             }).catch(() => null);
             if (response?.ok) return;
-            if (attempt >= CONFIG.retryCount) throw new Error(`魔改版数据包上传失败：HTTP ${response?.status || '网络错误'}`);
+            if (attempt >= CONFIG.retryCount) throw new Error(`数据上传失败：${response ? `HTTP ${response.status}` : '网络错误'}`);
             await wait(CONFIG.retryDelayMs);
         }
     }
 
     async function exportForkSnapshot() {
-        updateProgress(5, '正在读取云端数据...');
+        updateProgress(5, '正在读取云端数据…');
         const { remote } = await postSync({ action: 'pull-manifest' });
-        if (remote?.snapshotFormat !== SNAPSHOT_FORMAT || !isStreamSchema(remote.schemaVersion)) throw new Error('云端还没有测试版的数据，先上传一次再换。');
+        if (remote?.snapshotFormat !== SNAPSHOT_FORMAT || !isStreamSchema(remote.schemaVersion)) throw new Error('云端暂无测试版数据，请先上传。');
         const chunkManifest = await validateStreamSnapshotManifest(remote);
         const exporter = new ForkExportLines();
         const validator = new StreamSnapshotValidator(remote.recordCount);
         const stagingDb = await openDownloadStagingDb();
         try {
             await downloadSnapshotToStaging(remote, chunkManifest, stagingDb);
-            updateProgress(0, '正在转成魔改版的格式...');
+            updateProgress(0, '正在转换格式…');
             await parseStagedStreamSnapshot(stagingDb, chunkManifest, {
                 consume: (line) => { validator.consume(line); return exporter.consume(line); },
                 finish: () => { validator.finish(); return exporter.finish(); }
@@ -2669,7 +2674,7 @@
                 if (running.size >= 4) await Promise.race(running);
             }
             exporter.buckets.delete(bucketKey);
-            updateProgress(50, `正在上传魔改版数据包 ${descriptors.length} 个...`);
+            updateProgress(50, `正在上传，已处理 ${descriptors.length} 个数据包…`);
         }
         await Promise.all(running);
 
@@ -2697,7 +2702,7 @@
             pages.length, previousPageHash, await sha256Bytes(bloom)]));
         let binary = '';
         for (let index = 0; index < bloom.length; index += 0x2000) binary += String.fromCharCode(...bloom.subarray(index, index + 0x2000));
-        updateProgress(85, '正在换上魔改版的云端清单...');
+        updateProgress(85, '正在完成转换…');
         await postSync({ action: 'fork-export-commit', expectedChecksum: remote.checksum, checksum, pages, bloom: btoa(binary) },
             { retryCount: 0, timeoutMs: CONFIG.commitTimeoutMs });
     }
@@ -2726,11 +2731,11 @@
                 await downloadSnapshotToStaging(remote, chunkManifest, stagingDb, {
                     present, verified, concurrency: useCache ? CONFIG.downloadTaskConcurrency : 1
                 });
-                updateProgress(0, '服务器分片拉取完成，正在完整校验...');
+                updateProgress(0, '正在校验数据…');
                 const repaired = new Set();
                 const repair = useCache ? async (chunk) => {
                     const key = chunkCacheKey(chunk);
-                    if (repaired.has(key)) throw new Error(`缓存分片 ${chunk.index + 1} 修复失败。`);
+                    if (repaired.has(key)) throw new Error('缓存数据修复失败，请重试。');
                     repaired.add(key);
                     verified.delete(key);
                     const keep = retainedChunkKeys(chunkManifest);
@@ -2742,18 +2747,18 @@
                     repair, verified,
                     onProgress: (completed, total) => {
                         const percent = Math.round((completed / total) * 100);
-                        updateProgress(percent, `正在校验服务器分片 ${percent}%...`);
+                        updateProgress(percent, `正在校验数据… ${percent}%`);
                     }
                 });
-                updateProgress(100, '本地分片校验完成，正在确认服务器版本...');
+                updateProgress(100, '正在核对云端数据…');
                 const confirmation = await postSync({ action: 'pull-manifest' });
                 const current = fork ? confirmation.fork : confirmation.remote;
                 if (!current
                     || Number(current.version) !== Number(remote.version)
                     || current.checksum !== remote.checksum) {
-                    throw Object.assign(new Error('服务器同步版本已变化，请重新拉取。'), { status: 409 });
+                    throw Object.assign(new Error('云端数据已更新，请重新下载。'), { status: 409 });
                 }
-                updateProgress(0, '服务器数据校验完成，正在恢复本地数据...');
+                updateProgress(0, '正在写入本地数据…');
                 restoreStarted = true;
                 if (typeof onRestoreStart === 'function') onRestoreStart();
                 const restorer = new StreamSnapshotRestorer(remote.recordCount);
@@ -2762,7 +2767,7 @@
                         verifyChecksum: false,
                         onProgress: (completed, total) => {
                             const percent = Math.round((completed / total) * 100);
-                            updateProgress(percent, `正在恢复本地数据 ${percent}%...`);
+                            updateProgress(percent, `正在写入本地数据… ${percent}%`);
                         }
                     });
                 } catch (error) { restorer.abort(); throw error; }
@@ -2791,7 +2796,7 @@
         return new Promise((resolve, reject) => {
             navigator.locks.request('RPHubSync', { mode: 'exclusive', ifAvailable: true }, async (lock) => {
                 if (!lock) {
-                    updateProgress(100, '另一页面正在同步，请稍后重试。');
+                    updateProgress(100, '其他标签页正在同步，请稍后重试。');
                     return;
                 }
                 if (state.syncing || state.reloadPending) return;
@@ -2846,7 +2851,8 @@
                 throw Object.assign(new Error(data.error || 'HTTP ' + response.status), { response: data, status: response.status });
             } catch (cause) {
                 const error = cause?.name === 'AbortError'
-                    ? Object.assign(new Error((options.upload ? '上传' : '同步请求') + '超时，请检查网络后重试。'), { status: 0 })
+                    ? Object.assign(new Error('请求超时，请检查网络后重试。'), { status: 0 })
+                    : cause?.name === 'TypeError' ? Object.assign(new Error('网络连接失败，请检查网络后重试。'), { status: 0 })
                     : cause instanceof Error ? cause : new Error(String(cause));
                 if (attempt >= retries || !shouldRetrySyncError(error)) throw error;
             } finally { clearTimeout(timer); }
@@ -2875,7 +2881,7 @@
             'x-rp-part-stored-checksum': chunk.storedChecksum } : {}) };
         const params = new URLSearchParams({ action: 'upload-part', index: String(chunk.index), partNumber: String(chunk.index + 1) });
         const data = await requestSync(CONFIG.apiEndpoint + '?' + params, { headers, body: chunk.body }, {
-            timeoutMs: transferTimeout(chunk.body.byteLength), upload: true });
+            timeoutMs: transferTimeout(chunk.body.byteLength) });
         return { partNumber: Number(data.partNumber), index: chunk.index, byteLength: chunk.length, checksum: chunk.checksum, key: data.key };
     }
 
@@ -2892,7 +2898,7 @@
             modalStatus.textContent = state.statusText;
         }
         if (state.background && floatRoot && !floatRoot.hidden && floatRoot.dataset.kind === 'busy') {
-            showFloat({ text: `上传中 ${Math.round(state.progress)}%`, progress: state.progress });
+            showFloat({ text: `上传中… ${Math.round(state.progress)}%`, progress: state.progress });
         }
     }
 
@@ -2909,16 +2915,16 @@
         const from = Number(options.from || state.progress || 8);
         const to = Number(options.to || 88);
         const durationMs = Number(options.durationMs || 150_000);
-        const text = options.text || '正在连接 RP-Hub 上游';
+        const text = options.text || '正在下载更新';
 
-        updateProgress(from, `${text}，已等待 0 秒...`);
+        updateProgress(from, `${text}，已等待 0 秒…`);
         estimatedProgressTimer = setInterval(() => {
             const elapsedMs = Date.now() - startedAt;
             const elapsedSeconds = Math.floor(elapsedMs / 1000);
             const ratio = Math.min(1, elapsedMs / durationMs);
             const eased = 1 - Math.pow(1 - ratio, 2);
             const nextProgress = Math.min(to, Math.round(from + (to - from) * eased));
-            updateProgress(nextProgress, `${text}，已等待 ${elapsedSeconds} 秒...`);
+            updateProgress(nextProgress, `${text}，已等待 ${elapsedSeconds} 秒…`);
         }, 800);
     }
 
@@ -2947,7 +2953,7 @@
 
     async function flushAppState() {
         if (typeof globalThis.RPH_R2_FLUSH_PERSISTENCE !== 'function') {
-            throw new Error('当前程序缺少持久化同步桥，已取消同步或版本切换。');
+            throw new Error('程序尚未加载完成，请稍后重试。');
         }
         await globalThis.RPH_R2_FLUSH_PERSISTENCE();
         await globalThis.RPHubSDK?.flush?.();
@@ -2975,7 +2981,7 @@
                     </div>
                     <button type="button" class="rp-sync-modal__close modal-close-button" aria-label="关闭"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
                 </div>
-                <p class="rp-sync-modal__intro">当前站点已开启同步密码。输入一次后会保存在这个浏览器里，下次同步不需要再输入。</p>
+                <p class="rp-sync-modal__intro">输入一次后，本浏览器会记住密码。</p>
                 <label class="rp-sync-password-field">
                     <span>密码</span>
                     <input type="password" autocomplete="current-password" placeholder="请输入同步密码">
@@ -2983,7 +2989,7 @@
                 <p class="rp-sync-password-status">请输入同步密码。</p>
                 <div class="rp-sync-modal__actions">
                     <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="cancel-password">取消</button>
-                    <button type="submit" class="rp-sync-modal__button modal-primary-button" data-action="submit-password">继续同步</button>
+                    <button type="submit" class="rp-sync-modal__button modal-primary-button" data-action="submit-password">确定</button>
                 </div>
             </form>
         `;
@@ -3019,7 +3025,7 @@
     }
 
     function openSyncPanel() {
-        state.statusText = '请选择同步方向。';
+        state.statusText = '请选择上传或下载。';
         state.progress = 0;
         openModal();
     }
@@ -3110,22 +3116,19 @@
         setActionButtonsDisabled(true);
 
         try {
-            updateProgress(15, '正在检测 RP-Hub 上游版本...');
+            updateProgress(15, '正在检查更新…');
             const result = await postSync({ action: 'app-update-check' });
             renderAppUpdateVersions(result?.versions);
             const current = formatCurrentAppVersion(result);
             const latest = result?.latest?.tag || formatShortSha(result?.latest?.sha);
-            const previous = result?.previous?.tag || result?.previous?.sha ? `，可回滚 ${result?.previous?.tag || formatShortSha(result.previous.sha)}` : '';
-            const cacheText = result?.cache?.hit
-                ? (result.cache.stale ? '，使用缓存列表' : '，命中缓存')
-                : '';
+            const previous = result?.previous?.tag || result?.previous?.sha ? `，可回退到 ${result?.previous?.tag || formatShortSha(result.previous.sha)}` : '';
             if (result?.updateAvailable) {
-                updateProgress(100, `发现 Release ${latest}：当前为 ${current}，可以更新${previous}${cacheText}。`);
+                updateProgress(100, `发现新版本 ${latest}，当前版本 ${current}${previous}。`);
             } else {
-                updateProgress(100, `当前已是最新 Release：${current}${previous}${cacheText}。`);
+                updateProgress(100, `已是最新版本：${current}${previous}。`);
             }
         } catch (error) {
-            updateProgress(100, error.message || '版本检测失败。');
+            updateProgress(100, error.message || '检查更新失败，请稍后重试。');
         } finally {
             state.syncing = false;
             setActionButtonsDisabled(false);
@@ -3139,9 +3142,9 @@
         const target = getSelectedAppUpdateTarget();
         const targetText = target || '最新版';
         const confirmed = await openInlineConfirm({
-            title: '更新版本',
-            message: `将从 RP-Hub 拉取 ${targetText} 并写入服务器覆盖层。只保留当前版和上一版，云同步数据不会被覆盖。`,
-            confirmText: '开始更新'
+            title: '更新程序',
+            message: `程序将更新到 ${targetText}，云同步数据不受影响。`,
+            confirmText: '更新'
         });
         if (!confirmed) return;
 
@@ -3156,28 +3159,28 @@
                 from: 10,
                 to: 88,
                 durationMs: 165_000,
-                text: '正在连接 RP-Hub 上游'
+                text: '正在下载更新'
             });
             let result = await postSync({ action: 'app-update-apply', target }, { timeoutMs: 180_000, retryCount: 1 });
             // 站点每个请求只处理一部分文件（Cloudflare 每个请求的子请求有限），没处理完就带着进度接着请求。
             while (result?.done === false) {
-                startEstimatedProgress({ to: 88, durationMs: 165_000, text: `正在下载上游文件 ${result.staged}/${result.total}` });
+                startEstimatedProgress({ to: 88, durationMs: 165_000, text: `正在下载更新 ${result.staged}/${result.total}` });
                 result = await postSync({ action: 'app-update-apply', target, slot: result.slot, offset: result.staged }, { timeoutMs: 180_000, retryCount: 1 });
             }
             stopEstimatedProgress();
             const latest = result?.latest?.tag || formatShortSha(result?.latest?.sha);
             if (result?.alreadyUpToDate) {
-                updateProgress(100, `程序已是最新版本：${latest}。`);
+                updateProgress(100, `已是最新版本：${latest}。`);
                 setActionButtonsDisabled(false);
                 return;
             }
-            updateProgress(100, `程序更新完成：${latest}。页面即将刷新...`);
+            updateProgress(100, `更新完成：${latest}，页面即将刷新…`);
             setTimeout(() => {
                 location.reload();
             }, 900);
         } catch (error) {
             stopEstimatedProgress();
-            updateProgress(100, error.message || '程序更新失败。');
+            updateProgress(100, error.message || '更新失败，请稍后重试。');
             setActionButtonsDisabled(false);
         } finally {
             stopEstimatedProgress();
@@ -3190,9 +3193,9 @@
         if (state.syncing) return;
 
         const confirmed = await openInlineConfirm({
-            title: '回滚上一版',
-            message: '将切换到上一版程序覆盖层，云同步数据不会被覆盖。',
-            confirmText: '确认回滚',
+            title: '回退上一版',
+            message: '程序将回退到上一版，云同步数据不受影响。',
+            confirmText: '回退',
             variant: 'danger'
         });
         if (!confirmed) return;
@@ -3204,17 +3207,17 @@
 
         try {
             await flushAppState();
-            updateProgress(20, '正在回滚上一版程序...');
+            updateProgress(20, '正在回退…');
             const result = await postSync({ action: 'app-update-rollback' }, {
                 timeoutMs: 120_000,
                 retryCount: 1
             });
-            updateProgress(100, `已回滚到 ${result?.rolledBackTo?.tag || formatShortSha(result?.rolledBackTo?.sha)}，页面即将刷新...`);
+            updateProgress(100, `已回退到 ${result?.rolledBackTo?.tag || formatShortSha(result?.rolledBackTo?.sha)}，页面即将刷新…`);
             setTimeout(() => {
                 location.reload();
             }, 900);
         } catch (error) {
-            updateProgress(100, error.message || '程序回滚失败。');
+            updateProgress(100, error.message || '回退失败，请稍后重试。');
             setActionButtonsDisabled(false);
         } finally {
             state.syncing = false;
@@ -3234,13 +3237,13 @@
 
         checkingPassword = true;
         passwordSubmitButton.disabled = true;
-        passwordStatus.textContent = '正在验证密码...';
+        passwordStatus.textContent = '正在验证密码…';
 
         try {
             const auth = await getAuthStatus(password);
             if (auth.authRequired && !auth.authenticated) {
                 clearStoredSyncPassword();
-                passwordStatus.textContent = '密码不正确，请重新输入。';
+                passwordStatus.textContent = '密码错误，请重新输入。';
                 passwordInput.select();
                 return;
             }
@@ -3253,7 +3256,7 @@
             passwordModalRoot.classList.remove('is-open');
             openSyncPanel();
         } catch (error) {
-            passwordStatus.textContent = error.message || '密码验证失败，请稍后再试。';
+            passwordStatus.textContent = error.message || '密码验证失败，请稍后重试。';
         } finally {
             checkingPassword = false;
             passwordSubmitButton.disabled = false;
@@ -3281,7 +3284,7 @@
                 return;
             }
 
-            window.RPHubUI.toast(error.message || '同步验证失败，请稍后再试。', { kind: 'error' });
+            window.RPHubUI.toast(error.message || '连接失败，请稍后重试。', { kind: 'error' });
         } finally {
             updateButtonState();
         }
@@ -3303,11 +3306,11 @@
                     <button type="button" class="rp-sync-modal__close modal-close-button" aria-label="关闭"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
                 </div>
                 <div class="rp-sync-main-actions">
-                    <button type="button" class="rp-sync-action-button" data-action="pull">拉取</button>
+                    <button type="button" class="rp-sync-action-button" data-action="pull">下载</button>
                     <button type="button" class="rp-sync-action-button is-primary" data-action="push">快速上传</button>
                     <button type="button" class="rp-sync-action-button" data-action="push-full">完整上传</button>
                 </div>
-                <p class="rp-sync-modal__status">选择同步</p>
+                <p class="rp-sync-modal__status">请选择上传或下载。</p>
                 <div class="rp-sync-progress">
                     <div class="rp-sync-progress__bar"></div>
                 </div>
@@ -3315,7 +3318,7 @@
                 <details class="rp-sync-update-details">
                     <summary>程序更新</summary>
                     <div class="rp-sync-update-body">
-                        <p class="rp-sync-choice__desc">只显示正式发布版本。</p>
+                        <p class="rp-sync-choice__desc">只显示 RP-Hub 官方正式版。</p>
                         <div class="rp-sync-version-fields">
                             <label>
                                 <span>目标版本</span>
@@ -3326,16 +3329,16 @@
                             </label>
                         </div>
                         <div class="rp-sync-inline-actions">
-                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="app-update-check">检测版本</button>
-                            <button type="button" class="rp-sync-modal__button modal-primary-button" data-action="app-update-apply">更新版本</button>
-                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="app-update-rollback">回滚上一版</button>
+                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="app-update-check">检查更新</button>
+                            <button type="button" class="rp-sync-modal__button modal-primary-button" data-action="app-update-apply">立即更新</button>
+                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="app-update-rollback">回退上一版</button>
                         </div>
                     </div>
                 </details>
                 <details class="rp-sync-update-details">
                     <summary>测试版更新</summary>
                     <div class="rp-sync-update-body">
-                        <p class="rp-sync-choice__desc" data-role="self-update-info">从分发端获取测试版。站点设置 CF_API_TOKEN 后可一键更新。</p>
+                        <p class="rp-sync-choice__desc" data-role="self-update-info">从分发站获取测试版，设置 CF_API_TOKEN 后可直接更新。</p>
                         <div class="rp-sync-version-fields">
                             <label>
                                 <span>目标版本</span>
@@ -3346,9 +3349,9 @@
                             </label>
                         </div>
                         <div class="rp-sync-inline-actions">
-                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="self-update-check">检测版本</button>
-                            <button type="button" class="rp-sync-modal__button modal-primary-button" data-action="self-update-apply">一键更新</button>
-                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="self-update-rollback">回退上一次部署</button>
+                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="self-update-check">检查更新</button>
+                            <button type="button" class="rp-sync-modal__button modal-primary-button" data-action="self-update-apply">立即更新</button>
+                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="self-update-rollback">回退上一版</button>
                         </div>
                     </div>
                 </details>
@@ -3416,7 +3419,7 @@
         try {
             await task();
         } catch (error) {
-            updateProgress(100, error.message || '测试版操作失败。');
+            updateProgress(100, error.message || '操作失败，请稍后重试。');
         } finally {
             state.syncing = false;
             setActionButtonsDisabled(false);
@@ -3425,26 +3428,26 @@
     }
 
     function reloadAfterDeploy(text) {
-        updateProgress(100, `${text}约半分钟后生效，页面将自动刷新。`);
+        updateProgress(100, `${text}约 30 秒后生效，页面将自动刷新。`);
         setTimeout(() => location.reload(), 40_000);
     }
 
     function checkSelfUpdate() {
         return runSelfUpdateTask(async () => {
-            updateProgress(20, '正在检测测试版...');
+            updateProgress(20, '正在检查更新…');
             selfUpdateStatus = await postSync({ action: 'self-update-status' });
-            selfUpdateApplyButton.textContent = selfUpdateStatus.selfDeploy ? '一键更新' : '下载部署包';
+            selfUpdateApplyButton.textContent = selfUpdateStatus.selfDeploy ? '立即更新' : '下载部署包';
             const current = selfUpdateStatus.current;
             const formatLabel = (version, index) => [index === 0 ? `最新版：${version.tag}` : version.tag,
                 version.publishedAt ? new Date(version.publishedAt).toLocaleDateString('zh-CN') : '',
                 version.tag === current ? '当前' : ''].filter(Boolean).join(' · ');
             renderVersionPicker(selfUpdateVersionButton, selfUpdateVersionMenu, selfUpdateStatus.versions, formatLabel, (version) => {
                 selfUpdateSelected = version;
-                selfUpdateInfo.textContent = version ? `${version.tag}：${version.notes || '无更新说明'}` : '分发端暂无测试版。';
+                selfUpdateInfo.textContent = version ? `${version.tag}：${version.notes || '暂无更新说明'}` : '暂无测试版。';
             });
             updateProgress(100, selfUpdateStatus.updateAvailable
-                ? `发现测试版 ${selfUpdateStatus.latest}，当前为 ${selfUpdateStatus.current}。`
-                : `当前已是最新测试版：${selfUpdateStatus.current}。`);
+                ? `发现新版本 ${selfUpdateStatus.latest}，当前版本 ${selfUpdateStatus.current}。`
+                : `已是最新版本：${selfUpdateStatus.current}。`);
         });
     }
 
@@ -3454,49 +3457,49 @@
         if (!target) return;
         if (!selfUpdateStatus.selfDeploy) {
             if (target.zipUrl) window.open(target.zipUrl, '_blank', 'noopener');
-            updateProgress(100, `站点未设置 CF_API_TOKEN，请下载部署包后上传到 Cloudflare Pages：${target.zipUrl || '分发端暂无下载地址'}`);
+            updateProgress(100, `未设置 CF_API_TOKEN，请下载部署包并上传到 Cloudflare Pages：${target.zipUrl || '暂无下载地址'}`);
             return;
         }
         const confirmed = await openInlineConfirm({
             title: '更新测试版',
-            message: `将把本站部署为测试版 ${target.tag}。云同步数据不受影响，出问题可回退上一次部署。`,
-            confirmText: '开始更新'
+            message: `将更新到测试版 ${target.tag}，云同步数据不受影响。`,
+            confirmText: '更新'
         });
         if (!confirmed) return;
         await runSelfUpdateTask(async () => {
             await flushAppState();
-            updateProgress(30, `正在部署测试版 ${target.tag}...`);
+            updateProgress(30, `正在更新到 ${target.tag}…`);
             const result = await postSync({ action: 'self-update-apply', target: target.tag }, { timeoutMs: 180_000, retryCount: 0 });
-            reloadAfterDeploy(`测试版 ${result.version} 已提交部署，`);
+            reloadAfterDeploy(`测试版 ${result.version} 正在部署，`);
         });
     }
 
     async function rollbackSelfUpdate() {
         const confirmed = await openInlineConfirm({
-            title: '回退上一次部署',
-            message: '将把本站切回上一次 Cloudflare 部署，云同步数据不受影响。',
-            confirmText: '确认回退',
+            title: '回退上一版',
+            message: '将回退到上一次部署的版本，云同步数据不受影响。',
+            confirmText: '回退',
             variant: 'danger'
         });
         if (!confirmed) return;
         await runSelfUpdateTask(async () => {
-            updateProgress(30, '正在回退...');
+            updateProgress(30, '正在回退…');
             await postSync({ action: 'self-update-rollback' }, { timeoutMs: 120_000, retryCount: 0 });
-            reloadAfterDeploy('已切回上一次部署，');
+            reloadAfterDeploy('正在回退，');
         });
     }
 
     // 换成魔改版的第一步：本站把云端数据转成它的格式。程序由魔改版自己的部署页「更新」这个站点来换，测试版不替别人部署代码。
     async function convertToFork() {
         const confirmed = await openInlineConfirm({
-            title: '转成魔改版的数据',
-            message: '把云端数据转成魔改版（cy-2-u/rp）的格式存进同一个存储桶，测试版自己的数据另存一份，不删。插件、API 预设这些魔改版不同步的东西不会带过去，但还留在各设备本机。',
-            confirmText: '开始转换'
+            title: '迁移到魔改版',
+            message: '云端数据将转换为魔改版（cy-2-u/rp）格式，测试版数据另存一份；插件、API 预设等魔改版不同步的数据不会转换，仍保留在各设备上。',
+            confirmText: '转换'
         });
         if (!confirmed) return;
         await runSelfUpdateTask(async () => {
             await exportForkSnapshot();
-            updateProgress(100, '已经转好。接下来用魔改版的一键部署页「更新」这个站点，程序就换成魔改版了；换完后每台设备在魔改版里点一次「下载」。');
+            updateProgress(100, '转换完成。请用魔改版的一键部署页更新本站，完成后在每台设备的魔改版里点击「从云端恢复」。');
         });
     }
 
@@ -3508,7 +3511,7 @@
         let section = headings.find((node) => node.textContent.trim() === '空间管理')?.closest('.pt-6');
         const row = document.createElement('div');
         row.className = `flex items-center justify-between gap-3 text-xs text-gray-500${section ? ' mt-6' : ''}`;
-        row.innerHTML = '<span>要换成魔改版（cy-2-u/rp）时用</span><button type="button" class="settings-action flex-shrink-0 whitespace-nowrap" data-action="fork-export">转成魔改版的数据</button>';
+        row.innerHTML = '<span>迁移到魔改版（cy-2-u/rp）</span><button type="button" class="settings-action flex-shrink-0 whitespace-nowrap" data-action="fork-export">转换数据</button>';
         row.lastChild.addEventListener('click', () => convertToFork().catch(() => { }));
         if (!section) {
             const last = headings[headings.length - 1].closest('.pt-6');
@@ -3529,7 +3532,7 @@
         grid.dataset.rphCloudRestore = '1';
         grid.classList.replace('grid-cols-2', 'grid-cols-1');
         for (const button of grid.children) if (button.textContent.includes('上传备份')) button.hidden = true;
-        grid.insertAdjacentHTML('afterend', '<p class="mt-3 text-xs text-gray-500">从官方 RP-Hub 搬过来：在那边的设置页点「上传备份」拿到密钥，再在这里点「下载备份」输入，角色卡和聊天记录就会合并到本机。</p>');
+        grid.insertAdjacentHTML('afterend', '<p class="mt-3 text-xs text-gray-500">从官方 RP-Hub 迁移：在官方设置页点击「上传备份」获取密钥，再在这里点击「下载备份」输入，角色卡和聊天记录会合并到本机。</p>');
     }
 
     function decorateSettingsView() {
@@ -3566,7 +3569,7 @@
         hideFloat();
         modalRoot.classList.add('is-open');
         setModalTitle();
-        updateProgress(state.progress, state.statusText || '选择同步');
+        updateProgress(state.progress, state.statusText || '请选择上传或下载。');
         setActionButtonsDisabled(state.syncing);
         if (!modalRoot.contains(document.activeElement)) closeButton?.focus();
     }
@@ -3576,7 +3579,7 @@
         if ((state.syncing && !state.background) || !modalRoot) return;
         modalRoot.classList.remove('is-open');
         returnSyncFocus();
-        if (state.background) showFloat({ text: `上传中 ${Math.round(state.progress)}%`, progress: state.progress });
+        if (state.background) showFloat({ text: `上传中… ${Math.round(state.progress)}%`, progress: state.progress });
     }
 
     function pullFromServer() { return runSyncLocked(performPullSync); }
@@ -3593,17 +3596,17 @@
         let restoreSucceeded = false;
 
         try {
-            updateProgress(0, '正在读取服务器同步清单...');
+            updateProgress(0, '正在检查云端数据…');
             const manifestResponse = await postSync({ action: 'pull-manifest' });
             const remote = manifestResponse.remote || manifestResponse.fork;
             if (!remote) {
-                updateProgress(100, '服务器当前没有可同步的数据。');
+                updateProgress(100, '云端暂无数据。');
                 setActionButtonsDisabled(false);
                 return;
             }
 
             if (remote.snapshotFormat === 'rp-sync-jsonl-v2' || Number(remote.schemaVersion) === 5) {
-                throw new Error('服务器快照格式不受支持。');
+                throw new Error('云端数据格式不受支持。');
             }
 
             if ((remote.snapshotFormat === SNAPSHOT_FORMAT && isStreamSchema(remote.schemaVersion))
@@ -3615,20 +3618,20 @@
                 });
             } else if (!remote.snapshotFormat || remote.snapshotFormat === LEGACY_SNAPSHOT_FORMAT) {
                 const response = await downloadLegacyRemoteSnapshot(remote);
-                if (!response) throw new Error('服务器当前没有可同步的数据。');
-                updateProgress(55, '旧版数据校验完成，正在写入本地浏览器数据...');
+                if (!response) throw new Error('云端暂无数据。');
+                updateProgress(55, '正在写入本地数据…');
                 const remoteSnapshot = JSON.parse(response.json);
                 if (!remoteSnapshot
                     || (!Array.isArray(remoteSnapshot.indexedDB)
                         && !Array.isArray(remoteSnapshot.localStorage))) {
-                    throw new Error('服务器数据格式不正确。');
+                    throw new Error(CLOUD_DATA_INVALID);
                 }
                 globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS = true;
                 restoreStarted = true;
                 announceRestore('start');
                 await replaceLocalSnapshot(remoteSnapshot);
             } else {
-                throw new Error('服务器快照格式不受支持。');
+                throw new Error('云端数据格式不受支持。');
             }
 
             restoreSucceeded = true;
@@ -3637,7 +3640,7 @@
             try { localStorage.removeItem(RESTORE_NOTICE_KEY); } catch (_) { /* storage blocked */ }
             announceRestore('done');
             state.reloadPending = true;
-            updateProgress(100, '服务器数据已写入本地，页面即将刷新...');
+            updateProgress(100, '下载完成，页面即将刷新…');
             setTimeout(() => {
                 location.reload();
             }, 700);
@@ -3648,16 +3651,16 @@
                 // 写闸门保持关着，刷新让页面按现在的库重新加载，刷新后提示一次让用户重新拉取。
                 announceRestore('failed');
                 try {
-                    localStorage.setItem(RESTORE_NOTICE_KEY, `上次拉取没有完成（${error?.message || '服务器同步失败。'}），本地数据可能只换了一部分，请重新拉取一次再上传。`);
+                    localStorage.setItem(RESTORE_NOTICE_KEY, `上次下载未完成，本地数据可能不完整，请重新下载后再上传。原因：${error?.message || '未知错误。'}`);
                 } catch (_) { /* storage blocked */ }
                 state.reloadPending = true;
-                updateProgress(100, '拉取没有完成，页面即将刷新...');
+                updateProgress(100, '下载未完成，页面即将刷新…');
                 setTimeout(() => {
                     location.reload();
                 }, 700);
                 return;
             }
-            updateProgress(100, error?.message || '服务器同步失败。');
+            updateProgress(100, `下载失败：${error?.message || '请稍后重试。'}`);
             setActionButtonsDisabled(false);
         } finally {
             state.syncing = state.reloadPending;
@@ -3667,7 +3670,7 @@
 
     // 扫描本地（或只重做改过的）、和云端比对、传缺的分片、提交；返回给用户看的结果。
     async function uploadLocalSnapshot(mode) {
-        updateProgress(16, mode === 'fast' ? '正在找改过的数据...' : '正在流式扫描本地浏览器数据...');
+        updateProgress(16, mode === 'fast' ? '正在检查改动…' : '正在扫描本地数据…');
         const plan = await buildSnapshotPlan(mode);
         const { snapshot } = plan;
         // 云端和本地一致了：记下这次的布局，改过的键清掉
@@ -3676,24 +3679,24 @@
             clearDirty(plan.consumed, !plan.fast);
         };
 
-        updateProgress(24, '正在检查服务器数据...');
+        updateProgress(24, '正在检查云端数据…');
         const remoteStatus = await postSync({ action: 'pull-manifest' });
         if (remoteStatus?.remote?.snapshotFormat === SNAPSHOT_FORMAT
             && Number(remoteStatus.remote.schemaVersion) === SNAPSHOT_SCHEMA_VERSION
             && remoteStatus.remote.checksum === snapshot.checksum) {
             await finishPlan();
-            return '服务器已是同一份数据，无需重复上传。';
+            return '云端数据已是最新，无需上传。';
         }
         // 云端还是魔改版的数据：这台设备不一定是最新的，先问一句（魔改版的根清单会另存，不会丢）。
         if (remoteStatus?.fork && !await openInlineConfirm({
-            title: '云端还是魔改版的数据',
-            message: `魔改版最后一次同步在 ${new Date(remoteStatus.fork.updatedAt).toLocaleString('zh-CN')}。上传会用这台设备的数据替换它。这台设备如果不是最新的，先点「下载」把云端的数据导进来。`,
-            confirmText: '仍然上传'
+            title: '替换云端数据',
+            message: `云端是魔改版 ${new Date(remoteStatus.fork.updatedAt).toLocaleString('zh-CN')} 同步的数据，上传后会被本机数据替换；本机数据不是最新时请先下载。`,
+            confirmText: '上传'
         })) {
             return '已取消上传。';
         }
 
-        updateProgress(30, '正在准备流式上传...');
+        updateProgress(30, '正在准备上传…');
         await syncStateStore('parts', 'readwrite', (store) => store.clear());
         const staged = new Set();
         for (let conflictAttempt = 0; conflictAttempt < 4; conflictAttempt += 1) {
@@ -3711,7 +3714,7 @@
             });
             if (uploadSession.alreadyUpToDate) {
                 await finishPlan();
-                return '服务器已是同一份数据，无需重复上传。';
+                return '云端数据已是最新，无需上传。';
             }
             const missingIndices = Array.isArray(uploadSession.missingIndices)
                 ? uploadSession.missingIndices
@@ -3720,18 +3723,18 @@
                 || missingIndices.some((index) => !Number.isInteger(index)
                     || index < 0
                     || index >= snapshot.chunkManifest.length)) {
-                throw new Error('服务器返回的待上传分片清单无效。');
+                throw new Error('服务器返回的数据格式不正确。');
             }
             const toStage = missingIndices.filter((index) => !staged.has(index));
             if (toStage.length) {
-                updateProgress(36, '正在整理要上传的分片...');
+                updateProgress(36, '正在准备上传…');
                 await stageMissingChunks(plan, toStage);
                 toStage.forEach((index) => staged.add(index));
             }
             // 要传的都在本机暂存里了：之后不挡页面，可以关掉同步面板接着玩
             if (missingIndices.length) enterBackgroundUpload();
             await sendStagedParts(missingIndices);
-            updateProgress(92, '正在完成服务器提交...');
+            updateProgress(92, '正在完成上传…');
             try {
                 const commitResponse = await postSync({
                     action: 'upload-complete',
@@ -3752,7 +3755,7 @@
                     || Number(confirmation.remote.version) !== Number(commitResponse.version)
                     || confirmation.remote.snapshotFormat !== SNAPSHOT_FORMAT
                     || Number(confirmation.remote.schemaVersion) !== SNAPSHOT_SCHEMA_VERSION) {
-                    throw new Error('服务器提交结果校验失败，请重新上传。');
+                    throw new Error('上传结果校验失败，请重新上传。');
                 }
             } catch (error) {
                 if (Number(error?.status) !== 409 || conflictAttempt >= 3) throw error;
@@ -3762,9 +3765,9 @@
             await syncStateStore('uploaded', 'readwrite', (store) => store.clear()).catch(() => {}); // 都提交了，不用再记
             await finishPlan();
             const rebuilt = plan.rebuilt.reduce((sum, region) => sum + region.end - region.start + 1, 0);
-            return plan.fast ? `快速上传成功：重做了 ${rebuilt} 个分片，共 ${snapshot.chunkManifest.length} 个。` : '上传成功。';
+            return plan.fast ? `快速上传成功：更新了 ${rebuilt} 个数据块，共 ${snapshot.chunkManifest.length} 个。` : '上传成功。';
         }
-        throw new Error('同步冲突重试失败，请稍后重试。');
+        throw new Error('云端数据正被其他设备更新，请稍后重试。');
     }
 
     // mode：fast 只重做改过的数据（没有上次的记录时自动完整扫描），full 全部重新扫描。
@@ -3781,9 +3784,9 @@
         let succeeded = false;
 
         try {
-            updateProgress(8, '正在整理本地数据...');
+            updateProgress(8, '正在保存本地数据…');
             if (!globalThis.RPHubCharStore || typeof globalThis.RPHubCharStore.assertPushAllowed !== 'function') {
-                throw new Error('角色卡存储自检不可用，已取消上传。');
+                throw new Error('页面未完整加载，请刷新后重试。');
             }
             await globalThis.RPHubCharStore.assertPushAllowed();
             await flushAppState();
@@ -3795,8 +3798,8 @@
                     status = await uploadLocalSnapshot(mode);
                     break;
                 } catch (error) {
-                    if (attempt >= 1 || state.background || !String(error?.message || '').startsWith('两次扫描结果不一致')) throw error;
-                    updateProgress(16, '本地数据刚刚变过，重新扫描一遍...');
+                    if (attempt >= 1 || state.background || error?.message !== LOCAL_DATA_CHANGED) throw error;
+                    updateProgress(16, '本地数据有变动，正在重新扫描…');
                 }
             }
             updateProgress(100, status);
@@ -3805,7 +3808,7 @@
             setActionButtonsDisabled(false);
         } catch (error) {
             window.RPHubDiagnostics?.failure('sync-push-error', error);
-            updateProgress(100, error?.message || '本地同步失败。');
+            updateProgress(100, `上传失败：${error?.message || '请稍后重试。'}`);
             setActionButtonsDisabled(false);
         } finally {
             syncStateStore('parts', 'readwrite', (store) => store.clear()).catch(() => {});
@@ -3841,7 +3844,7 @@
         if (!wasBackground || modalRoot?.classList.contains('is-open')) return hideFloat();
         // 面板关着：结果显示在悬浮条上
         if (succeeded) showFloat({ text: '上传成功', progress: 100, kind: 'done', autoHide: 3000 });
-        else showFloat({ text: `上传失败：${state.statusText}`, kind: 'error', action: { label: '重试', onClick: () => pushToServer('fast') } });
+        else showFloat({ text: state.statusText, kind: 'error', action: { label: '重试', onClick: () => pushToServer('fast') } });
     }
 
     let floatRoot = null;
@@ -3890,7 +3893,7 @@
         let pending = null;
         try { pending = localStorage.getItem(PENDING_UPLOAD_KEY); } catch (_) { /* storage blocked */ }
         if (pending && !state.syncing) {
-            showFloat({ text: '上次上传没传完', kind: 'resume', action: { label: '继续上传', onClick: () => pushToServer('fast') } });
+            showFloat({ text: '上次上传未完成', kind: 'resume', action: { label: '继续上传', onClick: () => pushToServer('fast') } });
         }
     }
 

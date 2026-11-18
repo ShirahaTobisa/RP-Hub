@@ -9,7 +9,7 @@
     };
 
     RPHubSDK.register({
-        id: 'advice-inject', name: '输入转 advice', version: '1.2.2', requiresApi: 4,
+        id: 'advice-inject', name: '输入转 advice', version: '1.2.3', requiresApi: 4,
         init(ctx) {
             const get = key => ctx.storage.get(key) ?? DEFAULTS[key];
             const render = input => get('template').replace('{{input}}', () => input);
@@ -36,8 +36,8 @@
                 const lastAssistant = messages.findLastIndex(m => m?.role === 'assistant');
                 const userIndex = messages.findLastIndex(m => m?.role === 'user' && typeof m.content === 'string' && m.content.includes(input));
                 if (userIndex < 0 || lastAssistant < 0 || userIndex < lastAssistant || typeof messages[lastAssistant].content !== 'string') {
-                    const reason = userIndex < 0 ? '请求里找不到你的原话（可能被正则或其他插件改过）' : '前面没有可以写入的 AI 回复';
-                    ctx.ui.toast(`输入转 advice 本次没生效：${reason}，原话按普通消息发出。可改用输入框上方的「选」按钮。`);
+                    const reason = userIndex < 0 ? '请求中未找到原话' : '没有可写入的 AI 回复';
+                    ctx.ui.toast(`输入转 advice 未生效：${reason}，已改为普通消息发送`);
                     return;
                 }
                 messages[userIndex].content = messages[userIndex].content.replace(input, () => get('userSlot'));
@@ -50,11 +50,11 @@
                 text: '选',
                 async onClick() {
                     const input = String(ctx.app.get('userInput') || '').trim();
-                    if (!input) return ctx.ui.toast('先在输入框里写好内容', { kind: 'info' });
-                    if (ctx.app.get('isConversationBusy')) return ctx.ui.toast('正在回复，请稍后再试', { kind: 'info' });
+                    if (!input) return ctx.ui.toast('请先输入内容', { kind: 'info' });
+                    if (ctx.app.get('isConversationBusy')) return ctx.ui.toast('正在回复，请稍后重试', { kind: 'info' });
                     const history = ctx.app.get('chatHistory');
                     const last = history?.[history.length - 1];
-                    if (last?.role !== 'assistant' || typeof last.content !== 'string') return ctx.ui.toast('最后一条不是 AI 回复，无法写入');
+                    if (last?.role !== 'assistant' || typeof last.content !== 'string') return ctx.ui.toast('最后一条消息不是 AI 回复，无法写入');
                     last.content = withAdvice(last.content, input);
                     writtenToHistory = true;
                     ctx.app.set('userInput', get('userSlot'));
@@ -74,12 +74,12 @@
                         render(body) {
                             // 样式类名见 WORKSHOP-MOD-GUIDE.md「面板样式」，跟随页面主题和深色模式。
                             body.innerHTML = `
-                                <label class="rph-ui-check rph-ui-field"><input type="checkbox" class="settings-toggle-input sr-only" data-k="enabled"><span class="settings-toggle"></span>发送时自动改写请求</label>
-                                <label class="rph-ui-field">advice 格式（{{input}} 会换成你的原话，追加在上一条 AI 回复末尾）
+                                <label class="rph-ui-check rph-ui-field"><input type="checkbox" class="settings-toggle-input sr-only" data-k="enabled"><span class="settings-toggle"></span>发送时自动转换</label>
+                                <label class="rph-ui-field">advice 模板（{{input}} 为原话）
                                     <textarea class="rph-ui-input" data-k="template" rows="5"></textarea></label>
-                                <label class="rph-ui-field">原话位置改成（留在最后一条用户消息里）
+                                <label class="rph-ui-field">原话替换为
                                     <textarea class="rph-ui-input" data-k="userSlot" rows="3"></textarea></label>
-                                <p class="rph-ui-muted">输入框上方的「选」按钮会把改写结果直接写进聊天记录再发送，不受上面开关影响。</p>
+                                <p class="rph-ui-muted">输入框上方的「选」按钮会把 advice 写入聊天记录后发送，不受此开关影响。</p>
                                 <div class="rph-ui-actions">
                                     <button type="button" class="modal-secondary-button rph-ui-button" data-reset>恢复默认</button>
                                     <button type="button" class="modal-primary-button rph-ui-button" data-save>保存</button>

@@ -125,7 +125,7 @@
             safeLocalSet(IMAGE_GEN_KEY_ADOPTED_STORAGE_KEY, settingsKey);
             main = getImageToken();
             if (main) {
-                state.keyRecoveryNotice = '已采纳原生设置中的图片密钥；下次推送会带上该密钥。';
+                state.keyRecoveryNotice = '已更新生图密钥';
                 source = 'settings';
             }
         } else if (main) {
@@ -134,7 +134,7 @@
         } else if (shadow) {
             safeLocalSet(IMAGE_GEN_KEY_STORAGE_KEY, shadow);
             if (getImageToken()) {
-                state.keyRecoveryNotice = '已从本机保护副本恢复密钥；下次推送会带上该密钥。';
+                state.keyRecoveryNotice = '已恢复生图密钥';
                 source = 'shadow';
             }
         }

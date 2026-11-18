@@ -7,7 +7,7 @@ async function handleJsonApi(request, env, ctx) {
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== 'object') return error('Invalid JSON body.');
     if (body.action === 'auth-status') return handleAuthStatus(request, env);
-    if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401, { authRequired: true });
+    if (!await isRequestAuthorized(request, env)) return error('同步密码错误', 401, { authRequired: true });
 
     const bucket = getBucket(env);
     const actions = {

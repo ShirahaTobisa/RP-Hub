@@ -152,10 +152,10 @@
     async function aiComplete({ messages, model, temperature = 0.3, signal } = {}) {
         const client = globalThis.RPHubApiClient;
         const endpoint = globalThis.RPHubApiUtils?.buildApiEndpoint;
-        if (!client?.requestChatCompletion || !endpoint) throw new Error('这个版本的 RPH 不支持插件调用 AI');
+        if (!client?.requestChatCompletion || !endpoint) throw new Error('当前版本不支持插件调用 AI');
         if (!Array.isArray(messages) || !messages.length) throw new TypeError('ctx.ai.complete 需要 messages');
         const settings = appGet('settings') || {};
-        if (!String(settings.apiUrl || '').trim()) throw new Error('还没在 RPH 设置里填 AI 接口');
+        if (!String(settings.apiUrl || '').trim()) throw new Error('请先在设置中填写 API 地址');
         const marked = typeof messages[0]?.content === 'string' && messages[0].role === 'system'
             ? [{ ...messages[0], content: AI_REQUEST_MARKER + messages[0].content }, ...messages.slice(1)]
             : [{ role: 'system', content: AI_REQUEST_MARKER }, ...messages];

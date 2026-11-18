@@ -246,7 +246,7 @@ try {
     await pageA.evaluate(() => { globalThis.RPH_R2_FLUSH_PERSISTENCE = () => RPHubCharStore.waitForPendingMutations(); });
     const upload = async (button) => {
         const pushing = pageA.evaluate(() => api.pushToServer().then(() => api.state.statusText));
-        const asked = pageA.getByRole('button', { name: button });
+        const asked = pageA.getByRole('button', { name: button, exact: true });
         const ended = await Promise.race([pushing.then((text) => `没有询问就结束了：${text}`), asked.waitFor().then(() => '')]);
         assert.equal(ended, '');
         await asked.click();
@@ -254,7 +254,7 @@ try {
     };
     assert.equal(await upload('取消'), '已取消上传。');
     assert.ok((await pullManifest(pageA)).fork);
-    assert.equal(await upload('仍然上传'), '上传成功。');
+    assert.equal(await upload('上传'), '上传成功。');
     const after = await pullManifest(pageA);
     assert.equal(after.fork, undefined);
     assert.equal(after.remote.snapshotFormat, 'rp-sync-jsonl-v1');

@@ -20,7 +20,7 @@
     const AI_REQUEST_MARKER = '（插件附带请求）';
     const AUXILIARY_REQUEST_MARKERS = ['你是角色扮演对话的逐轮记忆整理器', '你是角色扮演长期记忆压缩器', '只分析一个UI模板', AI_REQUEST_MARKER];
     const MODULE_ID_PATTERN = /^[a-z0-9-]{3,32}$/;
-    const RISK_WARNING = '风险警告：第三方代码拥有页面全部权限，包括云同步密码与生图密钥。仅安装你信任的来源。\n\n确认安装此模块吗？';
+    const RISK_WARNING = '插件将获得页面的全部权限（包括同步密码和生图密钥），请只安装可信来源的插件。';
     const DEFAULT_MIRROR_BASE = 'https://update.rph.mornye.uk';
     const WORKSHOP_INDEX_TTL_MS = 60_000;
 
@@ -206,7 +206,7 @@
 
     function saveModuleSource(url, code) {
         if (!code.trim() || storageByteLength(code) > SOURCE_VALUE_LIMIT) {
-            throw new Error('插件文件不能为空，且不能超过 8 MiB');
+            throw new Error('插件文件不能为空，且不能超过 8 MB');
         }
         return workshopWrite('scripts', url, store => store.put(code, url));
     }
@@ -216,7 +216,7 @@
         if (typeof cached === 'string' && cached.trim()) return cached;
         if (!allowedUrl(entry.url)) throw new Error('插件文件缺失，请重新导入');
         const response = await fetch(entry.url, { credentials: 'omit', signal: AbortSignal.timeout(30000) });
-        if (!response.ok) throw new Error(`插件下载失败 (${response.status})`);
+        if (!response.ok) throw new Error(`插件下载失败：HTTP ${response.status}`);
         const code = await response.text();
         await saveModuleSource(entry.url, code);
         return code;
@@ -230,7 +230,7 @@
         }
         for (const entry of state.installations) await loadModuleSource(entry);
         while (state.pendingWrites.size) await Promise.allSettled([...state.pendingWrites]);
-        if (state.writeErrors.size) throw new Error('插件数据尚未保存成功，已取消上传', { cause: state.writeErrors.values().next().value });
+        if (state.writeErrors.size) throw new Error('插件数据保存失败，已取消上传', { cause: state.writeErrors.values().next().value });
     }
 
     // 提示条、面板、确认框都交给 DB/ui-kit.js，外观和动画跟页面原生弹窗一致。
@@ -238,8 +238,8 @@
         window.RPHubUI.toast(message, { kind: options.kind || 'error', duration: 4_200 });
     }
 
-    function confirmRisk(message = RISK_WARNING) {
-        return window.RPHubUI.confirm({ title: '安装插件', message, confirmText: '确认安装', danger: true });
+    function confirmRisk() {
+        return window.RPHubUI.confirm({ title: '安装插件', message: RISK_WARNING, confirmText: '安装', danger: true });
     }
 
     function closePanel() {
@@ -496,7 +496,7 @@
         ok: ['正常', ''],
         'load-error': ['加载失败', 'error'],
         'init-error': ['初始化失败', 'error'],
-        'api-mismatch': ['API 不符', 'error']
+        'api-mismatch': ['版本不兼容', 'error']
     };
 
     function element(tag, className = '', text = '') {
@@ -540,35 +540,35 @@
         state.installations.push(entry);
         if (writeInstallations()) return true;
         state.installations.pop();
-        showToast('模块安装列表保存失败');
+        showToast('插件列表保存失败');
         return false;
     }
 
     async function installFromInput(input) {
         const url = String(input.value || '').trim();
         if (url.length > 500) {
-            showToast('模块 URL 不能超过 500 个字符');
+            showToast('插件地址不能超过 500 个字符');
             return;
         }
         if (!allowedUrl(url)) {
-            showToast('模块 URL 必须使用 HTTPS');
+            showToast('请输入 https:// 开头的插件地址');
             return;
         }
         if (state.installations.some((entry) => entry.url === url)) {
-            showToast('该模块 URL 已安装');
+            showToast('该插件已安装');
             return;
         }
         if (!await confirmRisk()) return;
         try { await loadModuleSource({ url }); }
         catch (error) {
-            showToast(`无法保存插件文件：${error.message}。地址须支持跨域下载，也可导入 JS 文件。`);
+            showToast(`安装失败：${error.message}，也可以导入 JS 文件安装`);
             return;
         }
         if (state.installations.some(entry => entry.url === url)) return;
         if (!addInstallation({ id: '', url, enabled: true, addedAt: Date.now(), lastStatus: '' })) return;
         input.value = '';
         refreshManagementPanel();
-        showToast('模块已安装，刷新后生效', { kind: 'info' });
+        showToast('插件已安装，刷新后生效', { kind: 'info' });
     }
 
     function moduleFileInput(onFile) {
@@ -581,7 +581,7 @@
             input.value = '';
             if (!file) return;
             try {
-                if (file.size > SOURCE_VALUE_LIMIT) throw new Error('插件文件不能超过 8 MiB');
+                if (file.size > SOURCE_VALUE_LIMIT) throw new Error('插件文件不能超过 8 MB');
                 await onFile(file);
             } catch (error) { showToast(error.message); }
         };
@@ -610,10 +610,10 @@
     // 下载插件并核对工坊目录里的指纹，不一致就拒绝，避免装上被替换或损坏的文件。
     async function fetchWorkshopSource(plugin) {
         const response = await fetch(workshopBase() + plugin.file.path, { credentials: 'omit', signal: AbortSignal.timeout(30000) });
-        if (!response.ok) throw new Error(`插件下载失败 (${response.status})`);
+        if (!response.ok) throw new Error(`插件下载失败：HTTP ${response.status}`);
         const bytes = await response.arrayBuffer();
         const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-        if (digest !== plugin.file.sha256) throw new Error('插件文件与工坊目录不一致，已取消');
+        if (digest !== plugin.file.sha256) throw new Error('文件校验失败，请稍后重试');
         return new TextDecoder().decode(bytes);
     }
 

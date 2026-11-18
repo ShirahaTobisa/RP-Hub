@@ -144,7 +144,7 @@ async function measure(label, page, action, { reloads = false } = {}) {
         // 拉取完成后页面会刷新：先取走计时，再等刷新。
         const navigation = page.waitForEvent('framenavigated', { timeout: 600000 });
         await page.evaluate(() => { api.pullFromServer(); });
-        await page.waitForFunction(() => /即将刷新|失败|没有可同步/.test(document.querySelector('.rp-sync-modal__status')?.textContent || ''), null, { timeout: 600000, polling: 100 });
+        await page.waitForFunction(() => /即将刷新|失败|暂无数据/.test(document.querySelector('.rp-sync-modal__status')?.textContent || ''), null, { timeout: 600000, polling: 100 });
         result = await page.evaluate(() => ({ perf: globalThis.__perf, timeline: globalThis.__timeline.map((item) => ({ ms: Math.round(item.at - globalThis.__timelineStart), text: item.text })) }));
         await navigation;
     } else {

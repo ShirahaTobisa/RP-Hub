@@ -10,7 +10,7 @@ function createAppUpdateRequestBudget() {
         used: 0,
         consume() {
             if (this.used >= MAX_APP_UPDATE_EXTERNAL_REQUESTS) {
-                const failure = new Error(`在线更新外部请求超过 ${MAX_APP_UPDATE_EXTERNAL_REQUESTS} 次限制，已拒绝更新。`);
+                const failure = new Error(`请求次数超过上限（${MAX_APP_UPDATE_EXTERNAL_REQUESTS} 次），已取消更新。`);
                 failure.code = 'RP_HUB_APP_UPDATE_REQUEST_LIMIT';
                 throw failure;
             }
@@ -34,17 +34,17 @@ async function fetchWithBudgetedRedirects(url, options = {}, requestBudget = nul
         if (!isRedirectStatus(response.status)) return response;
         if (redirectCount >= MAX_APP_UPDATE_REDIRECTS) {
             await response.body?.cancel().catch(() => {});
-            throw new Error(`在线更新重定向超过 ${MAX_APP_UPDATE_REDIRECTS} 次限制。`);
+            throw new Error('重定向次数过多。');
         }
         const location = response.headers.get('location');
         if (!location) {
             await response.body?.cancel().catch(() => {});
-            throw new Error('在线更新收到缺少 Location 的重定向响应。');
+            throw new Error('服务器返回了无效的重定向。');
         }
         const nextUrl = new URL(location, currentUrl);
         if (nextUrl.protocol !== 'https:' && nextUrl.protocol !== 'http:') {
             await response.body?.cancel().catch(() => {});
-            throw new Error(`在线更新拒绝非 HTTP 重定向：${nextUrl.protocol}`);
+            throw new Error(`重定向地址无效：${nextUrl.protocol}`);
         }
         await response.body?.cancel().catch(() => {});
         currentUrl = nextUrl;
@@ -72,7 +72,7 @@ async function fetchGitHubJson(url, env, requestBudget = null) {
     try {
         return JSON.parse(text);
     } catch (err) {
-        throw new Error('GitHub 返回的数据不是有效 JSON。');
+        throw new Error('GitHub 返回的数据格式不正确。');
     }
 }
 
@@ -123,7 +123,7 @@ async function fetchReleaseVersions(env, requestBudget = null) {
         requestBudget
     );
     const versions = parseReleaseFeed(xml);
-    if (versions.length === 0) throw new Error('没有从 RP-Hub Releases 读取到版本。');
+    if (versions.length === 0) throw new Error('没有获取到 RP-Hub 官方版本。');
     return versions.slice(0, APP_RELEASE_VERSION_LIMIT);
 }
 
@@ -137,10 +137,10 @@ function getAppUpdateMirrorBase(env) {
     try {
         url = new URL(rawBase);
     } catch {
-        throw new Error(`在线更新镜像地址无效：${rawBase}`);
+        throw new Error(`分发站地址无效：${rawBase}`);
     }
     if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-        throw new Error(`在线更新镜像地址必须使用 HTTP(S)：${rawBase}`);
+        throw new Error(`分发站地址必须以 http:// 或 https:// 开头：${rawBase}`);
     }
     url.hash = '';
     url.search = '';
@@ -151,30 +151,30 @@ function normalizeMirrorFile(file) {
     const path = typeof file?.path === 'string' ? file.path : '';
     const sha256 = typeof file?.sha256 === 'string' ? file.sha256.toLowerCase() : '';
     const size = Number(file?.size);
-    if (!isAllowedAppUpdatePath(path)) throw new Error(`镜像清单包含非法文件路径：${path || '(empty)'}`);
-    if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error(`镜像清单文件 SHA-256 无效：${path}`);
+    if (!isAllowedAppUpdatePath(path)) throw new Error(`分发站文件列表有误：路径无效（${path || '空'}）`);
+    if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error(`分发站文件列表有误：SHA-256 无效（${path}）`);
     if (!Number.isSafeInteger(size) || size < 0 || size > MAX_APP_UPDATE_FILE_BYTES) {
-        throw new Error(`镜像清单文件大小无效：${path}`);
+        throw new Error(`分发站文件列表有误：大小无效（${path}）`);
     }
     return { path, sha256, size };
 }
 
 function parseMirrorManifest(value, mirrorBase) {
     if (!value || typeof value !== 'object' || value.schema !== 1 || value.upstreamRepo !== UPSTREAM_REPO) {
-        throw new Error(`在线更新镜像清单格式无效：${mirrorBase}/manifest.json`);
+        throw new Error(`分发站版本列表格式不正确：${mirrorBase}/manifest.json`);
     }
     if (!Array.isArray(value.versions) || value.versions.length === 0) {
-        throw new Error(`在线更新镜像没有可用版本：${mirrorBase}/manifest.json`);
+        throw new Error(`分发站暂无可用版本：${mirrorBase}/manifest.json`);
     }
     const versions = value.versions.slice(0, APP_RELEASE_VERSION_LIMIT).map((version) => {
         const tag = sanitizeReleaseTag(version?.tag);
         const commit = typeof version?.commit === 'string' ? version.commit.toLowerCase() : '';
         if (!tag || !/^[a-f0-9]{40}$/.test(commit) || !Array.isArray(version?.files)) {
-            throw new Error(`在线更新镜像版本条目无效：${tag || '(unknown)'}`);
+            throw new Error(`分发站版本信息有误：${tag || '未知版本'}`);
         }
         const files = version.files.map(normalizeMirrorFile);
         if (new Set(files.map((file) => file.path)).size !== files.length) {
-            throw new Error(`在线更新镜像版本包含重复文件：${tag}`);
+            throw new Error(`分发站版本 ${tag} 有重复文件。`);
         }
         return {
             tag,
@@ -198,15 +198,15 @@ async function fetchMirrorReleaseVersions(mirrorBase, requestBudget = null) {
             headers: { accept: 'application/json' }
         }, requestBudget);
     } catch (err) {
-        throw new Error(`在线更新镜像不可达（${mirrorBase}）：${err?.name === 'AbortError' ? 'timeout' : err?.message || 'request failed'}`);
+        throw new Error(`无法连接分发站（${mirrorBase}）：${err?.name === 'AbortError' ? '请求超时' : err?.message || '请求失败'}`);
     }
     const text = await response.text();
-    if (!response.ok) throw new Error(`在线更新镜像请求失败（${mirrorBase}）：HTTP ${response.status}`);
+    if (!response.ok) throw new Error(`分发站请求失败（${mirrorBase}）：HTTP ${response.status}`);
     let manifest;
     try {
         manifest = JSON.parse(text);
     } catch {
-        throw new Error(`在线更新镜像清单不是有效 JSON：${mirrorBase}/manifest.json`);
+        throw new Error(`分发站版本列表格式不正确：${mirrorBase}/manifest.json`);
     }
     return parseMirrorManifest(manifest, mirrorBase);
 }
@@ -576,7 +576,7 @@ async function fetchUpstreamFile(path, ref, env, requestBudget = null) {
                     : buildGitHubHeaders(env, 'application/octet-stream')
             }, requestBudget);
             if (!response.ok) {
-                failures.push(`${source.name}: HTTP ${response.status}`);
+                failures.push(`${source.name}：HTTP ${response.status}`);
                 continue;
             }
             return {
@@ -585,10 +585,10 @@ async function fetchUpstreamFile(path, ref, env, requestBudget = null) {
             };
         } catch (err) {
             if (err?.code === 'RP_HUB_APP_UPDATE_REQUEST_LIMIT') throw err;
-            failures.push(`${source.name}: ${err?.name === 'AbortError' ? 'timeout' : err?.message || 'request failed'}`);
+            failures.push(`${source.name}：${err?.name === 'AbortError' ? '请求超时' : err?.message || '请求失败'}`);
         }
     }
-    throw new Error(`下载上游文件失败：${path}；${failures.join('；')}`);
+    throw new Error(`下载更新文件失败：${path}；${failures.join('；')}`);
 }
 
 async function fetchMirrorUpstreamFile(path, version, mirrorBase, requestBudget = null) {
@@ -598,7 +598,7 @@ async function fetchMirrorUpstreamFile(path, version, mirrorBase, requestBudget 
         ? version.files.find((file) => file.path === path)
         : null;
     if (!tag || !/^[a-f0-9]{40}$/.test(commit) || !descriptor) {
-        throw new Error(`在线更新镜像缺少文件清单项：${path}`);
+        throw new Error(`分发站缺少文件：${path}`);
     }
     const url = `${mirrorBase}/snapshots/${encodePathSegments(tag)}/${commit}/${encodePathSegments(path)}`;
     let response;
@@ -608,13 +608,13 @@ async function fetchMirrorUpstreamFile(path, version, mirrorBase, requestBudget 
         }, requestBudget);
     } catch (err) {
         if (err?.code === 'RP_HUB_APP_UPDATE_REQUEST_LIMIT') throw err;
-        throw new Error(`下载镜像文件失败（${mirrorBase}）：${path}；${err?.name === 'AbortError' ? 'timeout' : err?.message || 'request failed'}`);
+        throw new Error(`从分发站下载文件失败（${mirrorBase}）：${path}；${err?.name === 'AbortError' ? '请求超时' : err?.message || '请求失败'}`);
     }
-    if (!response.ok) throw new Error(`下载镜像文件失败（${mirrorBase}）：${path}；HTTP ${response.status}`);
+    if (!response.ok) throw new Error(`从分发站下载文件失败（${mirrorBase}）：${path}；HTTP ${response.status}`);
     const bytes = await response.arrayBuffer();
     const checksum = await sha256Bytes(bytes);
     if (checksum !== descriptor.sha256) {
-        throw new Error(`镜像文件 SHA-256 不匹配，已拒绝更新：${path}`);
+        throw new Error(`文件校验失败，已取消更新：${path}`);
     }
     return { bytes, source: 'mirror' };
 }
@@ -679,7 +679,7 @@ async function listUpstreamFilesFromContents(ref, env, requestBudget = null) {
             : '';
         const url = `https://api.github.com/repos/${UPSTREAM_REPO}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`;
         const entries = await fetchGitHubJson(url, env, requestBudget);
-        if (!Array.isArray(entries)) throw new Error('GitHub 文件列表格式异常。');
+        if (!Array.isArray(entries)) throw new Error('GitHub 返回的文件列表格式不正确。');
 
         for (const entry of entries) {
             const path = typeof entry?.path === 'string' ? entry.path : '';
@@ -691,17 +691,17 @@ async function listUpstreamFilesFromContents(ref, env, requestBudget = null) {
             if (entry.type !== 'file') continue;
             const size = Number(entry.size || 0);
             if (size > MAX_APP_UPDATE_FILE_BYTES) {
-                throw new Error(`上游文件过大，已停止更新：${path}`);
+                throw new Error(`文件过大：${path}`);
             }
             files.push(path);
             if (files.length > MAX_APP_UPDATE_FILES) {
-                throw new Error(`上游文件数量超过限制（${MAX_APP_UPDATE_FILES}），已停止更新。`);
+                throw new Error(`文件数量超过上限（${MAX_APP_UPDATE_FILES} 个）。`);
             }
         }
     }
     files.sort((a, b) => a.localeCompare(b));
     for (const required of REQUIRED_UPSTREAM_FILES) {
-        if (!files.includes(required)) throw new Error(`上游 Release 缺少必要文件：${required}`);
+        if (!files.includes(required)) throw new Error(`缺少必要文件：${required}`);
     }
     return files;
 }
@@ -713,7 +713,7 @@ async function getUpstreamFilesForUpdate(ref, env, requestBudget = null) {
             source: 'github-contents'
         };
     } catch (err) {
-        const failure = new Error(`读取上游完整文件列表失败，已拒绝更新：${err instanceof Error ? err.message : '未知错误'}`);
+        const failure = new Error(`获取文件列表失败，已取消更新：${err instanceof Error ? err.message : '未知错误'}`);
         failure.code = 'RP_HUB_APP_FILE_LIST_FAILED';
         throw failure;
     }
@@ -723,15 +723,15 @@ async function getMirrorUpstreamFilesForUpdate(version) {
     try {
         const descriptors = Array.isArray(version?.files) ? version.files.map(normalizeMirrorFile) : [];
         if (descriptors.length > MAX_APP_UPDATE_FILES) {
-            throw new Error(`上游文件数量超过限制（${MAX_APP_UPDATE_FILES}），已停止更新。`);
+            throw new Error(`文件数量超过上限（${MAX_APP_UPDATE_FILES} 个）。`);
         }
         const files = descriptors.map((file) => file.path).sort((a, b) => a.localeCompare(b));
         for (const required of REQUIRED_UPSTREAM_FILES) {
-            if (!files.includes(required)) throw new Error(`上游 Release 缺少必要文件：${required}`);
+            if (!files.includes(required)) throw new Error(`缺少必要文件：${required}`);
         }
         return { files, source: 'mirror-manifest' };
     } catch (err) {
-        const failure = new Error(`读取上游完整文件列表失败，已拒绝更新：${err instanceof Error ? err.message : '未知错误'}`);
+        const failure = new Error(`获取文件列表失败，已取消更新：${err instanceof Error ? err.message : '未知错误'}`);
         failure.code = 'RP_HUB_APP_FILE_LIST_FAILED';
         throw failure;
     }
@@ -747,7 +747,7 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
     const requestBudget = createAppUpdateRequestBudget();
     const releaseResult = await getConfiguredReleaseVersions(bucket, env, { requestBudget });
     const targetTag = sanitizeReleaseTag(body.target) || releaseResult.versions[0]?.tag || '';
-    if (!targetTag) return error('没有可更新的 Release 版本。', 409);
+    if (!targetTag) return error('暂无可更新的版本。', 409);
     const latest = releaseResult.versions.find((version) => version.tag === targetTag) || {
         tag: targetTag,
         sha: targetTag,
@@ -800,14 +800,14 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
                     bytes = encodeText(patchUpstreamTextFile(path, text, latest.tag));
                 }
                 if (bytes.byteLength > MAX_APP_UPDATE_FILE_BYTES) {
-                    throw new Error(`上游文件过大，已停止更新：${path}`);
+                    throw new Error(`文件过大，已取消更新：${path}`);
                 }
                 const checksum = await sha256Bytes(bytes);
                 const stored = await bucket.put(getStoredAppUpdateKey(stagingSlot, path), bytes, {
                     httpMetadata: { contentType: getContentType(path) },
                     customMetadata: { upstreamTag: latest.tag, checksum, source: upstreamFile.source }
                 });
-                if (!stored) throw new Error(`写入新版本槽失败：${path}`);
+                if (!stored) throw new Error(`保存文件失败：${path}`);
                 return {
                     path,
                     checksum,
@@ -817,7 +817,7 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
             } catch (err) {
                 return {
                     path,
-                    error: err instanceof Error ? err.message : '下载上游文件失败。',
+                    error: err instanceof Error ? err.message : '下载更新文件失败。',
                     code: err?.code || '',
                     patchRejected: err instanceof RpHubAppPatchError || err?.code === 'RP_HUB_APP_PATCH_REJECTED'
                 };
@@ -840,17 +840,17 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
         files = await listStagedAppUpdateFiles(bucket, stagingSlot);
         const missing = upstreamFiles.find((path) => !files.some((file) => file.path === path));
         if (missing) {
-            const failure = new Error(`新版本文件没有存全（${missing}），请重新更新。`);
+            const failure = new Error(`更新文件不完整（缺少 ${missing}），请重新更新。`);
             failure.code = 'RP_HUB_APP_RELEASE_INCOMPLETE';
             throw failure;
         }
         totalBytes = files.reduce((sum, file) => sum + file.byteLength, 0);
         if (totalBytes > MAX_APP_UPDATE_TOTAL_BYTES) {
-            throw new Error(`上游文件总大小超过限制（${Math.round(MAX_APP_UPDATE_TOTAL_BYTES / 1024 / 1024)}MiB），已停止更新。`);
+            throw new Error(`更新文件总大小超过上限（${Math.round(MAX_APP_UPDATE_TOTAL_BYTES / 1024 / 1024)}MB），已取消更新。`);
         }
         for (const required of REQUIRED_UPSTREAM_FILES) {
             if (!files.some((file) => file.path === required)) {
-                const failure = new Error(`上游 Release 缺少必要文件：${required}`);
+                const failure = new Error(`该版本缺少必要文件：${required}`);
                 failure.code = 'RP_HUB_APP_RELEASE_INCOMPLETE';
                 throw failure;
             }
@@ -898,7 +898,7 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
             ).catch((cleanupError) => {
                 console.warn('[RP App Update] Failed to clean conflicted version slot:', cleanupError);
             });
-            return error('在线更新冲突：当前版本已被其他请求切换，请重新检查后重试。', 409, {
+            return error('程序版本已在其他页面切换，请重新检查更新。', 409, {
                 code: 'RP_HUB_APP_UPDATE_CONFLICT'
             });
         }
@@ -950,9 +950,9 @@ async function handleAppUpdateRollback(bucket) {
     const applied = manifestState.manifest;
     const current = getManifestCurrent(applied);
     const previous = getManifestPrevious(applied);
-    if (!previous) return error('没有可回滚的上一版。', 409);
+    if (!previous) return error('没有可回退的上一版。', 409);
     if (!hasCurrentAppPatchRevision(previous)) {
-        return error('上一版未通过当前角色卡存储补丁验证，已拒绝回滚。', 409, {
+        return error('上一版与当前程序不兼容，无法回退。', 409, {
             code: 'RP_HUB_APP_ROLLBACK_PATCH_MISMATCH'
         });
     }
@@ -987,7 +987,7 @@ async function handleAppUpdateRollback(bucket) {
         committedObject = true;
     }
     if (!committedObject) {
-        return error('在线更新冲突：当前版本已被其他请求切换，请重新检查后重试。', 409, {
+        return error('程序版本已在其他页面切换，请重新检查更新。', 409, {
             code: 'RP_HUB_APP_UPDATE_CONFLICT'
         });
     }

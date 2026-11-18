@@ -2,7 +2,7 @@ async function handleApi(request, env, url, ctx) {
     const action = url.searchParams.get('action');
     if (action !== 'upload-part' && action !== 'fork-export-pack') return handleJsonApi(request, env, ctx);
     if (request.method !== 'POST') return error('Method not allowed.', 405);
-    if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401, { authRequired: true });
+    if (!await isRequestAuthorized(request, env)) return error('同步密码错误', 401, { authRequired: true });
     const handler = action === 'upload-part' ? handleUploadPart : handleForkExportPack;
     return handler(request, getBucket(env), url);
 }

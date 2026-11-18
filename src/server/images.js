@@ -82,7 +82,7 @@ function assertImageTokenProvider(params, token) {
     const tokenProvider = getImageTokenProviderName(token);
     const requestedProvider = String(params.requested_provider || '').trim();
     if (tokenProvider && requestedProvider && tokenProvider !== requestedProvider) {
-        throw createHttpError('生图密钥与图片记录的 provider 不匹配。', 409);
+        throw createHttpError('生图密钥与图片使用的服务不一致', 409);
     }
 }
 
@@ -197,8 +197,8 @@ function getImageProviderOverride(params, env) {
 }
 
 function buildImageUpstreamUrl(params, token, env) {
-    if (!params.tag) throw new Error('缺少生图提示词。');
-    if (!token) throw new Error('缺少生图密钥。');
+    if (!params.tag) throw new Error('缺少生图提示词');
+    if (!token) throw new Error('请先填写生图密钥');
     const upstream = new URL('/generate', getImageProviderOverride(params, env) || getImageProviderBase(params.provider, token));
     upstream.searchParams.set('tag', params.tag);
     upstream.searchParams.set('token', token);
@@ -229,7 +229,7 @@ async function fetchImageWithTimeout(url) {
             signal: controller.signal
         });
     } catch (err) {
-        if (err?.name === 'AbortError') throw createHttpError('生图服务请求超时。', 504);
+        if (err?.name === 'AbortError') throw createHttpError('生图服务请求超时', 504);
         throw err;
     } finally {
         clearTimeout(timeout);
@@ -270,7 +270,7 @@ function deletedImagePlaceholder(characterName) {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640" viewBox="0 0 960 640">
 <rect width="960" height="640" rx="28" fill="#f6f7f9"/>
 <rect x="56" y="56" width="848" height="528" rx="24" fill="#ffffff" stroke="#dfe3e8" stroke-width="2"/>
-<text x="480" y="292" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#3f4652">图片已清理</text>
+<text x="480" y="292" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#3f4652">图片已删除</text>
 <text x="480" y="348" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" fill="#7b8491">${safeName}</text>
 </svg>`;
 }
@@ -278,13 +278,13 @@ function deletedImagePlaceholder(characterName) {
 async function readStreamChunk(reader, deadline, label) {
     if (!deadline) return reader.read();
     const remaining = deadline - Date.now();
-    if (remaining <= 0) throw createHttpError(`${label}读取超时。`, 504);
+    if (remaining <= 0) throw createHttpError(`${label}读取超时`, 504);
     let timeout;
     try {
         return await Promise.race([
             reader.read(),
             new Promise((_, reject) => {
-                timeout = setTimeout(() => reject(createHttpError(`${label}读取超时。`, 504)), remaining);
+                timeout = setTimeout(() => reject(createHttpError(`${label}读取超时`, 504)), remaining);
             })
         ]);
     } finally {
@@ -303,12 +303,12 @@ async function describeNonImageReply(response, contentType) {
     } catch (_) {
         reason = (text.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || text.replace(/<(style|script)[\s\S]*?<\/\1>/gi, '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
     }
-    return reason ? `它说：${reason.slice(0, 200)}` : `回的是 ${contentType || '不明类型'}`;
+    return reason ? reason.slice(0, 200) : `内容类型为 ${contentType || '未知'}`;
 }
 
 async function readLimitedBody(body, maxBytes, label, emptyStatus = 400, expectedBytes = 0, timeoutMs = 0) {
     if (!body || typeof body.getReader !== 'function') {
-        throw createHttpError(`${label}为空。`, emptyStatus);
+        throw createHttpError(`${label}为空`, emptyStatus);
     }
     const reader = body.getReader();
     const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : 0;
@@ -348,13 +348,13 @@ async function readLimitedBody(body, maxBytes, label, emptyStatus = 400, expecte
     } finally {
         reader.releaseLock();
     }
-    if (total === 0) throw createHttpError(`${label}为空。`, emptyStatus);
+    if (total === 0) throw createHttpError(`${label}为空`, emptyStatus);
     return bytes.subarray(0, total);
 }
 
 function createLimitedBodyStream(body, maxBytes, label, emptyStatus = 400, timeoutMs = 0) {
     if (!body || typeof body.getReader !== 'function') {
-        throw createHttpError(`${label}为空。`, emptyStatus);
+        throw createHttpError(`${label}为空`, emptyStatus);
     }
     const reader = body.getReader();
     const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : 0;
@@ -371,7 +371,7 @@ function createLimitedBodyStream(body, maxBytes, label, emptyStatus = 400, timeo
             try {
                 const next = await readStreamChunk(reader, deadline, label);
                 if (next.done) {
-                    if (total === 0) throw createHttpError(`${label}为空。`, emptyStatus);
+                    if (total === 0) throw createHttpError(`${label}为空`, emptyStatus);
                     release();
                     controller.close();
                     return;
@@ -414,7 +414,7 @@ async function handleImageRender(request, env) {
         return error('Method not allowed.', 405);
     }
     if (request.url.length > IMAGE_MAX_REQUEST_URL_LENGTH) {
-        return error('生图请求参数过长。', 414);
+        return error('生图请求参数过长', 414);
     }
     const url = new URL(request.url);
     const clientToken = getImageClientToken(request, url);
@@ -423,7 +423,7 @@ async function handleImageRender(request, env) {
     const params = buildImageParams(url, token);
     const candidates = await buildImageLookupCandidates(params, token, request.method !== 'POST');
     const primary = candidates[0];
-    if (!primary) return error('缺少有效的角色名称。', 400);
+    if (!primary) return error('缺少有效的角色名称', 400);
     // 从魔改版迁移来的图：记录里存着它在 R2 的准确位置，按参数找不到时就用它（只用于显示，不用于生成）。
     const migrated = request.method === 'POST' ? null : parseImageObjectKey(url.searchParams.get('image_key'));
     if (migrated) candidates.push({ params, key: migrated.key, deletedKey: createImageDeletedKey(migrated.characterName, migrated.checksum) });
@@ -450,7 +450,7 @@ async function handleImageRender(request, env) {
         const candidate = candidates[hitAt];
         const cached = objects[hitAt];
         const contentType = normalizeRasterContentType(cached.httpMetadata?.contentType);
-        if (!contentType) return error('缓存图片格式不受支持。', 415);
+        if (!contentType) return error('图片格式不受支持', 415);
         // 存好的图不会再变（重新生成会换 seed，地址就不同）：让浏览器留一份，每次显示前只带 ETag 问一句“变了没”，
         // 没变回 304 不传正文；删掉的图在上面已经回了占位图。
         const headers = {
@@ -483,11 +483,11 @@ async function handleImageRender(request, env) {
         });
     }
 
-    if (!token) return error('缺少生图密钥。', 401);
-    if (!clientToken && !getSyncPassword(env)) return error('使用 Worker 生图密钥时必须配置 RP_SYNC_PASSWORD。', 503);
+    if (!token) return error('请先填写生图密钥', 401);
+    if (!clientToken && !getSyncPassword(env)) return error('使用 IMAGE_GEN_TOKEN 时必须设置 RP_SYNC_PASSWORD', 503);
     // 配了同步密码就一律要带（和上传接口一样）：不然谁拿个生图密钥都能往这个站的 R2 里写图、把站主最旧的图挤掉。
     if (getSyncPassword(env) && !await isRequestAuthorized(request, env)) {
-        return error('Sync password required.', 401, { authRequired: true });
+        return error('同步密码错误', 401, { authRequired: true });
     }
     assertImageTokenProvider(primary.params, token);
 
@@ -497,7 +497,7 @@ async function handleImageRender(request, env) {
         return error(`生图服务返回异常：HTTP ${upstreamResponse.status}`, upstreamResponse.status);
     }
     const contentType = (upstreamResponse.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
-    if (!IMAGE_RASTER_CONTENT_TYPES.has(contentType)) return error(`生图服务没有返回图片，${await describeNonImageReply(upstreamResponse, contentType)}`, 502);
+    if (!IMAGE_RASTER_CONTENT_TYPES.has(contentType)) return error(`生图服务未返回图片：${await describeNonImageReply(upstreamResponse, contentType)}`, 502);
     const contentLength = Number(upstreamResponse.headers.get('content-length') || 0);
     if (contentLength > IMAGE_MAX_BYTES) return error(`图片过大：${contentLength}/${IMAGE_MAX_BYTES}`, 413);
     const imageBytes = await readLimitedBody(
@@ -527,14 +527,14 @@ async function handleImageRender(request, env) {
 // 生图插件在浏览器里生成好图片后上传到这里；存放位置由参数算出（和直链生图同一个位置），插件不能指定。
 async function storeUploadedImage(request, env, bucket, primary) {
     if (getSyncPassword(env) && !await isRequestAuthorized(request, env)) {
-        return error('Sync password required.', 401, { authRequired: true });
+        return error('同步密码错误', 401, { authRequired: true });
     }
     const contentType = (request.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
-    if (!IMAGE_RASTER_CONTENT_TYPES.has(contentType)) return error('只接受 PNG、JPEG、WebP、AVIF 或 GIF 图片。', 415);
+    if (!IMAGE_RASTER_CONTENT_TYPES.has(contentType)) return error('只支持 PNG、JPEG、WebP、AVIF 或 GIF 图片', 415);
     const contentLength = Number(request.headers.get('content-length') || 0);
     if (contentLength > IMAGE_MAX_BYTES) return error(`图片过大：${contentLength}/${IMAGE_MAX_BYTES}`, 413);
     const imageBytes = await readLimitedBody(request.body, IMAGE_MAX_BYTES, '图片', 413, contentLength, IMAGE_FETCH_TIMEOUT_MS);
-    if (!imageBytes.byteLength) return error('图片为空。', 400);
+    if (!imageBytes.byteLength) return error('图片为空', 400);
     await bucket.put(primary.key, imageBytes, {
         httpMetadata: { contentType },
         customMetadata: {
@@ -553,7 +553,7 @@ async function storeUploadedImage(request, env, bucket, primary) {
 
 async function readThumbnailBytes(request) {
     const contentType = (request.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
-    if (contentType !== 'image/webp') throw createHttpError('缩略图格式必须是 WebP。', 415);
+    if (contentType !== 'image/webp') throw createHttpError('缩略图必须是 WebP 格式', 415);
     const contentLength = Number(request.headers.get('content-length') || 0);
     if (contentLength > IMAGE_THUMB_MAX_BYTES) {
         throw createHttpError(`缩略图过大：${contentLength}/${IMAGE_THUMB_MAX_BYTES}`, 413);
@@ -570,7 +570,7 @@ async function readThumbnailBytes(request) {
 
 async function putImageThumbnail(bucket, imageKey, bytes) {
     const parsed = parseImageObjectKey(imageKey);
-    if (!parsed) throw new Error('图片路径无效。');
+    if (!parsed) throw new Error('图片路径无效');
     const thumbKey = createImageThumbKey(parsed.characterName, parsed.checksum);
     await bucket.put(thumbKey, bytes, {
         httpMetadata: { contentType: 'image/webp' },
@@ -586,7 +586,7 @@ async function putImageThumbnail(bucket, imageKey, bytes) {
 
 async function handleImageThumbUpload(request, env) {
     if (request.method !== 'PUT' && request.method !== 'POST') return error('Method not allowed.', 405);
-    if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401, { authRequired: true });
+    if (!await isRequestAuthorized(request, env)) return error('同步密码错误', 401, { authRequired: true });
     const url = new URL(request.url);
     const token = getImageRequestToken(request, url, env);
     const params = buildImageParams(url, token);
@@ -601,7 +601,7 @@ async function handleImageThumbUpload(request, env) {
             break;
         }
     }
-    if (!imageKey) return error('原图不存在，不能保存缩略图。', 404);
+    if (!imageKey) return error('原图不存在，无法保存缩略图', 404);
     if (await bucket.head(thumbKey)) return json({ ok: true, existed: true, key: thumbKey });
     const bytes = await readThumbnailBytes(request);
     await putImageThumbnail(bucket, imageKey, bytes);

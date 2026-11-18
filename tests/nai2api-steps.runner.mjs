@@ -177,7 +177,7 @@ try {
         input.dispatchEvent(new Event('input'));
         input.dispatchEvent(new Event('change'));
     });
-    await page.locator('.toast-item', { hasText: '生图设置没有保存成功' }).waitFor({ timeout: 5000 });
+    await page.locator('.toast-item', { hasText: '生图设置保存失败' }).waitFor({ timeout: 5000 });
     await page.waitForFunction(() => document.querySelector('[data-rph-image-param] input[type="range"]')?.value === '34', null, { timeout: 5000 });
     assert.equal(await pageSteps(), 34);
     assert.equal(server.params.steps, 34);
@@ -189,19 +189,19 @@ try {
     await app(() => RPHubImageModule.reloadGenerationSettings());
     await openSettings();
     assert.equal(await shownSteps(), '28');
-    assert.match(await hint(), /插件没有加载/);
+    assert.match(await hint(), /插件未加载/);
     await app(() => RPHubImageModule.registerImageProvider({ id: 'late-gen', label: '晚到的接口', maxSteps: 50, async generate() { return new Blob(); } }));
     await page.waitForFunction(() => document.querySelector('[data-rph-image-param] input[type="range"]').value === '50', null, { timeout: 5000 });
     assert.equal(server.params.steps, 50);
     console.log('PASS a plugin generator that loads after the settings page shows the saved steps once its range is known');
 
-    // 插件加的「全部参数恢复默认」：取消什么都不改；确认后除生图接口外都改回默认值，一次存好。
+    // 插件加的「全部恢复默认」：取消什么都不改；确认后除生图接口外都改回默认值，一次存好。
     await view(page, 'chat');
     server = { generator: 'nai2api-web', params: { steps: 50, scale: 8, cfg: 0.5, sampler: 'k_euler', noise_schedule: 'native', resolution: '4K', negative: '自定义负面' } };
     await app(() => RPHubImageModule.reloadGenerationSettings());
     await openSettings();
     puts.length = 0;
-    const resetAll = page.getByRole('button', { name: '全部参数恢复默认' });
+    const resetAll = page.getByRole('button', { name: '全部恢复默认' });
     await resetAll.click();
     await page.locator('[data-rph-ui-confirm] button', { hasText: '取消' }).click();
     await page.waitForTimeout(600);

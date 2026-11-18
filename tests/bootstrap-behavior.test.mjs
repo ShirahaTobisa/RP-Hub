@@ -222,7 +222,7 @@ async function testLegacyExpansionAndAtomicValidation() {
             duplicateDb.close();
         }
     })(), 'duplicate UUID restore');
-    assert(/UUID 重复/.test(duplicateError.message), 'duplicate UUID error was not explicit');
+    assert(/角色卡 ID 重复/.test(duplicateError.message), 'duplicate UUID error was not explicit');
     assertDeepEqual(await readAllRecords(), beforeInvalidRestores,
         'duplicate UUID restore changed existing store data');
 
@@ -238,7 +238,7 @@ async function testLegacyExpansionAndAtomicValidation() {
             invalidDb.close();
         }
     })(), 'invalid card restore');
-    assert(/格式无效/.test(invalidError.message), 'invalid card error was not explicit');
+    assert(/格式不正确/.test(invalidError.message), 'invalid card error was not explicit');
     assertDeepEqual(await readAllRecords(), beforeInvalidRestores,
         'invalid card restore changed existing store data');
 }
@@ -739,7 +739,7 @@ async function testV4PullCompatibilityAndValidation() {
             api.restoreStreamSnapshot(duplicateRemote, () => { duplicateRestoreStarted = true; }),
             'v4 duplicate UUID first-pass validation'
         );
-        assert(/UUID 重复/.test(duplicateError.message), 'duplicate legacy character UUID was accepted');
+        assert(/角色卡 ID 重复/.test(duplicateError.message), 'duplicate legacy character UUID was accepted');
     } finally {
         globalThis.fetch = nativeFetch;
     }
@@ -778,7 +778,7 @@ async function testV4PullCompatibilityAndValidation() {
             api.restoreStreamSnapshot(badRemote, () => { restoreStarted = true; }),
             'v4 first-pass validation failure'
         );
-        assert(/记录数量校验失败/.test(validationError.message), 'bad v4 record count was not rejected');
+        assert(/云端数据校验失败/.test(validationError.message), 'bad v4 record count was not rejected');
     } finally {
         globalThis.fetch = nativeFetch;
     }
@@ -806,7 +806,7 @@ async function testV4PullCompatibilityAndValidation() {
             api.restoreStreamSnapshot(validRemote, () => { restoreStarted = true; }),
             'v4 corrupt chunk validation failure'
         );
-        assert(/分片内容校验失败/.test(chunkError.message), 'corrupt v4 chunk was not rejected');
+        assert(/云端数据校验失败/.test(chunkError.message), 'corrupt v4 chunk was not rejected');
     } finally {
         globalThis.fetch = nativeFetch;
     }
@@ -960,7 +960,7 @@ async function testLargeStreamingRoundTrip() {
         globalThis.setTimeout = nativeSetTimeout;
     }
 
-    assertEqual(api.state.statusText, '服务器数据已写入本地，页面即将刷新...',
+    assertEqual(api.state.statusText, '下载完成，页面即将刷新…',
         'large staged pull did not complete');
     assertEqual(reloadScheduled, 1, 'large staged pull did not schedule one reload');
     assert(globalThis.__bootstrapStagingOpenCalls >= 1, 'large staged pull bypassed the staging database');
@@ -983,7 +983,7 @@ async function testLargeStreamingRoundTrip() {
 async function testBridgeAndPullIsolation() {
     delete globalThis.RPH_R2_FLUSH_PERSISTENCE;
     const missingBridgeError = await captureRejection(api.flushAppState(), 'missing persistence bridge');
-    assert(/缺少持久化同步桥/.test(missingBridgeError.message), 'missing bridge was not a hard failure');
+    assert(/尚未加载完成/.test(missingBridgeError.message), 'missing bridge was not a hard failure');
 
     globalThis.RPH_R2_FLUSH_PERSISTENCE = async () => {
         throw new Error('bridge exploded');
@@ -1056,7 +1056,7 @@ async function testBridgeAndPullIsolation() {
         // 恢复开始后失败：写闸门保持关着、刷新页面（旧内存不能写回半新半旧的库），错误留到刷新后提示。
         assertEqual(globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS, true, 'failed restore released the write gate before the reload');
         assertEqual(reloadScheduled, 1, 'failed restore did not schedule a reload');
-        assert(/UUID 重复/.test(localStorage.getItem('rp_hub_sync_restore_notice_v1') || ''), 'failed restore did not keep the error for the notice after reload');
+        assert(/角色卡 ID 重复/.test(localStorage.getItem('rp_hub_sync_restore_notice_v1') || ''), 'failed restore did not keep the error for the notice after reload');
         delete globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS;
         api.state.reloadPending = false;
         api.state.syncing = false;
@@ -1107,7 +1107,7 @@ async function testPushSelfCheckAndConflictWorkflow() {
     }
     assertEqual(bridgeCalls, 0, 'push called bridge after unavailable self-check');
     assertEqual(networkCalls, 0, 'push accessed network after unavailable self-check');
-    assert(/角色卡存储自检不可用/.test(api.state.statusText), 'unavailable self-check did not block push');
+    assert(/页面未完整加载/.test(api.state.statusText), 'unavailable self-check did not block push');
 
     await deleteRPHubDatabase();
     await seedRecords([

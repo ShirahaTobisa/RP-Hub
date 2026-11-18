@@ -8,7 +8,7 @@
     const MAX_WAIT_MS = 10 * 60_000;
 
     RPHubSDK.register({
-        id: 'nai2api-web', name: 'Nai2API 网页任务生图', version: '1.2.0', requiresApi: 5,
+        id: 'nai2api-web', name: 'Nai2API 网页任务生图', version: '1.2.1', requiresApi: 5,
         init(ctx) {
             const base = () => String(ctx.storage.get('base') || DEFAULT_BASE).replace(/\/+$/, '');
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -23,9 +23,7 @@
                     if (!estimate) return '';
                     const points = estimate(model, size, steps);
                     const standard = estimate(model, size, 28);
-                    return points > standard
-                        ? `当前设置每张图约 ${points} 点（28 步只要 ${standard} 点），超过 28 步按官方价格计费。`
-                        : `当前设置每张图 ${points} 点。`;
+                    return points > standard ? `每张图约 ${points} 点（28 步仅需 ${standard} 点）` : `每张图 ${points} 点`;
                 },
                 async generate({ params, token }) {
                     if (!token) throw new Error('缺少生图密钥');
@@ -37,7 +35,7 @@
                     }
                     const read = async (response) => {
                         const value = await response.json().catch(() => null);
-                        if (!response.ok || !value?.id) throw new Error(`网页任务失败：${value?.error || value?.message || `HTTP ${response.status}`}`);
+                        if (!response.ok || !value?.id) throw new Error(value?.error || value?.message || `HTTP ${response.status}`);
                         return value;
                     };
                     let job = await read(await fetch(`${service}/api/web/jobs`, {
@@ -48,13 +46,13 @@
                     const deadline = Date.now() + MAX_WAIT_MS;
                     // 同一任务串行查询，上一次返回后再发下一次（Nai2API 的建议）。
                     while (job.status !== 'done') {
-                        if (job.status === 'failed') throw new Error(`网页任务失败：${job.error || '生成失败'}`);
-                        if (Date.now() > deadline) throw new Error('网页任务等待超时，请稍后重试');
+                        if (job.status === 'failed') throw new Error(job.error || '未知错误');
+                        if (Date.now() > deadline) throw new Error('等待超时，请稍后重试');
                         await sleep(POLL_MS);
                         job = await read(await fetch(`${service}/api/jobs/${encodeURIComponent(job.id)}`, { headers: auth }));
                     }
                     const image = await fetch(`${service}/api/jobs/${encodeURIComponent(job.id)}/content`, { headers: auth });
-                    if (!image.ok || image.headers.get('x-error')) throw new Error(`网页任务取图失败：HTTP ${image.status}`);
+                    if (!image.ok || image.headers.get('x-error')) throw new Error(`无法下载图片（HTTP ${image.status}）`);
                     return image.blob();
                 }
             });
@@ -73,7 +71,7 @@
                 steps.dispatchEvent(new Event('input'));
             };
 
-            // 设置页「生图设置」的负面提示词下面加「全部参数恢复默认」：生图接口不变，其余参数改回默认，
+            // 设置页「生图设置」的负面提示词下面加「全部恢复默认」：生图接口不变，其余参数改回默认，
             // 和手动改每一项一样由设置页自己存到站点。
             const DEFAULTS = { 分辨率: '', 采样器: 'k_dpmpp_2m_sde', 噪声调度: 'karras', 生成步数: '28', 提示词引导值: '6', 缩放引导值: '0' };
             const resetAll = () => {
@@ -92,9 +90,9 @@
                 const resetNegative = document.querySelector('[data-rph-image-param] textarea')?.parentElement.querySelector(':scope > button');
                 if (!resetNegative) return;
                 const row = Object.assign(document.createElement('div'), { className: 'flex justify-between gap-3' });
-                const button = Object.assign(document.createElement('button'), { type: 'button', className: resetNegative.className, textContent: '全部参数恢复默认' });
+                const button = Object.assign(document.createElement('button'), { type: 'button', className: resetNegative.className, textContent: '全部恢复默认' });
                 button.onclick = async () => {
-                    if (await window.RPHubUI.confirm({ title: '全部参数恢复默认', message: '生图接口不变，其余参数都改回默认值。', confirmText: '恢复默认' })) resetAll();
+                    if (await window.RPHubUI.confirm({ title: '全部恢复默认', message: '除生图接口外，其余参数将恢复为默认值。', confirmText: '恢复默认' })) resetAll();
                 };
                 resetNegative.replaceWith(row);
                 row.append(resetNegative, button);
@@ -118,7 +116,7 @@
                         title: 'Nai2API 网页任务生图',
                         render(panel) {
                             panel.innerHTML = `
-                                <p class="rph-ui-muted">在「设置」→「生图设置」→「生图接口」里选「Nai2API 网页任务」后生效。步数可设 1–50；超过 28 步按官方价格计费。</p>
+                                <p class="rph-ui-muted">在「设置」→「生图设置」→「生图接口」中选择「Nai2API 网页任务」后生效。</p>
                                 <label class="rph-ui-field">服务地址
                                     <input class="rph-ui-input" data-base placeholder="${DEFAULT_BASE}"></label>
                                 <div class="rph-ui-actions">

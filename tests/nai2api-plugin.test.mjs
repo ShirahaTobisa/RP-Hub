@@ -29,7 +29,7 @@ manifest.init({
 assert.equal(provider.id, 'nai2api-web');
 assert.equal(provider.maxSteps, 50);
 assert.match(provider.costHint({ steps: 28, model: 'nai-diffusion-4-5-full', size: '竖图' }), /每张图 1 点/);
-assert.match(provider.costHint({ steps: 35, model: 'nai-diffusion-4-5-full', size: '竖图' }), /约 24 点（28 步只要 1 点）/);
+assert.match(provider.costHint({ steps: 35, model: 'nai-diffusion-4-5-full', size: '竖图' }), /约 24 点（28 步仅需 1 点）/);
 assert.match(provider.costHint({ steps: 28, model: 'nai-diffusion-4-5-full', size: '2K竖图' }), /每张图 34 点/);
 console.log('PASS cost hint uses the shared estimate for steps and 2K/4K sizes');
 

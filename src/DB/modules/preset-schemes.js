@@ -4,7 +4,7 @@
 // 「预设管理」页顶上有方案下拉框，选中就切换；聊天输入框上方的「方案」按钮和模块管理里也能打开方案面板。
 // 方案存在插件数据里，随云同步。导出的文件带上方案用到的条目和正则，别人导入时缺的会补上（先关着），同名方案会被替换。
 RPHubSDK.register({
-    id: 'preset-schemes', name: '预设方案', version: '1.3.0', requiresApi: 4,
+    id: 'preset-schemes', name: '预设方案', version: '1.3.1', requiresApi: 4,
     init(ctx) {
         'use strict';
         const FORMAT = 'rph-preset-schemes-v1';
@@ -16,13 +16,13 @@ RPHubSDK.register({
 
         function presets() {
             const list = ctx.app.get('presets');
-            if (!Array.isArray(list)) throw new Error('页面的预设还没加载好，稍后再试。');
+            if (!Array.isArray(list)) throw new Error('预设尚未加载，请稍后重试');
             return list;
         }
         // 全局正则；角色卡自带的正则跟着卡走，方案不管。
         function regexes() {
             const list = ctx.app.get('regexScripts');
-            if (!Array.isArray(list)) throw new Error('页面的正则还没加载好，稍后再试。');
+            if (!Array.isArray(list)) throw new Error('正则尚未加载，请稍后重试');
             return list.filter((script) => script?.scope === 'global');
         }
         const nameOf = (item) => String(item.name ?? item.scriptName ?? '');
@@ -82,28 +82,27 @@ RPHubSDK.register({
 
         function switchTo(scheme) {
             const [changed, regexChanged] = apply(scheme);
-            const what = [changed && `${changed} 个条目`, regexChanged && `${regexChanged} 条正则`].filter(Boolean).join('、');
-            ctx.ui.toast(what ? `已切换到「${scheme.name}」，改了 ${what}的开关` : `已经是「${scheme.name}」的开关了`, { kind: 'success' });
+            ctx.ui.toast(changed || regexChanged ? `已切换到「${scheme.name}」` : `当前已是「${scheme.name}」`, { kind: 'success' });
         }
 
         // 列表里的说明：正在用的写开着几条；别的写切换后会开、关哪些条目（内置条目大家都开着，列出来分不出方案），正则只写条数。
         function describe(scheme, current) {
             const count = (states) => states.filter(([, on]) => on).length;
-            if (scheme === current) return `开着 ${count(scheme.states)} 条${scheme.regexStates ? `，正则 ${count(scheme.regexStates)} 条` : ''}`;
+            if (scheme === current) return `已开启 ${count(scheme.states)} 个条目${scheme.regexStates ? `、${count(scheme.regexStates)} 条正则` : ''}`;
             const { changes, regexChanges, compared } = differences(scheme);
-            if (!compared) return '方案里记的条目都已经不在了';
-            if (!changes.length && !regexChanges.length) return '和现在的开关一样';
+            if (!compared) return '方案中的条目均已不存在';
+            if (!changes.length && !regexChanges.length) return '与当前开关相同';
             const names = (list) => (list.length > 4 ? `${list.slice(0, 4).join('、')} 等 ${list.length} 条` : list.join('、'));
             const turnOn = changes.filter(([, on]) => on).map(([preset]) => preset.name);
             const turnOff = changes.filter(([, on]) => !on).map(([preset]) => preset.name);
             const regexOn = regexChanges.filter(([, on]) => on).length, regexOff = regexChanges.length - regexOn;
-            return `切换后：${[turnOn.length && `开 ${names(turnOn)}`, turnOff.length && `关 ${names(turnOff)}`,
-                regexOn && `开正则 ${regexOn} 条`, regexOff && `关正则 ${regexOff} 条`].filter(Boolean).join('；')}`;
+            return `切换后：${[turnOn.length && `开启 ${names(turnOn)}`, turnOff.length && `关闭 ${names(turnOff)}`,
+                regexOn && `开启 ${regexOn} 条正则`, regexOff && `关闭 ${regexOff} 条正则`].filter(Boolean).join('；')}`;
         }
 
         // 方案文件带上方案用到的预设条目（名字、内容、角色）和正则：对方没有时一起导入，方案才切得动。
         function exportSchemes(list, fileName) {
-            if (!list.length) return ctx.ui.toast('还没有方案可以导出', { kind: 'warning' });
+            if (!list.length) return ctx.ui.toast('暂无可导出的方案', { kind: 'warning' });
             const used = (key) => new Set(list.flatMap((scheme) => (scheme[key] || []).map(([name]) => name)));
             const usedPresets = used('states'), usedRegex = used('regexStates');
             const entries = presets().filter((preset) => usedPresets.has(nameOf(preset)))
@@ -131,7 +130,7 @@ RPHubSDK.register({
             if (value?.format !== FORMAT || !Array.isArray(value.schemes) || !value.schemes.every(validScheme)
                 || !validList(value.presets, (entry) => typeof entry?.name === 'string' && typeof entry.content === 'string')
                 || !validList(value.regex, (script) => typeof script?.name === 'string' && typeof script.regex === 'string')) {
-                throw new Error('不是预设方案文件。');
+                throw new Error('不是有效的预设方案文件');
             }
             const addMissing = (have, items = [], add) => {
                 const count = new Map(), seen = new Map();
@@ -161,7 +160,7 @@ RPHubSDK.register({
             schemes = [...schemes.filter((scheme) => !names.has(scheme.name)), ...imported];
             await save();
             const what = [added && `${added} 个预设条目`, addedRegex && `${addedRegex} 条正则`].filter(Boolean).join('、');
-            return `导入了 ${imported.length} 个方案（同名的已替换）${what ? `，新加了 ${what}，先关着，切到方案时打开` : ''}`;
+            return `已导入 ${imported.length} 个方案，同名方案已替换${what ? `，新增 ${what}（默认关闭）` : ''}`;
         }
 
         // 选文件导入，面板和预设页的导入按钮共用。
@@ -180,7 +179,7 @@ RPHubSDK.register({
         }
 
         async function openPanel() {
-            try { await load(); } catch (error) { return ctx.ui.toast(`预设方案读取失败：${error.message}`); }
+            try { await load(); } catch (error) { return ctx.ui.toast(`预设方案加载失败：${error.message}`); }
             ctx.ui.openPanel({
                 title: '预设方案',
                 render(body) {
@@ -188,25 +187,25 @@ RPHubSDK.register({
                         let current = null;
                         try { current = schemes.find(isCurrent) || null; } catch (error) { body.innerHTML = `<p class="rph-ui-note">${escapeHtml(error.message)}</p>`; return; }
                         body.innerHTML = `
-                            <p class="rph-ui-note">方案记下 RPH 预设里哪些条目开着（全局正则也一起记），点「切换」一键换过去。条目内容还在 RPH 的预设里改，切换方案不会动内容；存方案之后才加的条目，切换时保持原样。</p>
-                            <p class="rph-ui-muted">${current ? `现在用的是「${escapeHtml(current.name)}」` : schemes.length ? '现在的开关和哪个方案都不一样' : '还没有方案，先把现在的开关存成一个。'}</p>
+                            <p class="rph-ui-note">方案只保存预设条目和全局正则的开关，不保存条目内容。</p>
+                            <p class="rph-ui-muted">${current ? `当前方案：${escapeHtml(current.name)}` : schemes.length ? '当前开关未保存为方案' : '暂无方案'}</p>
                             ${schemes.map((scheme) => `<div class="rph-ui-row" data-scheme="${escapeHtml(scheme.id)}">
                                     <div class="rph-ui-row-main"><b>${escapeHtml(scheme.name)}</b>
                                         <div class="rph-ui-muted">${escapeHtml(describe(scheme, current))}</div></div>
                                     <div class="rph-ui-actions">
-                                        ${scheme === current ? '<span class="rph-ui-muted">正在用</span>' : '<button type="button" class="modal-primary-button rph-ui-button" data-act="apply">切换</button>'}
+                                        ${scheme === current ? '<span class="rph-ui-muted">使用中</span>' : '<button type="button" class="modal-primary-button rph-ui-button" data-act="apply">切换</button>'}
                                         <button type="button" class="modal-secondary-button rph-ui-button" data-act="edit">编辑</button>
-                                        <button type="button" class="modal-secondary-button rph-ui-button" data-act="update" title="把现在的开关存进这个方案">更新</button>
+                                        <button type="button" class="modal-secondary-button rph-ui-button" data-act="update" title="用当前开关更新此方案">更新</button>
                                         <button type="button" class="modal-secondary-button rph-ui-button rph-ui-danger" data-act="delete">删除</button>
                                     </div>
                                 </div>`).join('')}
                             <section class="rph-ui-section" style="margin-top:16px">
-                                <h3>把现在的开关存成新方案</h3>
-                                <label class="rph-ui-field">方案名<input class="rph-ui-input" data-new placeholder="比如：日常、战斗、第三人称"></label>
+                                <h3>将当前开关保存为方案</h3>
+                                <label class="rph-ui-field">方案名称<input class="rph-ui-input" data-new placeholder="例如：日常、战斗、第三人称"></label>
                                 <div class="rph-ui-actions">
                                     <button type="button" class="modal-secondary-button rph-ui-button" data-act="import">导入</button>
                                     ${schemes.length ? '<button type="button" class="modal-secondary-button rph-ui-button" data-act="export">导出全部</button>' : ''}
-                                    <button type="button" class="modal-primary-button rph-ui-button" data-act="add">存成方案</button>
+                                    <button type="button" class="modal-primary-button rph-ui-button" data-act="add">保存</button>
                                 </div>
                             </section>`;
                         for (const row of body.querySelectorAll('[data-scheme]')) {
@@ -220,11 +219,11 @@ RPHubSDK.register({
                             act('update', async () => {
                                 Object.assign(scheme, snapshot());
                                 await save();
-                                ctx.ui.toast(`已把现在的开关存进「${scheme.name}」`, { kind: 'success' });
+                                ctx.ui.toast(`已更新「${scheme.name}」`, { kind: 'success' });
                                 list();
                             });
                             act('delete', async () => {
-                                if (!await window.RPHubUI.confirm({ title: '删除方案', message: `删除方案「${scheme.name}」？预设条目本身不受影响。`, confirmText: '删除', danger: true })) return;
+                                if (!await window.RPHubUI.confirm({ title: '删除方案', message: `「${scheme.name}」将被删除，预设条目不受影响。`, confirmText: '删除', danger: true })) return;
                                 schemes = schemes.filter((item) => item !== scheme);
                                 await save();
                                 list();
@@ -232,10 +231,10 @@ RPHubSDK.register({
                         }
                         body.querySelector('[data-act="add"]').onclick = async () => {
                             const name = body.querySelector('[data-new]').value.trim();
-                            if (!name) return ctx.ui.toast('先给方案起个名字', { kind: 'warning' });
+                            if (!name) return ctx.ui.toast('请输入方案名称', { kind: 'warning' });
                             schemes = [...schemes, { id: `s-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`, name, ...snapshot() }];
                             await save();
-                            ctx.ui.toast(`已存成方案「${name}」`, { kind: 'success' });
+                            ctx.ui.toast(`已保存「${name}」`, { kind: 'success' });
                             list();
                         };
                         body.querySelector('[data-act="import"]').onclick = () => pickImport(list);
@@ -253,16 +252,16 @@ RPHubSDK.register({
                         const kinds = { entry: rows(presets(), scheme.states), regex: scheme.regexStates ? rows(regexes(), scheme.regexStates) : [] };
                         const row = (kind, entry, index) => `<div class="rph-ui-row" data-${kind}="${index}">
                                 <div class="rph-ui-row-main"><b>${escapeHtml(entry.name)}</b>
-                                    <span class="rph-ui-muted">· ${kind === 'regex' ? '正则' : ROLES[entry.item.role] || '系统'}${entry.on === undefined ? ` · 新${kind === 'regex' ? '正则' : '条目'}，还没记进方案` : ''}</span></div>
+                                    <span class="rph-ui-muted">· ${kind === 'regex' ? '正则' : ROLES[entry.item.role] || '系统'}${entry.on === undefined ? ` · 新${kind === 'regex' ? '正则' : '条目'}，未加入方案` : ''}</span></div>
                                 <label class="rph-ui-check"><input type="checkbox" class="settings-toggle-input sr-only" aria-label="${escapeHtml(entry.name)}" ${entry.on ? 'checked' : ''}><span class="settings-toggle"></span></label>
                             </div>`;
                         body.innerHTML = `
-                            <label class="rph-ui-field">方案名<input class="rph-ui-input" data-name value="${escapeHtml(scheme.name)}"></label>
-                            <label class="rph-ui-field">找条目<input class="rph-ui-input" data-filter placeholder="输入名字筛选"></label>
+                            <label class="rph-ui-field">方案名称<input class="rph-ui-input" data-name value="${escapeHtml(scheme.name)}"></label>
+                            <label class="rph-ui-field">搜索<input class="rph-ui-input" data-filter placeholder="输入名称筛选"></label>
                             <div data-entries>${Object.entries(kinds).map(([kind, list]) => list.map((entry, index) => row(kind, entry, index)).join('')).join('')}</div>
                             <div class="rph-ui-actions">
                                 <button type="button" class="modal-secondary-button rph-ui-button" data-act="back">返回</button>
-                                <button type="button" class="modal-secondary-button rph-ui-button" data-act="export">导出这个方案</button>
+                                <button type="button" class="modal-secondary-button rph-ui-button" data-act="export">导出</button>
                                 <button type="button" class="modal-primary-button rph-ui-button" data-act="save">保存方案</button>
                             </div>`;
                         const each = (handle) => Object.keys(kinds).forEach((kind) => body.querySelectorAll(`[data-${kind}]`)
@@ -284,10 +283,10 @@ RPHubSDK.register({
                         };
                         body.querySelector('[data-act="save"]').onclick = async () => {
                             const { name, ...states } = draft();
-                            if (!name) return ctx.ui.toast('方案名不能空着', { kind: 'warning' });
+                            if (!name) return ctx.ui.toast('请输入方案名称', { kind: 'warning' });
                             Object.assign(scheme, { name, ...states });
                             await save();
-                            ctx.ui.toast(`已保存「${name}」；要用它就点「切换」`, { kind: 'success' });
+                            ctx.ui.toast(`已保存「${name}」，切换后生效`, { kind: 'success' });
                             list();
                         };
                     };
@@ -304,7 +303,7 @@ RPHubSDK.register({
             let current = null;
             try { current = schemes.find(isCurrent) || null; } catch (_) { /* 预设还没加载好 */ }
             // 官方 2.0.5 的下拉框去掉了占位文字，没对上方案时在最上面放一条点不了的提示，各版本显示一样。
-            const hint = { value: '', label: schemes.length ? '现在的开关没存成方案' : '还没有方案，点「管理方案」存一个', disabled: true };
+            const hint = { value: '', label: schemes.length ? '当前开关未保存为方案' : '暂无方案', disabled: true };
             Object.assign(bar.view, {
                 value: current?.id || '',
                 options: [...(current ? [] : [hint]), ...schemes.map((scheme) => ({ value: scheme.id, label: scheme.name }))]
@@ -352,7 +351,7 @@ RPHubSDK.register({
             }
             globalThis.Vue.nextTick(() => mountBar().catch((error) => ctx.log('预设页方案栏没加上', error)));
         }, { immediate: true });
-        // 在原生列表里手动开关条目或全局正则后，下拉框跟着显示对应的方案（或「没存成方案」）。
+        // 在原生列表里手动开关条目或全局正则后，下拉框跟着显示对应的方案（或「当前开关未保存为方案」）。
         ctx.app.watch(() => [...(ctx.app.get('presets') || []), ...(ctx.app.get('regexScripts') || []).filter((script) => script?.scope === 'global')]
             .map((item) => `${nameOf(item)}\n${isOn(item)}`).join('\n'), syncBar);
 

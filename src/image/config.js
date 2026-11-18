@@ -248,12 +248,12 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
     function reportAttributionFailure(detail = '') {
         log('image attribution failed; generation refused', detail);
         incrementPerformance('attributionFailureToasts');
-        showImageToast('无法确认图片所属角色，已拒绝生图');
+        showImageToast('图片生成失败：无法确定所属角色');
     }
 
     function reportRecordFlushFailure(error = null) {
         log('image record flush failed; sync will continue', error);
-        showImageToast('图片记录保存失败，可能影响同步');
+        showImageToast('图片记录保存失败');
     }
 
     function describeGenerationError(error) {
@@ -280,7 +280,7 @@ year 2025, textless version, {{petite,loli}}, Petite figure, no text, The image 
             generationFailures.reasons.clear();
             generationFailures.errors.clear();
             generationFailures.count = 0;
-            if (!first) return showImageToast('图片生成失败，请检查密钥或服务状态');
+            if (!first) return showImageToast('图片生成失败，请检查生图密钥或稍后重试');
             showImageToast(`图片生成失败${count > 1 ? `（${count} 张）` : ''}：${first}${others.length ? `；另有 ${others.length} 种原因` : ''}`);
         }, 800);
     }

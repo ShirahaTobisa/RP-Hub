@@ -12,17 +12,17 @@
         let restoreSucceeded = false;
 
         try {
-            updateProgress(0, '正在读取服务器同步清单...');
+            updateProgress(0, '正在检查云端数据…');
             const manifestResponse = await postSync({ action: 'pull-manifest' });
             const remote = manifestResponse.remote || manifestResponse.fork;
             if (!remote) {
-                updateProgress(100, '服务器当前没有可同步的数据。');
+                updateProgress(100, '云端暂无数据。');
                 setActionButtonsDisabled(false);
                 return;
             }
 
             if (remote.snapshotFormat === 'rp-sync-jsonl-v2' || Number(remote.schemaVersion) === 5) {
-                throw new Error('服务器快照格式不受支持。');
+                throw new Error('云端数据格式不受支持。');
             }
 
             if ((remote.snapshotFormat === SNAPSHOT_FORMAT && isStreamSchema(remote.schemaVersion))
@@ -34,20 +34,20 @@
                 });
             } else if (!remote.snapshotFormat || remote.snapshotFormat === LEGACY_SNAPSHOT_FORMAT) {
                 const response = await downloadLegacyRemoteSnapshot(remote);
-                if (!response) throw new Error('服务器当前没有可同步的数据。');
-                updateProgress(55, '旧版数据校验完成，正在写入本地浏览器数据...');
+                if (!response) throw new Error('云端暂无数据。');
+                updateProgress(55, '正在写入本地数据…');
                 const remoteSnapshot = JSON.parse(response.json);
                 if (!remoteSnapshot
                     || (!Array.isArray(remoteSnapshot.indexedDB)
                         && !Array.isArray(remoteSnapshot.localStorage))) {
-                    throw new Error('服务器数据格式不正确。');
+                    throw new Error(CLOUD_DATA_INVALID);
                 }
                 globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS = true;
                 restoreStarted = true;
                 announceRestore('start');
                 await replaceLocalSnapshot(remoteSnapshot);
             } else {
-                throw new Error('服务器快照格式不受支持。');
+                throw new Error('云端数据格式不受支持。');
             }
 
             restoreSucceeded = true;
@@ -56,7 +56,7 @@
             try { localStorage.removeItem(RESTORE_NOTICE_KEY); } catch (_) { /* storage blocked */ }
             announceRestore('done');
             state.reloadPending = true;
-            updateProgress(100, '服务器数据已写入本地，页面即将刷新...');
+            updateProgress(100, '下载完成，页面即将刷新…');
             setTimeout(() => {
                 location.reload();
             }, 700);
@@ -67,16 +67,16 @@
                 // 写闸门保持关着，刷新让页面按现在的库重新加载，刷新后提示一次让用户重新拉取。
                 announceRestore('failed');
                 try {
-                    localStorage.setItem(RESTORE_NOTICE_KEY, `上次拉取没有完成（${error?.message || '服务器同步失败。'}），本地数据可能只换了一部分，请重新拉取一次再上传。`);
+                    localStorage.setItem(RESTORE_NOTICE_KEY, `上次下载未完成，本地数据可能不完整，请重新下载后再上传。原因：${error?.message || '未知错误。'}`);
                 } catch (_) { /* storage blocked */ }
                 state.reloadPending = true;
-                updateProgress(100, '拉取没有完成，页面即将刷新...');
+                updateProgress(100, '下载未完成，页面即将刷新…');
                 setTimeout(() => {
                     location.reload();
                 }, 700);
                 return;
             }
-            updateProgress(100, error?.message || '服务器同步失败。');
+            updateProgress(100, `下载失败：${error?.message || '请稍后重试。'}`);
             setActionButtonsDisabled(false);
         } finally {
             state.syncing = state.reloadPending;
@@ -86,7 +86,7 @@
 
     // 扫描本地（或只重做改过的）、和云端比对、传缺的分片、提交；返回给用户看的结果。
     async function uploadLocalSnapshot(mode) {
-        updateProgress(16, mode === 'fast' ? '正在找改过的数据...' : '正在流式扫描本地浏览器数据...');
+        updateProgress(16, mode === 'fast' ? '正在检查改动…' : '正在扫描本地数据…');
         const plan = await buildSnapshotPlan(mode);
         const { snapshot } = plan;
         // 云端和本地一致了：记下这次的布局，改过的键清掉
@@ -95,24 +95,24 @@
             clearDirty(plan.consumed, !plan.fast);
         };
 
-        updateProgress(24, '正在检查服务器数据...');
+        updateProgress(24, '正在检查云端数据…');
         const remoteStatus = await postSync({ action: 'pull-manifest' });
         if (remoteStatus?.remote?.snapshotFormat === SNAPSHOT_FORMAT
             && Number(remoteStatus.remote.schemaVersion) === SNAPSHOT_SCHEMA_VERSION
             && remoteStatus.remote.checksum === snapshot.checksum) {
             await finishPlan();
-            return '服务器已是同一份数据，无需重复上传。';
+            return '云端数据已是最新，无需上传。';
         }
         // 云端还是魔改版的数据：这台设备不一定是最新的，先问一句（魔改版的根清单会另存，不会丢）。
         if (remoteStatus?.fork && !await openInlineConfirm({
-            title: '云端还是魔改版的数据',
-            message: `魔改版最后一次同步在 ${new Date(remoteStatus.fork.updatedAt).toLocaleString('zh-CN')}。上传会用这台设备的数据替换它。这台设备如果不是最新的，先点「下载」把云端的数据导进来。`,
-            confirmText: '仍然上传'
+            title: '替换云端数据',
+            message: `云端是魔改版 ${new Date(remoteStatus.fork.updatedAt).toLocaleString('zh-CN')} 同步的数据，上传后会被本机数据替换；本机数据不是最新时请先下载。`,
+            confirmText: '上传'
         })) {
             return '已取消上传。';
         }
 
-        updateProgress(30, '正在准备流式上传...');
+        updateProgress(30, '正在准备上传…');
         await syncStateStore('parts', 'readwrite', (store) => store.clear());
         const staged = new Set();
         for (let conflictAttempt = 0; conflictAttempt < 4; conflictAttempt += 1) {
@@ -130,7 +130,7 @@
             });
             if (uploadSession.alreadyUpToDate) {
                 await finishPlan();
-                return '服务器已是同一份数据，无需重复上传。';
+                return '云端数据已是最新，无需上传。';
             }
             const missingIndices = Array.isArray(uploadSession.missingIndices)
                 ? uploadSession.missingIndices
@@ -139,18 +139,18 @@
                 || missingIndices.some((index) => !Number.isInteger(index)
                     || index < 0
                     || index >= snapshot.chunkManifest.length)) {
-                throw new Error('服务器返回的待上传分片清单无效。');
+                throw new Error('服务器返回的数据格式不正确。');
             }
             const toStage = missingIndices.filter((index) => !staged.has(index));
             if (toStage.length) {
-                updateProgress(36, '正在整理要上传的分片...');
+                updateProgress(36, '正在准备上传…');
                 await stageMissingChunks(plan, toStage);
                 toStage.forEach((index) => staged.add(index));
             }
             // 要传的都在本机暂存里了：之后不挡页面，可以关掉同步面板接着玩
             if (missingIndices.length) enterBackgroundUpload();
             await sendStagedParts(missingIndices);
-            updateProgress(92, '正在完成服务器提交...');
+            updateProgress(92, '正在完成上传…');
             try {
                 const commitResponse = await postSync({
                     action: 'upload-complete',
@@ -171,7 +171,7 @@
                     || Number(confirmation.remote.version) !== Number(commitResponse.version)
                     || confirmation.remote.snapshotFormat !== SNAPSHOT_FORMAT
                     || Number(confirmation.remote.schemaVersion) !== SNAPSHOT_SCHEMA_VERSION) {
-                    throw new Error('服务器提交结果校验失败，请重新上传。');
+                    throw new Error('上传结果校验失败，请重新上传。');
                 }
             } catch (error) {
                 if (Number(error?.status) !== 409 || conflictAttempt >= 3) throw error;
@@ -181,9 +181,9 @@
             await syncStateStore('uploaded', 'readwrite', (store) => store.clear()).catch(() => {}); // 都提交了，不用再记
             await finishPlan();
             const rebuilt = plan.rebuilt.reduce((sum, region) => sum + region.end - region.start + 1, 0);
-            return plan.fast ? `快速上传成功：重做了 ${rebuilt} 个分片，共 ${snapshot.chunkManifest.length} 个。` : '上传成功。';
+            return plan.fast ? `快速上传成功：更新了 ${rebuilt} 个数据块，共 ${snapshot.chunkManifest.length} 个。` : '上传成功。';
         }
-        throw new Error('同步冲突重试失败，请稍后重试。');
+        throw new Error('云端数据正被其他设备更新，请稍后重试。');
     }
 
     // mode：fast 只重做改过的数据（没有上次的记录时自动完整扫描），full 全部重新扫描。
@@ -200,9 +200,9 @@
         let succeeded = false;
 
         try {
-            updateProgress(8, '正在整理本地数据...');
+            updateProgress(8, '正在保存本地数据…');
             if (!globalThis.RPHubCharStore || typeof globalThis.RPHubCharStore.assertPushAllowed !== 'function') {
-                throw new Error('角色卡存储自检不可用，已取消上传。');
+                throw new Error('页面未完整加载，请刷新后重试。');
             }
             await globalThis.RPHubCharStore.assertPushAllowed();
             await flushAppState();
@@ -214,8 +214,8 @@
                     status = await uploadLocalSnapshot(mode);
                     break;
                 } catch (error) {
-                    if (attempt >= 1 || state.background || !String(error?.message || '').startsWith('两次扫描结果不一致')) throw error;
-                    updateProgress(16, '本地数据刚刚变过，重新扫描一遍...');
+                    if (attempt >= 1 || state.background || error?.message !== LOCAL_DATA_CHANGED) throw error;
+                    updateProgress(16, '本地数据有变动，正在重新扫描…');
                 }
             }
             updateProgress(100, status);
@@ -224,7 +224,7 @@
             setActionButtonsDisabled(false);
         } catch (error) {
             window.RPHubDiagnostics?.failure('sync-push-error', error);
-            updateProgress(100, error?.message || '本地同步失败。');
+            updateProgress(100, `上传失败：${error?.message || '请稍后重试。'}`);
             setActionButtonsDisabled(false);
         } finally {
             syncStateStore('parts', 'readwrite', (store) => store.clear()).catch(() => {});
@@ -260,7 +260,7 @@
         if (!wasBackground || modalRoot?.classList.contains('is-open')) return hideFloat();
         // 面板关着：结果显示在悬浮条上
         if (succeeded) showFloat({ text: '上传成功', progress: 100, kind: 'done', autoHide: 3000 });
-        else showFloat({ text: `上传失败：${state.statusText}`, kind: 'error', action: { label: '重试', onClick: () => pushToServer('fast') } });
+        else showFloat({ text: state.statusText, kind: 'error', action: { label: '重试', onClick: () => pushToServer('fast') } });
     }
 
     let floatRoot = null;
@@ -309,7 +309,7 @@
         let pending = null;
         try { pending = localStorage.getItem(PENDING_UPLOAD_KEY); } catch (_) { /* storage blocked */ }
         if (pending && !state.syncing) {
-            showFloat({ text: '上次上传没传完', kind: 'resume', action: { label: '继续上传', onClick: () => pushToServer('fast') } });
+            showFloat({ text: '上次上传未完成', kind: 'resume', action: { label: '继续上传', onClick: () => pushToServer('fast') } });
         }
     }
 

@@ -38,9 +38,9 @@ const workshopInjection = '<script src="/DB/module-loader.js?v=r2-workshop-1"></
 assert.equal(workerSource.split(workshopInjection).length - 1, 1, 'workshop loader injection must occur exactly once');
 const stableWorkerSegments = [
     ['sync CAS/history/GC core', 'function getChunkLength', 'function buildRemoteInfo', '249EB45190B0DB34C3BFB46D3467AE217E1E2F4A60C5CF592FBFAC49DF8DEC53'],
-    ['pull-json-part handler', 'async function handlePullJsonPart', 'async function handleUploadCreate', '652B0707538D3C91BD9F1522A055C566086AEDEDEE0DF33B0E33B91E7D6065FB'],
-    ['upload-part handler', 'async function handleUploadPart', 'async function handleUploadComplete', '279F7F19B8B0F47180D9D4D65A343A1BC013C52AF7D00AD7F7A035FA79FA296E'],
-    ['app-update implementation', 'function buildGitHubHeaders', 'async function handleJsonApi', 'C9D3AFB5E97927DAB8C0D3F4001C861F177CA662F56270377F3E411C0D69862A']
+    ['pull-json-part handler', 'async function handlePullJsonPart', 'async function handleUploadCreate', 'C15F56C6C6AB3C7473072619DB44813C9DCDA0088FCB50776382218A7C6A8689'],
+    ['upload-part handler', 'async function handleUploadPart', 'async function handleUploadComplete', '2A8595FE8B1E36F8C24D67C300A169ECB722D572A4D729CC96910FE496A68EED'],
+    ['app-update implementation', 'function buildGitHubHeaders', 'async function handleJsonApi', 'FC0665E27673E9F33A021E49969F71C8CBA5FBBC5D39FC76AB943BB15D2C7BF5']
 ];
 
 for (const [label, startMarker, endMarker, expectedHash] of stableWorkerSegments) {
@@ -51,10 +51,10 @@ for (const [label, startMarker, endMarker, expectedHash] of stableWorkerSegments
 const bootstrapSource = fs.readFileSync(path.join(root, 'DB', 'bootstrap.js'), 'utf8');
 const stableBootstrapUpdateSegments = [
     ['version rendering', 'function renderAppUpdateVersions', 'async function checkAppUpdate', 'BA415346FD6C556F436ABF55212AC1C146ED90000B17E572CBA9CE77FD9F505B'],
-    ['update check', 'async function checkAppUpdate', 'async function applyAppUpdate', '58E94BE2974D6302160424B9608D936064EBFDA8863F0E62E22A34D3BFE5842F'],
-    ['update apply', 'async function applyAppUpdate', 'async function rollbackAppUpdate', '083B17EAD38362F347B07F1CA270FBF77436EF82B7552C99F83858EF2F809D73'],
-    ['update rollback', 'async function rollbackAppUpdate', 'async function submitSyncPassword', 'E7BEA7374036044587C6490A312D8AECFB2ED61F50633D699C96CEA302AEEBCD'],
-    ['update modal wiring', 'function ensureModal', 'function rememberSyncFocus', '7A31172C859C5860172FA66CF6220AFF7F35F452219A7AAC01BC096CACB26788']
+    ['update check', 'async function checkAppUpdate', 'async function applyAppUpdate', '28703EC74FC6077428B7F57B81A735A748096A9A499E9932A9F132661CF27245'],
+    ['update apply', 'async function applyAppUpdate', 'async function rollbackAppUpdate', '16B6F8D494CEDB027FEA1A80EA7E814AB5B2E39BC1535227B1980D53AAF2FC6C'],
+    ['update rollback', 'async function rollbackAppUpdate', 'async function submitSyncPassword', 'BB4F09EDCC62E5945E9BB24CAA08E852CB2CBC13AB7764A50C83CA682CA94926'],
+    ['update modal wiring', 'function ensureModal', 'function rememberSyncFocus', '6F73AF66F33DEB9AB14DAE2990BF7F0F78834FF467969F5136756D2C85A42B5E']
 ];
 
 for (const [label, startMarker, endMarker, expectedHash] of stableBootstrapUpdateSegments) {

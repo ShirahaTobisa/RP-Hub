@@ -171,7 +171,7 @@ try {
     assert.equal(await admin.locator('#feedbackDetail').isHidden(), true);
     await admin.locator('#feedbackId').fill('not-an-id');
     await admin.locator('#feedbackFind button').click();
-    assert.match(await admin.locator('#notice').textContent(), /编号格式不对/);
+    assert.match(await admin.locator('#notice').textContent(), /编号格式错误/);
     await admin.locator('#feedbackId').fill(' ' + id.toUpperCase() + ' ');
     await admin.locator('#feedbackFind button').click();
     await admin.locator('#feedbackDetail').waitFor();

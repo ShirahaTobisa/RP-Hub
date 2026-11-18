@@ -55,7 +55,7 @@
         runtime.manifest = checked;
         if (checked.requiresApi > API_VERSION) {
             setRuntimeStatus(runtime, 'api-mismatch');
-            showToast(`模块 ${checked.name} 需要 API ${checked.requiresApi}，当前为 ${API_VERSION}`);
+            showToast(`${checked.name} 需要更新测试版`);
             return false;
         }
         state.registeredIds.set(checked.id, runtime);
@@ -65,7 +65,7 @@
         runtime.entry.lastStatus = '';
         runtime.ctx = buildContext(checked.id);
         if ((checked.beforeMount && !runtime.entry.beforeMount) || (checked.hooks && !runtime.entry.hooks)) {
-            showToast(`${checked.name} 要再刷新一次才能完整生效`, { kind: 'info' });
+            showToast(`${checked.name} 需要再刷新一次才能完全生效`, { kind: 'info' });
         }
         runtime.entry.beforeMount = !!checked.beforeMount;
         runtime.entry.hooks = checked.hooks;
@@ -127,7 +127,7 @@
 
         if (state.safeMode) {
             const enabledCount = state.installations.filter((entry) => entry.enabled).length;
-            showToast(`安全模式:已跳过 ${enabledCount} 个模块`, { kind: 'info' });
+            showToast(`安全模式：已跳过 ${enabledCount} 个插件`, { kind: 'info' });
         }
         if (state.runtimeActive) installRuntimeHooks();
         Promise.resolve(state.mounted).finally(() => setTimeout(settleApp, APP_STARTUP_SETTLE_MS));

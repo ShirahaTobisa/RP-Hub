@@ -227,10 +227,10 @@ try {
     assert.equal((await dropdown('analysisModel').textContent()).trim(), 'analysis-model');
     assert.equal(await page.evaluate(() => localStorage.getItem('rph_mod_character-voice::analysisModel')), 'analysis-model');
     assert.equal(await panel.locator('[data-cast] [data-person]').count(), 0, 'the card name is not put into the cast');
-    assert.equal(await panel.locator('[data-cast]').textContent(), '还没有人物，分析回复后会自动加进来。');
+    assert.equal(await panel.locator('[data-cast]').textContent(), '还没有人物，分析回复后会自动加入。');
     await panel.locator('[data-new-person]').fill('同桌');
     await panel.locator('[data-add-person]').click();
-    await panel.locator('[data-person="同桌"]').getByRole('button', { name: 'AI 挑' }).click();
+    await panel.locator('[data-person="同桌"]').getByRole('button', { name: 'AI 推荐' }).click();
     await panel.locator('[data-pick="同桌"] [data-voice-id="girl-gentle"]').waitFor();
     assert.deepEqual(await panel.locator('[data-pick="同桌"] [data-voice-id]').evaluateAll((rows) => rows.map((row) => row.dataset.voiceId)),
         ['girl-gentle', 'girl-energetic', 'woman-calm']);
@@ -242,7 +242,7 @@ try {
     await panel.locator('[data-person="班长"]').getByRole('button', { name: '搜索' }).click();
     await panel.locator('[data-pick="班长"] input').fill('少年');
     await panel.locator('[data-pick="班长"] input').press('Enter');
-    await panel.locator('[data-pick="班长"]', { hasText: '一共 25 个声音' }).waitFor();
+    await panel.locator('[data-pick="班长"]', { hasText: '共 25 个声音' }).waitFor();
     assert.equal(await panel.locator('[data-pick="班长"] [data-voice-id]').count(), 20);
     await panel.locator('[data-pick="班长"]').getByRole('button', { name: '加载更多' }).click();
     await page.waitForFunction(() => document.querySelectorAll('[data-pick="班长"] [data-voice-id]').length === 25);
@@ -253,10 +253,10 @@ try {
     assert.deepEqual(lookups, ['Bearer test-key'], 'a pasted voice page is looked up by ID with the Fish key, so private voices are found too');
     await panel.locator('[data-pick="班长"] input').fill('f'.repeat(32));
     await panel.locator('[data-pick="班长"] input').press('Enter');
-    await panel.locator('[data-pick="班长"]', { hasText: '没找到这个声音' }).waitFor();
+    await panel.locator('[data-pick="班长"]', { hasText: '未找到该声音' }).waitFor();
     await panel.locator('[data-pick="班长"] input').fill('大叔');
     await panel.locator('[data-pick="班长"] input').press('Enter');
-    await panel.locator('[data-pick="班长"] [data-voice-id="uncle-deep"]').getByRole('button', { name: '用这个' }).click();
+    await panel.locator('[data-pick="班长"] [data-voice-id="uncle-deep"]').getByRole('button', { name: '使用' }).click();
     assert.deepEqual(await cast(), [
         { name: '同桌', id: 'girl-gentle', title: '温柔少女', sample: 'https://example.test/girl.mp3' },
         { name: '班长', id: 'uncle-deep', title: '大叔', sample: 'https://example.test/uncle.mp3' }
@@ -270,7 +270,7 @@ try {
     await page.getByRole('option', { name: '日文', exact: true }).click();
     await panel.locator('[data-pick="学姐"] input').fill('声優');
     await panel.locator('[data-pick="学姐"] input').press('Enter');
-    await panel.locator('[data-pick="学姐"] [data-voice-id="seiyuu"]', { hasText: '日文 · female' }).getByRole('button', { name: '用这个' }).click();
+    await panel.locator('[data-pick="学姐"] [data-voice-id="seiyuu"]', { hasText: '日文 · female' }).getByRole('button', { name: '使用' }).click();
     assert.equal(searchLanguages.at(-1), 'ja');
     assert.deepEqual((await cast()).at(-1), { name: '学姐', id: 'seiyuu', title: '声優', sample: '', lang: 'ja' }, 'the person takes the language of the chosen voice');
     assert.equal((await panel.locator('[data-person="学姐"] button[aria-haspopup="listbox"]').textContent()).trim(), '日文');
@@ -286,7 +286,7 @@ try {
 
     // 2. 悬浮窗：没分析时这么写；点「分析」只分析、不出声，显示谁说了几句（用户扮演的不算）
     await widget.waitFor();
-    assert.equal(await widgetStatus(), '最新回复还没分析');
+    assert.equal(await widgetStatus(), '最新回复未分析');
     await widget.locator('[data-analyze]').click();
     await statusIs('最新回复：');
     assert.equal(await widgetStatus(), '最新回复：同桌 2 句 · 班长 1 句');
@@ -309,7 +309,7 @@ try {
     assert.deepEqual(ttsRequests[0], { model: 'fish-audio/s2.1-pro-free', input: '[cheerful] “早上好，今天也要加油哦。”', voice: 'girl-gentle', response_format: 'mp3', auth: 'Bearer test-key' });
     assert.deepEqual(await page.evaluate(() => [...CSS.highlights.get('rph-voice-now')].map((range) => range.toString())), ['“早上好，今天也要加油哦。”'],
         'only the line being spoken is highlighted');
-    assert.equal(await widgetStatus(), '正在说：同桌');
+    assert.equal(await widgetStatus(), '正在播放：同桌');
     assert.equal(await widget.locator('[data-play]').textContent(), '停止');
     await page.evaluate(() => window.__audio.end());
     await idle(0);
@@ -351,7 +351,7 @@ try {
     };
     await clickLine(0);
     assert.equal(await page.locator('[data-rph-voice-pop] strong').textContent(), '同桌');
-    assert.equal(await page.locator('[data-rph-voice-pop] .rph-voice-pop__tone').textContent(), 'AI 分析的语气：cheerful');
+    assert.equal(await page.locator('[data-rph-voice-pop] .rph-voice-pop__tone').textContent(), '语气：cheerful');
     let before = await blobPlays();
     await page.locator('[data-rph-voice-pop] [data-one]').click();
     await playingBlob();
@@ -370,7 +370,7 @@ try {
     assert.equal(await page.locator('[data-rph-voice-pop]').count(), 0, 'clicking elsewhere closes the card');
     console.log('PASS a clicked line shows its speaker and AI tone, and can be played alone or from there on');
 
-    // 4. 重听不再生成；打开「用户的台词也念」后才念用户的那句；悬浮窗的播放按钮能停
+    // 4. 重听不再生成；打开「播放用户台词」后才念用户的那句；悬浮窗的播放按钮能停
     await widget.locator('[data-play]').click();
     await playingBlob();
     await widget.locator('[data-play]').click();
@@ -411,7 +411,7 @@ try {
     await page.evaluate(() => localStorage.setItem('rph_mod_character-voice::autoPlay', '1'));
     analysisFails = true;
     await send('坐哪');
-    await page.locator('.toast-item', { hasText: '分析说话人失败' }).waitFor({ timeout: 15000 });
+    await page.locator('.toast-item', { hasText: '分析失败，本次引号内的台词使用默认声音' }).waitFor({ timeout: 15000 });
     await playingBlob();
     await page.evaluate(() => window.__audio.end());
     await idle(4);
@@ -419,14 +419,14 @@ try {
     await statusIs('分析失败：');
     console.log('PASS automatic analysis stays silent; automatic speaking falls back to quotes in the default voice when analysis fails');
 
-    // 7. 密钥错了：Fish 的 401 带上中文说明；悬浮窗刷新后还在拖过去的位置
+    // 7. 密钥错了：401 带上中文说明；悬浮窗刷新后还在拖过去的位置
     await page.evaluate(() => localStorage.setItem('rph_mod_character-voice::fishKey', 'bad-key'));
     await page.reload({ waitUntil: 'domcontentloaded' });
     await voiceButton(4).waitFor({ timeout: 45000 });
     await widget.waitFor();
     assert.deepEqual(await widget.evaluate((el) => [el.style.left, el.style.top]), [`${position.x}px`, `${position.y}px`]);
     await voiceButton(4).click();
-    await page.locator('.toast-item', { hasText: 'Fish 报错（401，密钥不对）：Invalid Token' }).waitFor();
+    await page.locator('.toast-item', { hasText: '语音合成失败（401，密钥无效）：Invalid Token' }).waitFor();
     await idle(4);
     console.log('PASS a wrong key shows the Fish error with a plain hint, and the floating window keeps its place after a reload');
 
@@ -436,7 +436,7 @@ try {
     faults.set('早上好', [500]).set('紧张', [400]);
     let from = ttsRequests.length;
     before = await blobPlays();
-    const skipped = page.locator('.toast-item', { hasText: '有一句没合成出来，跳过了：Fish 报错（400' }).waitFor({ timeout: 15000 });
+    const skipped = page.locator('.toast-item', { hasText: '已跳过一句：语音合成失败（400' }).waitFor({ timeout: 15000 });
     await voiceButton(0).click();
     await playingBlob();
     await page.evaluate(() => window.__audio.end());
@@ -449,13 +449,13 @@ try {
     faults.set('', [400, 400, 400]);
     from = ttsRequests.length;
     await voiceButton(0).click();
-    await page.locator('.toast-item', { hasText: '连着三句都没合成出来，停了' }).waitFor();
+    await page.locator('.toast-item', { hasText: '连续 3 句合成失败，已停止' }).waitFor();
     await idle(0);
     assert.equal(ttsRequests.length - from, 3, 'after three failures in a row the fourth line is not requested');
     faults.set('快坐下', [200]);
     from = ttsRequests.length;
     await voiceButton(4).click();
-    await page.locator('.toast-item', { hasText: 'Fish 返回的不是语音' }).waitFor();
+    await page.locator('.toast-item', { hasText: '语音接口返回的不是音频' }).waitFor();
     await idle(4);
     before = await blobPlays();
     await voiceButton(4).click();
@@ -492,7 +492,7 @@ try {
     assert.equal(await widget.locator('[data-pause]').textContent(), '继续');
     assert.equal(await page.evaluate(() => window.__audio.pauses), pauses + 1);
     await widget.locator('[data-pause]').click();
-    assert.equal(await widgetStatus(), '正在说：同桌');
+    assert.equal(await widgetStatus(), '正在播放：同桌');
     assert.equal(await blobPlays(), before + 1, 'resuming plays the same line on');
     await widget.locator('[data-next]').click();
     await speakingIs('（她心里其实有点紧张。）');
@@ -538,7 +538,7 @@ try {
         return { x: rect.left + 6, y: rect.top + rect.height / 2 };
     });
     await page.mouse.click(quote.x, quote.y);
-    assert.equal(await page.locator('[data-rph-voice-pop] .rph-voice-pop__said').textContent(), '念的是：早く座って。');
+    assert.equal(await page.locator('[data-rph-voice-pop] .rph-voice-pop__said').textContent(), '译文：早く座って。');
     await page.mouse.click(5, 5);
     await playThrough(4);
     assert.equal(analysisCount(), analysed + 1, 'the translated analysis is kept');
@@ -572,7 +572,7 @@ try {
     assert.deepEqual(await panel.locator('[data-k="openaiUrl"], [data-k="openaiModel"]').evaluateAll((items) => items.map((item) => item.value)), ['https://api.openai.com', 'gpt-4o-mini-tts']);
     assert.equal(await panel.locator('select:visible').count(), 0);
     assert.equal(await picked('同桌'), '默认声音', 'a Fish voice is not used on another service');
-    await panel.locator('[data-person="同桌"]').getByRole('button', { name: '填声音' }).click();
+    await panel.locator('[data-person="同桌"]').getByRole('button', { name: '选择声音' }).click();
     await panel.locator('[data-pick="同桌"]').getByRole('button', { name: 'coral', exact: true }).click();
     assert.deepEqual((await cast())[0], { name: '同桌', id: 'coral', title: 'coral', sample: '', lang: 'ja', provider: 'openai' }, 'changing the voice keeps the language');
     await backToChat();

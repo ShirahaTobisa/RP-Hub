@@ -22,11 +22,11 @@
                 await downloadSnapshotToStaging(remote, chunkManifest, stagingDb, {
                     present, verified, concurrency: useCache ? CONFIG.downloadTaskConcurrency : 1
                 });
-                updateProgress(0, '服务器分片拉取完成，正在完整校验...');
+                updateProgress(0, '正在校验数据…');
                 const repaired = new Set();
                 const repair = useCache ? async (chunk) => {
                     const key = chunkCacheKey(chunk);
-                    if (repaired.has(key)) throw new Error(`缓存分片 ${chunk.index + 1} 修复失败。`);
+                    if (repaired.has(key)) throw new Error('缓存数据修复失败，请重试。');
                     repaired.add(key);
                     verified.delete(key);
                     const keep = retainedChunkKeys(chunkManifest);
@@ -38,18 +38,18 @@
                     repair, verified,
                     onProgress: (completed, total) => {
                         const percent = Math.round((completed / total) * 100);
-                        updateProgress(percent, `正在校验服务器分片 ${percent}%...`);
+                        updateProgress(percent, `正在校验数据… ${percent}%`);
                     }
                 });
-                updateProgress(100, '本地分片校验完成，正在确认服务器版本...');
+                updateProgress(100, '正在核对云端数据…');
                 const confirmation = await postSync({ action: 'pull-manifest' });
                 const current = fork ? confirmation.fork : confirmation.remote;
                 if (!current
                     || Number(current.version) !== Number(remote.version)
                     || current.checksum !== remote.checksum) {
-                    throw Object.assign(new Error('服务器同步版本已变化，请重新拉取。'), { status: 409 });
+                    throw Object.assign(new Error('云端数据已更新，请重新下载。'), { status: 409 });
                 }
-                updateProgress(0, '服务器数据校验完成，正在恢复本地数据...');
+                updateProgress(0, '正在写入本地数据…');
                 restoreStarted = true;
                 if (typeof onRestoreStart === 'function') onRestoreStart();
                 const restorer = new StreamSnapshotRestorer(remote.recordCount);
@@ -58,7 +58,7 @@
                         verifyChecksum: false,
                         onProgress: (completed, total) => {
                             const percent = Math.round((completed / total) * 100);
-                            updateProgress(percent, `正在恢复本地数据 ${percent}%...`);
+                            updateProgress(percent, `正在写入本地数据… ${percent}%`);
                         }
                     });
                 } catch (error) { restorer.abort(); throw error; }
@@ -87,7 +87,7 @@
         return new Promise((resolve, reject) => {
             navigator.locks.request('RPHubSync', { mode: 'exclusive', ifAvailable: true }, async (lock) => {
                 if (!lock) {
-                    updateProgress(100, '另一页面正在同步，请稍后重试。');
+                    updateProgress(100, '其他标签页正在同步，请稍后重试。');
                     return;
                 }
                 if (state.syncing || state.reloadPending) return;

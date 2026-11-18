@@ -9,7 +9,7 @@
         }
         const checksum = await sha256(JSON.stringify([FORK_SNAPSHOT_FORMAT, 13, root.totalBytes, packs.length,
             root.entryCount, root.pageCount, chain, root.bloomChecksum]));
-        if (chain !== root.pageRoot || checksum !== root.checksum) throw new Error('魔改版云端清单校验失败。');
+        if (chain !== root.pageRoot || checksum !== root.checksum) throw new Error('魔改版云端数据校验失败。');
         return packs.map((pack, index) => ({ index, checksum: pack.checksum, length: pack.length }));
     }
 
@@ -44,7 +44,7 @@
 
         async consume(lineText) {
             let line;
-            try { line = JSON.parse(lineText); } catch (_) { throw new Error('魔改版数据包记录格式不正确。'); }
+            try { line = JSON.parse(lineText); } catch (_) { throw new Error('魔改版云端数据格式不正确。'); }
             await this.start();
             if (line?.type === 'recordArrayStart') {
                 this.array = { start: line, items: [] };
@@ -56,7 +56,7 @@
                     return;
                 }
                 const { start, items } = this.array;
-                if (line?.type !== 'recordArrayEnd' || Number(line.length) !== items.length) throw new Error('魔改版数组记录不完整。');
+                if (line?.type !== 'recordArrayEnd' || Number(line.length) !== items.length) throw new Error('魔改版云端数据格式不正确。');
                 this.array = null;
                 await this.emit({ ...start, length: items.length });
                 for (const text of items) await this.emit({ type: 'recordArrayItem' }, text);
@@ -246,7 +246,7 @@
 
         add(value) {
             const bytes = new TextEncoder().encode(JSON.stringify(canonicalJson(value)));
-            if (bytes.byteLength > 64 * 1024 * 1024) throw new Error('有一条数据超过魔改版 64MB 的上限，没法转过去。');
+            if (bytes.byteLength > 64 * 1024 * 1024) throw new Error('有一条数据超过魔改版单条 64MB 的上限，无法转换。');
             const { group, bucketKey, sortKey } = forkPlacement(value);
             if (!this.groups.includes(group)) this.groups.push(group);
             if (!this.buckets.has(bucketKey)) this.buckets.set(bucketKey, { group, entries: [] });
@@ -264,22 +264,22 @@
                 method: 'POST', headers: { ...buildSyncHeaders(), 'content-type': 'application/octet-stream' }, body: pack.bytes, credentials: 'same-origin'
             }).catch(() => null);
             if (response?.ok) return;
-            if (attempt >= CONFIG.retryCount) throw new Error(`魔改版数据包上传失败：HTTP ${response?.status || '网络错误'}`);
+            if (attempt >= CONFIG.retryCount) throw new Error(`数据上传失败：${response ? `HTTP ${response.status}` : '网络错误'}`);
             await wait(CONFIG.retryDelayMs);
         }
     }
 
     async function exportForkSnapshot() {
-        updateProgress(5, '正在读取云端数据...');
+        updateProgress(5, '正在读取云端数据…');
         const { remote } = await postSync({ action: 'pull-manifest' });
-        if (remote?.snapshotFormat !== SNAPSHOT_FORMAT || !isStreamSchema(remote.schemaVersion)) throw new Error('云端还没有测试版的数据，先上传一次再换。');
+        if (remote?.snapshotFormat !== SNAPSHOT_FORMAT || !isStreamSchema(remote.schemaVersion)) throw new Error('云端暂无测试版数据，请先上传。');
         const chunkManifest = await validateStreamSnapshotManifest(remote);
         const exporter = new ForkExportLines();
         const validator = new StreamSnapshotValidator(remote.recordCount);
         const stagingDb = await openDownloadStagingDb();
         try {
             await downloadSnapshotToStaging(remote, chunkManifest, stagingDb);
-            updateProgress(0, '正在转成魔改版的格式...');
+            updateProgress(0, '正在转换格式…');
             await parseStagedStreamSnapshot(stagingDb, chunkManifest, {
                 consume: (line) => { validator.consume(line); return exporter.consume(line); },
                 finish: () => { validator.finish(); return exporter.finish(); }
@@ -302,7 +302,7 @@
                 if (running.size >= 4) await Promise.race(running);
             }
             exporter.buckets.delete(bucketKey);
-            updateProgress(50, `正在上传魔改版数据包 ${descriptors.length} 个...`);
+            updateProgress(50, `正在上传，已处理 ${descriptors.length} 个数据包…`);
         }
         await Promise.all(running);
 
@@ -330,7 +330,7 @@
             pages.length, previousPageHash, await sha256Bytes(bloom)]));
         let binary = '';
         for (let index = 0; index < bloom.length; index += 0x2000) binary += String.fromCharCode(...bloom.subarray(index, index + 0x2000));
-        updateProgress(85, '正在换上魔改版的云端清单...');
+        updateProgress(85, '正在完成转换…');
         await postSync({ action: 'fork-export-commit', expectedChecksum: remote.checksum, checksum, pages, bloom: btoa(binary) },
             { retryCount: 0, timeoutMs: CONFIG.commitTimeoutMs });
     }

@@ -48,7 +48,7 @@ npm run build
 2. GitHub Actions 运行测试、打包，创建带部署包 `RP-Hub-<版本>.zip` 和发布包 `rph-bundle-<版本>.json` 的 Release。
 3. 分发端每小时 7 分、37 分同步（也可在分发端后台「立即同步」）。
 4. 站点在「云同步 → 测试版更新」选择版本：
-   - 设置了 `CF_API_TOKEN` 的站点点「一键更新」，Worker 把发布包部署到自己所在的 Pages 项目，约半分钟生效，可「回退上一次部署」。
+   - 设置了 `CF_API_TOKEN` 的站点点「立即更新」，Worker 把发布包部署到自己所在的 Pages 项目，约半分钟生效，可「回退上一版」。
    - 其他站点点「下载部署包」，手动上传到 Cloudflare Pages。
 
 一键更新需要的站点设置：

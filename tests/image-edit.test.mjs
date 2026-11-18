@@ -109,5 +109,5 @@ const current = api.getMessageContext(row, owner);
 assert.equal(current.messageId, 'live-id'); assert.equal(current.branchId, 'fork'); assert.equal(current.legacyScope, false); count++;
 const img = new Image(); img.src = 'http://fixture.test/api/rp-image?tag=test'; img.frame = new Element(); img.dataset.rphImageReadOnly = '1';
 api.handleImageError({target: img}); assert.equal(img.dataset.rphImageGenerationState, 'missing');
-assert.match(img.alt, /原图读取失败/); count++;
+assert.match(img.alt, /图片加载失败/); count++;
 console.log(`image-edit.test.mjs: ${count} cases passed`);

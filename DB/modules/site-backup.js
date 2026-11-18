@@ -3,7 +3,7 @@
 // 和原版的区别：同步密码、同步状态、测试版的同步缓存不导出；导入时保留目标站点自己的这些设置；
 // 导入期间暂停页面自动保存（与云同步恢复相同的做法），写完立即刷新。
 RPHubSDK.register({
-    id: 'site-backup', name: '全站备份', version: '1.0.2', requiresApi: 1,
+    id: 'site-backup', name: '全站备份', version: '1.0.3', requiresApi: 1,
     init(ctx) {
         'use strict';
         const JSZIP_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
@@ -127,7 +127,7 @@ RPHubSDK.register({
                 const dump = { name, stores: [] };
                 try {
                     for (const storeName of Array.from(db.objectStoreNames)) {
-                        progress(`读取 ${name} / ${storeName}…`);
+                        progress(`正在读取 ${name} / ${storeName}…`);
                         const result = await readStore(db, storeName);
                         if (!result.records.length) continue;
                         const records = [];
@@ -212,7 +212,7 @@ RPHubSDK.register({
             try {
                 for (const { name, stores } of databases) {
                     if (SKIP_DATABASES.has(name)) continue;
-                    progress(`写入 ${name}…`);
+                    progress(`正在写入 ${name}…`);
                     const db = await openForImport(name, stores);
                     try { for (const def of stores) await replaceStore(db, def.store, def.records); }
                     finally { db.close(); }
@@ -244,7 +244,7 @@ RPHubSDK.register({
             const ss = readWebStorage(sessionStorage);
             const zip = new JSZip();
             const manifest = {
-                format: 'rphub-backup-zip', version: '1.0', plugin: '全站备份', pluginVersion: '1.0.2',
+                format: 'rphub-backup-zip', version: '1.0', plugin: '全站备份', pluginVersion: '1.0.3',
                 createdAt: new Date().toISOString(), databases: [], webStorage: {}, totalRecords: 0
             };
             for (const db of databases) {
@@ -266,9 +266,9 @@ RPHubSDK.register({
             manifest.webStorage = { localStorage: Object.keys(ls).length, sessionStorage: Object.keys(ss).length };
             zip.file('manifest.json', JSON.stringify(manifest, null, 2));
             const blob = await zip.generateAsync({ type: 'blob', mimeType: 'application/zip', compression: 'DEFLATE', compressionOptions: { level: 6 }, streamFiles: true },
-                (meta) => progress(`压缩 ${Math.round(meta.percent || 0)}%`));
+                (meta) => progress(`压缩中… ${Math.round(meta.percent || 0)}%`));
             download(blob, `RPHub全站备份_${stamp()}.zip`);
-            return `已导出 ZIP：${(blob.size / 1048576).toFixed(2)} MB，数据库 ${databases.length} 个，记录 ${manifest.totalRecords} 条。`;
+            return `已导出 ZIP：${(blob.size / 1048576).toFixed(2)} MB，${databases.length} 个数据库，${manifest.totalRecords} 条记录`;
         }
         async function exportJson(progress) {
             const databases = await dumpAllDatabases(progress);
@@ -287,16 +287,17 @@ RPHubSDK.register({
             parts.push(`},"webStorage":{"localStorage":${JSON.stringify(readWebStorage(localStorage))},"sessionStorage":${JSON.stringify(readWebStorage(sessionStorage))}}}`);
             const blob = new Blob(parts, { type: 'application/json' });
             download(blob, `RPHub全站备份_${stamp()}.json`);
-            return `已导出 JSON：${(blob.size / 1048576).toFixed(2)} MB，数据库 ${databases.length} 个。`;
+            return `已导出 JSON：${(blob.size / 1048576).toFixed(2)} MB，${databases.length} 个数据库`;
         }
 
         // ---------- 导入：识别 ZIP 和新版流式 JSON（柳贯一 v20 导出的也能导入） ----------
         async function importFile(file, progress) {
+            const overwrite = '导入后将覆盖本站的同名数据并刷新页面，本站的同步密码和同步设置会保留。';
             // 按文件开头判断（ZIP 都以 "PK" 开头），文件被改名也能认出来。
             const head = new Uint8Array(await file.slice(0, 2).arrayBuffer());
             if (head[0] === 0x50 && head[1] === 0x4b) {
                 const JSZip = await loadJSZip();
-                progress('解压校验中…');
+                progress('正在解压…');
                 const zip = await JSZip.loadAsync(file);
                 const read = async (path) => {
                     const entry = zip.file(path);
@@ -304,10 +305,10 @@ RPHubSDK.register({
                     return entry.async('string');
                 };
                 const manifest = JSON.parse(await read('manifest.json'));
-                if (manifest.format !== 'rphub-backup-zip') throw new Error('备份格式不匹配');
+                if (manifest.format !== 'rphub-backup-zip') throw new Error('不支持的备份格式');
                 const ws = manifest.webStorage || {};
-                const ok = await confirmAction('导入全站备份', `备份时间：${manifest.createdAt || '未知'}\n数据库 ${(manifest.databases || []).length} 个 · 记录 ${manifest.totalRecords || 0} 条 · 本地存储 ${ws.localStorage || 0} 项\n\n本站同名数据会被覆盖（本站的同步密码和同步设置保留）。导入后页面会刷新。`, '覆盖导入');
-                if (!ok) return '已取消导入。';
+                const ok = await confirmAction('导入全站备份', `备份时间：${manifest.createdAt || '未知'}\n${(manifest.databases || []).length} 个数据库 · ${manifest.totalRecords || 0} 条记录 · ${ws.localStorage || 0} 项本地存储\n\n${overwrite}`, '覆盖导入');
+                if (!ok) return '已取消导入';
                 const databases = [];
                 let total = 0;
                 for (const db of manifest.databases || []) {
@@ -318,13 +319,13 @@ RPHubSDK.register({
                             const text = await read(path);
                             if (text) text.split('\n').forEach((line) => { if (line) records.push(JSON.parse(line)); });
                         }
-                        if (store.records != null && records.length !== store.records) throw new Error('备份记录数不符：' + store.store);
+                        if (store.records != null && records.length !== store.records) throw new Error('备份记录数不一致：' + store.store);
                         total += records.length;
                         stores.push({ store: store.store, keyPath: store.keyPath, autoInc: store.autoInc, records });
                     }
                     databases.push({ name: db.name, stores });
                 }
-                if (manifest.totalRecords != null && total !== manifest.totalRecords) throw new Error('备份总记录数不符');
+                if (manifest.totalRecords != null && total !== manifest.totalRecords) throw new Error('备份总记录数不一致');
                 const readStorage = async (name) => {
                     const path = `storage/${name}.json`;
                     return zip.file(path) || ws[name] > 0 ? JSON.parse(await read(path)) : null;
@@ -332,18 +333,18 @@ RPHubSDK.register({
                 await applyImport(databases, { localStorage: await readStorage('localStorage'), sessionStorage: await readStorage('sessionStorage') }, progress);
                 return '';
             }
-            progress('解析备份中…');
+            progress('正在解析备份…');
             const pack = JSON.parse(await file.text());
             if (!pack?.__rphub_backup__ || Number(pack.version) < 8 || !pack.databases || Array.isArray(pack.databases) || pack.databases.main !== undefined) {
-                throw new Error('不支持这个备份：只能导入 ZIP 或新版 JSON 备份（柳贯一 v20 以前的旧格式请先在旧站点重新导出）');
+                throw new Error('仅支持 ZIP 或新版 JSON 备份，柳贯一 v20 之前的备份请在原站点重新导出');
             }
             let total = 0;
             const databases = Object.entries(pack.databases).map(([name, stores]) => ({
                 name,
                 stores: Object.entries(stores || {}).map(([store, records]) => { total += (records || []).length; return { store, records: records || [] }; })
             }));
-            const ok = await confirmAction('导入全站备份', `备份时间：${pack.exportedAt || '未知'}\n数据库 ${databases.length} 个 · 记录 ${total} 条\n\n本站同名数据会被覆盖（本站的同步密码和同步设置保留）。导入后页面会刷新。`, '覆盖导入');
-            if (!ok) return '已取消导入。';
+            const ok = await confirmAction('导入全站备份', `备份时间：${pack.exportedAt || '未知'}\n${databases.length} 个数据库 · ${total} 条记录\n\n${overwrite}`, '覆盖导入');
+            if (!ok) return '已取消导入';
             await applyImport(databases, pack.webStorage || {}, progress);
             return '';
         }
@@ -355,8 +356,8 @@ RPHubSDK.register({
                     title: '全站备份',
                     render(body) {
                         body.innerHTML = `
-                            <p class="rph-ui-note">把本站浏览器里的全部数据（角色卡、聊天、世界书、设置、插件和插件数据等）导出成一个文件，可以导入到本站或别的站点。</p>
-                            <p class="rph-ui-muted">不包含：本站的同步密码和同步设置；生成的图片（存在站点的 R2 里，不在浏览器中）。导入到新站点后，旧图会显示为读取失败，需要的话可以在图片上点重新生成。</p>
+                            <p class="rph-ui-note">导出本站浏览器中的全部数据（角色卡、聊天、世界书、设置、插件等），可导入到本站或其他站点。</p>
+                            <p class="rph-ui-muted">不包含同步密码、同步设置和生成的图片，导入到其他站点后旧图片需要重新生成。</p>
                             <div class="rph-ui-actions" style="justify-content:flex-start;flex-wrap:wrap">
                                 <button type="button" class="modal-primary-button rph-ui-button" data-act="zip">导出 ZIP（推荐）</button>
                                 <button type="button" class="modal-secondary-button rph-ui-button" data-act="json">导出 JSON</button>
@@ -366,23 +367,23 @@ RPHubSDK.register({
                         const status = body.querySelector('[data-status]');
                         const buttons = [...body.querySelectorAll('[data-act]')];
                         const progress = (text) => { status.textContent = text; };
-                        const run = async (task) => {
+                        const run = async (action, task) => {
                             buttons.forEach((button) => { button.disabled = true; });
                             try {
                                 const message = await task();
                                 if (message) { progress(message); ctx.ui.toast(message, { kind: 'success' }); }
                             } catch (error) {
-                                progress('失败：' + error.message);
-                                ctx.ui.toast('全站备份失败：' + error.message);
+                                progress(`${action}失败：${error.message}`);
+                                ctx.ui.toast(`${action}失败：${error.message}`);
                             } finally {
                                 buttons.forEach((button) => { button.disabled = false; });
                             }
                         };
-                        body.querySelector('[data-act="zip"]').onclick = () => run(() => exportZip(progress));
-                        body.querySelector('[data-act="json"]').onclick = () => run(() => exportJson(progress));
+                        body.querySelector('[data-act="zip"]').onclick = () => run('导出', () => exportZip(progress));
+                        body.querySelector('[data-act="json"]').onclick = () => run('导出', () => exportJson(progress));
                         body.querySelector('[data-act="import"]').onclick = () => {
                             const input = Object.assign(document.createElement('input'), { type: 'file', accept: '.zip,.json,application/zip,application/json' });
-                            input.onchange = () => { const file = input.files?.[0]; if (file) run(() => importFile(file, progress)); };
+                            input.onchange = () => { const file = input.files?.[0]; if (file) run('导入', () => importFile(file, progress)); };
                             input.click();
                         };
                     }

@@ -15,11 +15,11 @@
     const RANGE_CLASS = 'compact-range w-full h-1.5 bg-primary-100 rounded-lg appearance-none cursor-pointer accent-primary-500';
 
     RPHubSDK.register({
-        id: 'tts-reader', name: '朗读', version: '1.0.1', requiresApi: 4,
+        id: 'tts-reader', name: '朗读', version: '1.0.2', requiresApi: 4,
         init(ctx) {
             const synth = window.speechSynthesis;
             if (!synth || typeof window.SpeechSynthesisUtterance !== 'function') {
-                ctx.ui.addSidebarEntry({ label: '朗读设置', onClick: () => ctx.ui.toast('这个浏览器不支持语音朗读', { kind: 'warning' }) });
+                ctx.ui.addSidebarEntry({ label: '朗读设置', onClick: () => ctx.ui.toast('当前浏览器不支持朗读', { kind: 'warning' }) });
                 return;
             }
             const highlight = document.createElement('style');
@@ -178,7 +178,7 @@
             function startReading(index) {
                 const body = messageBody(index);
                 const list = body ? segments(body) : [];
-                if (!list.length) return ctx.ui.toast('这条消息没有要读的文字', { kind: 'info' });
+                if (!list.length) return ctx.ui.toast('这条消息没有可朗读的文字', { kind: 'info' });
                 speak(list, index).catch((error) => ctx.log('朗读失败', error));
             }
             const toggleReading = (index) => (session?.index === index ? stop() : startReading(index));
@@ -224,12 +224,12 @@
             refreshButtons();
 
             ctx.ui.addComposerButton({
-                label: '朗读最新回复（朗读中再点一下停止）',
+                label: '朗读最新回复（再次点击停止）',
                 text: '朗读',
                 onClick() {
                     if (session) return stop();
                     const index = lastReplyIndex();
-                    if (index < 0) return ctx.ui.toast('还没有 AI 回复', { kind: 'info' });
+                    if (index < 0) return ctx.ui.toast('暂无 AI 回复', { kind: 'info' });
                     startReading(index);
                 }
             });
@@ -273,20 +273,20 @@
                             const range = (key, label) => `<label class="rph-ui-field"><span>${label} <span data-show="${key}"></span></span><input type="range" min="0.5" max="2" step="0.1" class="${RANGE_CLASS}" data-k="${key}"></label>`;
                             body.innerHTML = `
                                 <div class="rph-ui-field"><span>声音</span><select class="rph-ui-input" data-voice></select></div>
-                                <p class="rph-ui-muted">声音来自浏览器和系统，每台设备不一样，只存在这台设备上。电脑上用 Edge 浏览器能用到微软的自然人声。</p>
+                                <p class="rph-ui-muted">声音选择仅保存在本设备，电脑上使用 Edge 浏览器可选用微软自然语音。</p>
                                 ${range('rate', '语速')}
                                 ${range('pitch', '音调')}
-                                ${toggle('data-k="autoRead"', '回复结束后自动朗读')}
-                                ${toggle('data-k="onlyQuotes"', '只读引号里的对白')}
-                                ${toggle('data-k="skipParens"', '不读括号里的内容')}
-                                ${toggle('data-k="skipActions"', '不读星号动作（斜体字）')}
+                                ${toggle('data-k="autoRead"', '自动朗读')}
+                                ${toggle('data-k="onlyQuotes"', '仅朗读引号内的对白')}
+                                ${toggle('data-k="skipParens"', '跳过括号内容')}
+                                ${toggle('data-k="skipActions"', '跳过星号动作（斜体）')}
                                 <section class="rph-ui-section">
-                                    <h3>要读的框（只对当前角色卡）</h3>
-                                    <p class="rph-ui-muted">下面是最新回复里带样式的框，关掉的那一类以后不读。状态栏、折叠块、表格、代码和插图本来就不读。</p>
+                                    <h3>带样式的框（仅当前角色卡）</h3>
+                                    <p class="rph-ui-muted">以下为最新回复中的框，关闭后不再朗读同类框。</p>
                                     <div data-boxes></div>
                                 </section>
                                 <div class="rph-ui-actions">
-                                    <button type="button" class="modal-secondary-button rph-ui-button" data-preview>看看最新回复会读什么</button>
+                                    <button type="button" class="modal-secondary-button rph-ui-button" data-preview>预览朗读内容</button>
                                     <button type="button" class="modal-primary-button rph-ui-button" data-try>试听</button>
                                 </div>
                                 <div class="rph-ui-note" data-preview-text hidden style="white-space:pre-wrap;max-height:40vh;overflow:auto"></div>`;
@@ -298,7 +298,7 @@
                                 const list = all.some(isChinese) ? all.filter(isChinese) : all;
                                 const current = pickVoice();
                                 select.innerHTML = '';
-                                if (!list.length) select.appendChild(new Option('这个设备没有可用的声音', ''));
+                                if (!list.length) select.appendChild(new Option('暂无可用声音', ''));
                                 list.forEach((voice) => select.appendChild(new Option(`${voice.name}（${voice.lang}）`, voice.name, false, voice === current)));
                             };
                             fillVoices();
@@ -327,7 +327,7 @@
                             const kinds = latest() ? boxKinds(latest()) : [];
                             saved.forEach((box) => { if (!kinds.some((kind) => kind.key === box.key)) kinds.push(box); });
                             const boxes = body.querySelector('[data-boxes]');
-                            boxes.innerHTML = kinds.length ? kinds.map((_, i) => toggle(`data-box="${i}"`, '')).join('') : '<p class="rph-ui-muted">最新回复里没有带样式的框。</p>';
+                            boxes.innerHTML = kinds.length ? kinds.map((_, i) => toggle(`data-box="${i}"`, '')).join('') : '<p class="rph-ui-muted">暂无带样式的框。</p>';
                             kinds.forEach((kind, i) => {
                                 const input = boxes.querySelector(`[data-box="${i}"]`);
                                 input.nextElementSibling.nextElementSibling.textContent = kind.sample;
@@ -341,7 +341,7 @@
                             const preview = body.querySelector('[data-preview-text]');
                             body.querySelector('[data-preview]').onclick = () => {
                                 const message = latest();
-                                preview.textContent = message ? (segments(message).map((item) => item.text).join('\n') || '最新回复里没有要读的文字。') : '还没有 AI 回复，或者最新回复不在当前页面上。';
+                                preview.textContent = message ? (segments(message).map((item) => item.text).join('\n') || '最新回复里没有可朗读的文字。') : '暂无 AI 回复，或最新回复不在当前页面。';
                                 preview.hidden = false;
                             };
                             body.querySelector('[data-try]').onclick = () => speak([{ el: null, text: '你好，这是朗读的试听。语速和音调可以在上面调整。' }], null).catch((error) => ctx.log('试听失败', error));

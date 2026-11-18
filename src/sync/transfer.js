@@ -12,7 +12,7 @@
                 const retryResponse = await postSync({ action: 'pull-manifest' });
                 const retryRemote = retryResponse.remote;
                 if (retryRemote?.snapshotFormat && retryRemote.snapshotFormat !== LEGACY_SNAPSHOT_FORMAT) {
-                    throw Object.assign(new Error('服务器同步版本已变化，请重新拉取。'), { status: 409 });
+                    throw Object.assign(new Error('云端数据已更新，请重新下载。'), { status: 409 });
                 }
                 return downloadLegacyRemoteSnapshot(retryRemote, false);
             }
@@ -21,7 +21,7 @@
 
         const json = payload;
         if (remote.checksum && await sha256(json) !== remote.checksum) {
-            throw new Error('服务器数据整体校验失败。');
+            throw new Error(CLOUD_DATA_MISMATCH);
         }
 
         return {
@@ -33,7 +33,7 @@
     async function downloadLegacySnapshotJsonParts(remote) {
         const chunkCount = Number(remote.chunkCount || 0);
         if (!Number.isInteger(chunkCount) || chunkCount <= 0) {
-            throw new Error('服务器数据格式不正确。');
+            throw new Error(CLOUD_DATA_INVALID);
         }
 
         const ranges = [];
@@ -59,25 +59,25 @@
                     count: range.count
                 }, { timeoutMs: transferTimeout(range.bytes) });
                 if (!response.bytes || !(response.bytes instanceof Uint8Array)) {
-                    throw new Error('服务器分批数据格式不正确。');
+                    throw new Error(CLOUD_DATA_INVALID);
                 }
                 const bytes = response.bytes;
                 const expectedBytes = Number(response.byteLength || 0);
                 if (expectedBytes > 0 && bytes.byteLength !== expectedBytes) {
-                    throw new Error('服务器分批数据大小不正确。');
+                    throw new Error(CLOUD_DATA_MISMATCH);
                 }
                 byteParts[rangeIndex] = bytes;
                 completed += 1;
                 updateProgress(
                     15 + Math.round((completed / ranges.length) * 35),
-                    `正在下载服务器数据 ${Math.round((completed / ranges.length) * 100)}%...`
+                    `正在下载… ${Math.round((completed / ranges.length) * 100)}%`
                 );
                 await wait(0);
             }
         }
 
         await Promise.all(Array.from({ length: workerCount }, () => downloadNextRange()));
-        updateProgress(52, '服务器数据下载完成，正在校验...');
+        updateProgress(52, '正在校验数据…');
         const totalBytes = byteParts.reduce((sum, part) => sum + part.byteLength, 0);
         const merged = new Uint8Array(totalBytes);
         let offset = 0;
@@ -92,7 +92,7 @@
         const chunkCount = Number(remote?.chunkCount || 0);
         const manifest = Array.isArray(remote?.chunkManifest) ? remote.chunkManifest : [];
         if (!Number.isInteger(chunkCount) || chunkCount <= 0 || manifest.length !== chunkCount) {
-            throw new Error('服务器分片清单不完整。');
+            throw new Error(CLOUD_DATA_INVALID);
         }
 
         let totalBytes = 0;
@@ -100,31 +100,31 @@
             const checksum = String(chunk?.checksum || '').toLowerCase();
             const length = Number(chunk?.length || chunk?.byteLength || 0);
             if (Number(chunk?.index) !== index || !/^[a-f0-9]{64}$/.test(checksum)) {
-                throw new Error(`服务器第 ${index + 1} 个分片信息不正确。`);
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (!Number.isInteger(length) || length <= 0 || length > CDC_HARD_MAX_BYTES) {
-                throw new Error(`服务器第 ${index + 1} 个分片大小不正确。`);
+                throw new Error(CLOUD_DATA_INVALID);
             }
             totalBytes += length;
             return { index, checksum, length };
         });
 
         if (totalBytes !== Number(remote.totalBytes)) {
-            throw new Error('服务器分片总大小校验失败。');
+            throw new Error(CLOUD_DATA_MISMATCH);
         }
         return normalized;
     }
 
     async function validateStreamSnapshotManifest(remote) {
         if (remote?.snapshotFormat !== SNAPSHOT_FORMAT || !isStreamSchema(remote?.schemaVersion)) {
-            throw new Error('服务器快照格式不受支持。');
+            throw new Error('云端数据格式不受支持。');
         }
         if (Number(remote.schemaVersion) === GZIP_SCHEMA_VERSION && typeof DecompressionStream !== 'function') {
-            throw new Error('这个浏览器版本太旧，读不了压缩的同步数据，请更新浏览器后再拉取。');
+            throw new Error('浏览器版本过旧，请更新浏览器后重试。');
         }
         const recordCount = Number(remote.recordCount || 0);
         if (!Number.isInteger(recordCount) || recordCount < 0) {
-            throw new Error('服务器快照记录数量不正确。');
+            throw new Error(CLOUD_DATA_INVALID);
         }
         const chunkManifest = normalizeRemoteChunkManifest(remote);
         const snapshot = {
@@ -135,7 +135,7 @@
         };
         const expectedChecksum = await sha256(buildStreamSnapshotChecksumSource(snapshot));
         if (expectedChecksum !== String(remote.checksum || '').toLowerCase()) {
-            throw new Error('服务器快照清单校验失败。');
+            throw new Error(CLOUD_DATA_MISMATCH);
         }
         return chunkManifest;
     }
@@ -143,7 +143,7 @@
     function openDownloadStagingDb(name = DOWNLOAD_STAGING_DB) {
         return new Promise((resolve, reject) => {
             const request = indexedDB.open(name, 1);
-            request.onerror = () => reject(request.error || new Error('同步临时数据库打开失败。'));
+            request.onerror = () => reject(request.error || new Error('打开本地临时存储失败。'));
             request.onupgradeneeded = () => {
                 const stagingDb = request.result;
                 if (!stagingDb.objectStoreNames.contains(DOWNLOAD_STAGING_STORE)) {
@@ -185,10 +185,10 @@
                 } else if (value instanceof ArrayBuffer) {
                     resolve(new Uint8Array(value));
                 } else {
-                    reject(Object.assign(new Error(`同步临时分片 ${index} 不存在。`), { chunkUnavailable: true }));
+                    reject(Object.assign(new Error('临时数据丢失，请重试。'), { chunkUnavailable: true }));
                 }
             };
-            request.onerror = () => reject(request.error || new Error('同步临时数据读取失败。'));
+            request.onerror = () => reject(request.error || new Error('读取临时数据失败。'));
         });
     }
 
@@ -206,7 +206,7 @@
             || storedLengths.some((length) => !Number.isInteger(length) || length <= 0)
             || response.bytes.byteLength !== expectedLength
             || (Number(response.byteLength || 0) > 0 && Number(response.byteLength) !== expectedLength)) {
-            throw new Error(`服务器第 ${start + 1}-${start + count} 个分片大小校验失败。`);
+            throw new Error(CLOUD_DATA_MISMATCH);
         }
 
         const chunks = [];
@@ -216,7 +216,7 @@
             offset += storedLengths[index];
             const bytes = gzip ? await gunzipBytes(stored).catch(() => null) : stored;
             if (!bytes || bytes.byteLength !== chunk.length || await sha256Bytes(bytes) !== chunk.checksum) {
-                throw new Error(`服务器第 ${chunk.index + 1} 个分片内容校验失败。`);
+                throw new Error(CLOUD_DATA_MISMATCH);
             }
             chunks.push({ ...chunk, bytes });
         }
@@ -252,7 +252,7 @@
                 cursor.continue();
             };
             tx.oncomplete = () => resolve(present);
-            tx.onabort = () => reject(tx.error || new Error('同步缓存清理失败。'));
+            tx.onabort = () => reject(tx.error || new Error('清理缓存失败。'));
         });
     }
 
@@ -302,7 +302,7 @@
                     for (const chunk of chunks) options.verified?.add(chunkCacheKey(chunk));
                     completedChunks += chunks.length;
                     const percent = Math.round(completedChunks / Math.max(1, totalChunks) * 100);
-                    updateProgress(percent, `正在拉取服务器分片 ${percent}%...`);
+                    updateProgress(percent, `正在下载… ${percent}%`);
                 }).catch((error) => { failure ||= error; }).finally(() => {
                     pendingBytes -= range.bytes;
                     active.delete(task);
@@ -323,7 +323,7 @@
                     stagingDb.name === DOWNLOAD_CACHE_DB ? key : chunk.index);
                 if (bytes.byteLength !== chunk.length
                     || (verifyChecksum && await sha256Bytes(bytes) !== chunk.checksum)) {
-                    throw Object.assign(new Error(`同步临时分片 ${chunk.index + 1} 校验失败。`), { chunkUnavailable: true });
+                    throw Object.assign(new Error('临时数据校验失败，请重试。'), { chunkUnavailable: true });
                 }
                 return bytes;
             };
@@ -400,7 +400,7 @@
 
     function normalizeLegacyCharacterForStream(character, index, seen, assignMissingUuid) {
         if (!character || typeof character !== 'object' || Array.isArray(character)) {
-            throw new TypeError(`旧快照第 ${index + 1} 张角色卡格式无效，已取消恢复。`);
+            throw new TypeError(`第 ${index + 1} 张角色卡格式不正确。`);
         }
         const rawUuid = character.uuid;
         let uuid = rawUuid;
@@ -409,13 +409,13 @@
             uuid = crypto.randomUUID();
             character.uuid = uuid;
         } else if (typeof rawUuid !== 'string') {
-            throw new TypeError(`旧快照第 ${index + 1} 张角色卡 UUID 不是字符串，已取消恢复。`);
+            throw new TypeError(`第 ${index + 1} 张角色卡的 ID 格式不正确。`);
         }
         if (uuid === 'index') {
-            throw new Error('旧快照角色卡 UUID index 与角色卡索引键冲突，已取消恢复。');
+            throw new Error('角色卡 ID 不能为 index。');
         }
         if (seen.has(uuid)) {
-            throw new Error(`旧快照角色卡 UUID 重复：${uuid}。为避免合并存档，已取消恢复。`);
+            throw new Error(`角色卡 ID 重复：${uuid}。`);
         }
         seen.add(uuid);
         return uuid;
@@ -444,7 +444,7 @@
             try {
                 line = JSON.parse(lineText);
             } catch (_) {
-                throw new Error('服务器快照记录格式不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
 
             switch (line?.type) {
@@ -475,7 +475,7 @@
                 case 'snapshotEnd':
                     return this.finishSnapshot(line);
                 default:
-                    throw new Error('服务器快照包含未知记录。');
+                    throw new Error(CLOUD_DATA_INVALID);
             }
         }
 
@@ -483,7 +483,7 @@
             if (this.snapshotStarted
                 || line.format !== SNAPSHOT_FORMAT
                 || !isStreamSchema(line.schemaVersion)) {
-                throw new Error('服务器快照头信息不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             this.snapshotStarted = true;
             this.workshopVersion = line.workshopVersion;
@@ -491,9 +491,9 @@
 
         restoreLocalStorageEntry(line) {
             if (!this.snapshotStarted || this.localStorageEnded || this.currentDatabase || typeof line.key !== 'string') {
-                throw new Error('服务器本地设置记录顺序不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
-            if (!isAppLocalStorageKey(line.key)) throw new Error('服务器包含无效的本地设置。');
+            if (!isAppLocalStorageKey(line.key)) throw new Error(CLOUD_DATA_INVALID);
             localStorage.setItem(line.key, String(line.value ?? ''));
             this.localStorageKeys.add(line.key);
             this.recordCount += 1;
@@ -501,7 +501,7 @@
 
         finishLocalStorage() {
             if (!this.snapshotStarted || this.localStorageEnded || this.currentDatabase) {
-                throw new Error('服务器本地设置结束标记不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             for (const entry of readLocalStorageSnapshot()) {
                 if (this.workshopVersion !== 1 && isWorkshopLocalStorageKey(entry.key)) continue;
@@ -512,7 +512,7 @@
 
         async startDatabase(line) {
             if (!this.localStorageEnded || this.currentDatabase || typeof line.name !== 'string') {
-                throw new Error('服务器数据库记录顺序不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
 
             const knownDb = CONFIG.knownDatabases.find((dbDef) => dbDef.name === line.name);
@@ -551,11 +551,11 @@
         getStoreState(line) {
             const current = this.currentDatabase;
             if (!current || line.database !== current.name || typeof line.store !== 'string') {
-                throw new Error('服务器数据库记录归属不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (current.ignored) return null;
             const storeState = current.stores.get(line.store);
-            if (!storeState || storeState.finished) throw new Error('服务器对象存储记录顺序不正确。');
+            if (!storeState || storeState.finished) throw new Error(CLOUD_DATA_INVALID);
             return storeState;
         }
 
@@ -572,7 +572,7 @@
                 this.recordCount += 1;
                 return;
             }
-            if (storeState.arrayRecord) throw new Error('服务器数组记录尚未结束。');
+            if (storeState.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
             const record = {
                 key: line.key,
                 value: Object.prototype.hasOwnProperty.call(line, 'value') ? line.value : undefined
@@ -590,14 +590,14 @@
             const storeState = this.getStoreState(line);
             const length = Number(line.length);
             if (!Number.isInteger(length) || length < 0) {
-                throw new Error('服务器数组记录头信息不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (!storeState) {
-                if (this.currentDatabase.arrayRecord) throw new Error('服务器数组记录头信息不正确。');
+                if (this.currentDatabase.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
                 this.currentDatabase.arrayRecord = { expectedLength: length, nextIndex: 0 };
                 return;
             }
-            if (storeState.arrayRecord) throw new Error('服务器数组记录头信息不正确。');
+            if (storeState.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
             const splitLegacyCharacters = isLegacyCharacterArrayLine(
                 this.currentDatabase.name,
                 line.store,
@@ -619,14 +619,14 @@
             if (!storeState) {
                 const arrayRecord = this.currentDatabase.arrayRecord;
                 if (!arrayRecord || Number(line.index) !== arrayRecord.nextIndex) {
-                    throw new Error('服务器数组记录顺序不正确。');
+                    throw new Error(CLOUD_DATA_INVALID);
                 }
                 arrayRecord.nextIndex += 1;
                 return;
             }
             const arrayRecord = storeState.arrayRecord;
             if (!arrayRecord || Number(line.index) !== arrayRecord.nextIndex) {
-                throw new Error('服务器数组记录顺序不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             const value = Object.prototype.hasOwnProperty.call(line, 'value') ? line.value : null;
             let pending;
@@ -654,7 +654,7 @@
             if (!storeState) {
                 const arrayRecord = this.currentDatabase.arrayRecord;
                 if (!arrayRecord || arrayRecord.nextIndex !== arrayRecord.expectedLength) {
-                    throw new Error('服务器数组记录数据不完整。');
+                    throw new Error(CLOUD_DATA_INVALID);
                 }
                 this.currentDatabase.arrayRecord = null;
                 this.recordCount += 1;
@@ -662,7 +662,7 @@
             }
             const arrayRecord = storeState.arrayRecord;
             if (!arrayRecord || arrayRecord.nextIndex !== arrayRecord.expectedLength) {
-                throw new Error('服务器数组记录数据不完整。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             storeState.arrayRecord = null;
             if (arrayRecord.splitLegacyCharacters) {
@@ -691,15 +691,15 @@
         async finishStore(line) {
             const current = this.currentDatabase;
             if (!current || line.database !== current.name || typeof line.store !== 'string') {
-                throw new Error('服务器对象存储结束标记不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (current.ignored) {
-                if (current.arrayRecord) throw new Error('服务器数组记录尚未结束。');
+                if (current.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
                 return;
             }
             const storeState = current.stores.get(line.store);
-            if (!storeState || storeState.finished) throw new Error('服务器对象存储结束顺序不正确。');
-            if (storeState.arrayRecord) throw new Error('服务器数组记录尚未结束。');
+            if (!storeState || storeState.finished) throw new Error(CLOUD_DATA_INVALID);
+            if (storeState.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
             await this.flushStore(storeState);
             await deleteMissingObjectStoreRecords(current.db, line.store, storeState.incomingKeys);
             storeState.incomingKeys.clear();
@@ -708,10 +708,10 @@
 
         async finishDatabase(line) {
             const current = this.currentDatabase;
-            if (!current || line.name !== current.name) throw new Error('服务器数据库结束标记不正确。');
+            if (!current || line.name !== current.name) throw new Error(CLOUD_DATA_INVALID);
             if (!current.ignored) {
                 if ([...current.stores.values()].some((storeState) => !storeState.finished)) {
-                    throw new Error('服务器对象存储数据不完整。');
+                    throw new Error(CLOUD_DATA_INVALID);
                 }
                 if (current.db) current.db.close();
                 const missingStores = current.knownDb.stores.filter((storeName) => !current.stores.has(storeName));
@@ -722,10 +722,10 @@
 
         async finishSnapshot(line) {
             if (!this.snapshotStarted || this.snapshotEnded || !this.localStorageEnded || this.currentDatabase) {
-                throw new Error('服务器快照结束标记不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (Number(line.recordCount) !== this.recordCount || this.recordCount !== this.expectedRecordCount) {
-                throw new Error('服务器快照记录数量校验失败。');
+                throw new Error(CLOUD_DATA_MISMATCH);
             }
             for (const knownDb of CONFIG.knownDatabases) {
                 if (knownDb.workshop && this.workshopVersion !== 1) continue;
@@ -737,7 +737,7 @@
         }
 
         finish() {
-            if (!this.snapshotEnded) throw new Error('服务器快照数据不完整。');
+            if (!this.snapshotEnded) throw new Error(CLOUD_DATA_INVALID);
         }
 
         abort() {
@@ -763,7 +763,7 @@
             try {
                 line = JSON.parse(lineText);
             } catch (_) {
-                throw new Error('服务器快照记录格式不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
 
             switch (line?.type) {
@@ -772,7 +772,7 @@
                         || line.format !== SNAPSHOT_FORMAT
                         || !isStreamSchema(line.schemaVersion)
                         || (line.workshopVersion !== undefined && line.workshopVersion !== 1)) {
-                        throw new Error('服务器快照头信息不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.snapshotStarted = true;
                     break;
@@ -782,13 +782,13 @@
                         || this.currentDatabase
                         || typeof line.key !== 'string'
                         || !isAppLocalStorageKey(line.key)) {
-                        throw new Error('服务器本地设置记录顺序不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.recordCount += 1;
                     break;
                 case 'localStorageEnd':
                     if (!this.snapshotStarted || this.localStorageEnded || this.currentDatabase) {
-                        throw new Error('服务器本地设置结束标记不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.localStorageEnded = true;
                     break;
@@ -797,12 +797,12 @@
                         || this.currentDatabase
                         || typeof line.name !== 'string'
                         || !Array.isArray(line.stores)) {
-                        throw new Error('服务器数据库记录顺序不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     const storeNames = line.stores.map((store) => store?.name);
                     if (storeNames.some((name) => typeof name !== 'string')
                         || new Set(storeNames).size !== storeNames.length) {
-                        throw new Error('服务器对象存储定义不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.currentDatabase = {
                         name: line.name,
@@ -813,9 +813,9 @@
                 }
                 case 'record':
                     this.validateStoreLine(line);
-                    if (this.arrayRecord) throw new Error('服务器数组记录尚未结束。');
+                    if (this.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
                     if (isLegacyCharacterArrayLine(this.currentDatabase.name, line.store, line.key)) {
-                        if (!Array.isArray(line.value)) throw new Error('旧快照角色卡记录格式无效。');
+                        if (!Array.isArray(line.value)) throw new Error('角色卡数据格式不正确。');
                         const seen = new Set();
                         line.value.forEach((character, index) => {
                             normalizeLegacyCharacterForStream(character, index, seen, false);
@@ -827,7 +827,7 @@
                     this.validateStoreLine(line);
                     const length = Number(line.length);
                     if (this.arrayRecord || !Number.isInteger(length) || length < 0) {
-                        throw new Error('服务器数组记录头信息不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.arrayRecord = {
                         length,
@@ -844,7 +844,7 @@
                 case 'recordArrayItem':
                     this.validateStoreLine(line);
                     if (!this.arrayRecord || Number(line.index) !== this.arrayRecord.nextIndex) {
-                        throw new Error('服务器数组记录顺序不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     if (this.arrayRecord.splitLegacyCharacters) {
                         normalizeLegacyCharacterForStream(
@@ -859,14 +859,14 @@
                 case 'recordArrayEnd':
                     this.validateStoreLine(line);
                     if (!this.arrayRecord || this.arrayRecord.nextIndex !== this.arrayRecord.length) {
-                        throw new Error('服务器数组记录数据不完整。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.arrayRecord = null;
                     this.recordCount += 1;
                     break;
                 case 'storeEnd':
                     this.validateStoreLine(line);
-                    if (this.arrayRecord) throw new Error('服务器数组记录尚未结束。');
+                    if (this.arrayRecord) throw new Error(CLOUD_DATA_INVALID);
                     this.currentDatabase.finishedStores.add(line.store);
                     this.currentStore = null;
                     break;
@@ -876,7 +876,7 @@
                         || this.currentStore
                         || this.arrayRecord
                         || this.currentDatabase.finishedStores.size !== this.currentDatabase.stores.size) {
-                        throw new Error('服务器数据库结束标记不正确。');
+                        throw new Error(CLOUD_DATA_INVALID);
                     }
                     this.currentDatabase = null;
                     break;
@@ -887,12 +887,12 @@
                         || this.currentDatabase
                         || Number(line.recordCount) !== this.recordCount
                         || this.recordCount !== this.expectedRecordCount) {
-                        throw new Error('服务器快照记录数量校验失败。');
+                        throw new Error(CLOUD_DATA_MISMATCH);
                     }
                     this.snapshotEnded = true;
                     break;
                 default:
-                    throw new Error('服务器快照包含未知记录。');
+                    throw new Error(CLOUD_DATA_INVALID);
             }
         }
 
@@ -902,16 +902,16 @@
                 || typeof line.store !== 'string'
                 || !this.currentDatabase.stores.has(line.store)
                 || this.currentDatabase.finishedStores.has(line.store)) {
-                throw new Error('服务器数据库记录归属不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (this.currentStore && this.currentStore !== line.store) {
-                throw new Error('服务器对象存储记录顺序不正确。');
+                throw new Error(CLOUD_DATA_INVALID);
             }
             if (!this.currentStore) this.currentStore = line.store;
         }
 
         finish() {
-            if (!this.snapshotEnded) throw new Error('服务器快照数据不完整。');
+            if (!this.snapshotEnded) throw new Error(CLOUD_DATA_INVALID);
         }
     }
 

@@ -374,7 +374,7 @@ function assertImageTokenProvider(params, token) {
     const tokenProvider = getImageTokenProviderName(token);
     const requestedProvider = String(params.requested_provider || '').trim();
     if (tokenProvider && requestedProvider && tokenProvider !== requestedProvider) {
-        throw createHttpError('生图密钥与图片记录的 provider 不匹配。', 409);
+        throw createHttpError('生图密钥与图片使用的服务不一致', 409);
     }
 }
 
@@ -489,8 +489,8 @@ function getImageProviderOverride(params, env) {
 }
 
 function buildImageUpstreamUrl(params, token, env) {
-    if (!params.tag) throw new Error('缺少生图提示词。');
-    if (!token) throw new Error('缺少生图密钥。');
+    if (!params.tag) throw new Error('缺少生图提示词');
+    if (!token) throw new Error('请先填写生图密钥');
     const upstream = new URL('/generate', getImageProviderOverride(params, env) || getImageProviderBase(params.provider, token));
     upstream.searchParams.set('tag', params.tag);
     upstream.searchParams.set('token', token);
@@ -521,7 +521,7 @@ async function fetchImageWithTimeout(url) {
             signal: controller.signal
         });
     } catch (err) {
-        if (err?.name === 'AbortError') throw createHttpError('生图服务请求超时。', 504);
+        if (err?.name === 'AbortError') throw createHttpError('生图服务请求超时', 504);
         throw err;
     } finally {
         clearTimeout(timeout);
@@ -562,7 +562,7 @@ function deletedImagePlaceholder(characterName) {
     return `<svg xmlns="http://www.w3.org/2000/svg" width="960" height="640" viewBox="0 0 960 640">
 <rect width="960" height="640" rx="28" fill="#f6f7f9"/>
 <rect x="56" y="56" width="848" height="528" rx="24" fill="#ffffff" stroke="#dfe3e8" stroke-width="2"/>
-<text x="480" y="292" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#3f4652">图片已清理</text>
+<text x="480" y="292" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#3f4652">图片已删除</text>
 <text x="480" y="348" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" fill="#7b8491">${safeName}</text>
 </svg>`;
 }
@@ -570,13 +570,13 @@ function deletedImagePlaceholder(characterName) {
 async function readStreamChunk(reader, deadline, label) {
     if (!deadline) return reader.read();
     const remaining = deadline - Date.now();
-    if (remaining <= 0) throw createHttpError(`${label}读取超时。`, 504);
+    if (remaining <= 0) throw createHttpError(`${label}读取超时`, 504);
     let timeout;
     try {
         return await Promise.race([
             reader.read(),
             new Promise((_, reject) => {
-                timeout = setTimeout(() => reject(createHttpError(`${label}读取超时。`, 504)), remaining);
+                timeout = setTimeout(() => reject(createHttpError(`${label}读取超时`, 504)), remaining);
             })
         ]);
     } finally {
@@ -595,12 +595,12 @@ async function describeNonImageReply(response, contentType) {
     } catch (_) {
         reason = (text.match(/<title[^>]*>([^<]*)<\/title>/i)?.[1] || text.replace(/<(style|script)[\s\S]*?<\/\1>/gi, '').replace(/<[^>]+>/g, ' ')).replace(/\s+/g, ' ').trim();
     }
-    return reason ? `它说：${reason.slice(0, 200)}` : `回的是 ${contentType || '不明类型'}`;
+    return reason ? reason.slice(0, 200) : `内容类型为 ${contentType || '未知'}`;
 }
 
 async function readLimitedBody(body, maxBytes, label, emptyStatus = 400, expectedBytes = 0, timeoutMs = 0) {
     if (!body || typeof body.getReader !== 'function') {
-        throw createHttpError(`${label}为空。`, emptyStatus);
+        throw createHttpError(`${label}为空`, emptyStatus);
     }
     const reader = body.getReader();
     const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : 0;
@@ -640,13 +640,13 @@ async function readLimitedBody(body, maxBytes, label, emptyStatus = 400, expecte
     } finally {
         reader.releaseLock();
     }
-    if (total === 0) throw createHttpError(`${label}为空。`, emptyStatus);
+    if (total === 0) throw createHttpError(`${label}为空`, emptyStatus);
     return bytes.subarray(0, total);
 }
 
 function createLimitedBodyStream(body, maxBytes, label, emptyStatus = 400, timeoutMs = 0) {
     if (!body || typeof body.getReader !== 'function') {
-        throw createHttpError(`${label}为空。`, emptyStatus);
+        throw createHttpError(`${label}为空`, emptyStatus);
     }
     const reader = body.getReader();
     const deadline = timeoutMs > 0 ? Date.now() + timeoutMs : 0;
@@ -663,7 +663,7 @@ function createLimitedBodyStream(body, maxBytes, label, emptyStatus = 400, timeo
             try {
                 const next = await readStreamChunk(reader, deadline, label);
                 if (next.done) {
-                    if (total === 0) throw createHttpError(`${label}为空。`, emptyStatus);
+                    if (total === 0) throw createHttpError(`${label}为空`, emptyStatus);
                     release();
                     controller.close();
                     return;
@@ -706,7 +706,7 @@ async function handleImageRender(request, env) {
         return error('Method not allowed.', 405);
     }
     if (request.url.length > IMAGE_MAX_REQUEST_URL_LENGTH) {
-        return error('生图请求参数过长。', 414);
+        return error('生图请求参数过长', 414);
     }
     const url = new URL(request.url);
     const clientToken = getImageClientToken(request, url);
@@ -715,7 +715,7 @@ async function handleImageRender(request, env) {
     const params = buildImageParams(url, token);
     const candidates = await buildImageLookupCandidates(params, token, request.method !== 'POST');
     const primary = candidates[0];
-    if (!primary) return error('缺少有效的角色名称。', 400);
+    if (!primary) return error('缺少有效的角色名称', 400);
     // 从魔改版迁移来的图：记录里存着它在 R2 的准确位置，按参数找不到时就用它（只用于显示，不用于生成）。
     const migrated = request.method === 'POST' ? null : parseImageObjectKey(url.searchParams.get('image_key'));
     if (migrated) candidates.push({ params, key: migrated.key, deletedKey: createImageDeletedKey(migrated.characterName, migrated.checksum) });
@@ -742,7 +742,7 @@ async function handleImageRender(request, env) {
         const candidate = candidates[hitAt];
         const cached = objects[hitAt];
         const contentType = normalizeRasterContentType(cached.httpMetadata?.contentType);
-        if (!contentType) return error('缓存图片格式不受支持。', 415);
+        if (!contentType) return error('图片格式不受支持', 415);
         // 存好的图不会再变（重新生成会换 seed，地址就不同）：让浏览器留一份，每次显示前只带 ETag 问一句“变了没”，
         // 没变回 304 不传正文；删掉的图在上面已经回了占位图。
         const headers = {
@@ -775,11 +775,11 @@ async function handleImageRender(request, env) {
         });
     }
 
-    if (!token) return error('缺少生图密钥。', 401);
-    if (!clientToken && !getSyncPassword(env)) return error('使用 Worker 生图密钥时必须配置 RP_SYNC_PASSWORD。', 503);
+    if (!token) return error('请先填写生图密钥', 401);
+    if (!clientToken && !getSyncPassword(env)) return error('使用 IMAGE_GEN_TOKEN 时必须设置 RP_SYNC_PASSWORD', 503);
     // 配了同步密码就一律要带（和上传接口一样）：不然谁拿个生图密钥都能往这个站的 R2 里写图、把站主最旧的图挤掉。
     if (getSyncPassword(env) && !await isRequestAuthorized(request, env)) {
-        return error('Sync password required.', 401, { authRequired: true });
+        return error('同步密码错误', 401, { authRequired: true });
     }
     assertImageTokenProvider(primary.params, token);
 
@@ -789,7 +789,7 @@ async function handleImageRender(request, env) {
         return error(`生图服务返回异常：HTTP ${upstreamResponse.status}`, upstreamResponse.status);
     }
     const contentType = (upstreamResponse.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
-    if (!IMAGE_RASTER_CONTENT_TYPES.has(contentType)) return error(`生图服务没有返回图片，${await describeNonImageReply(upstreamResponse, contentType)}`, 502);
+    if (!IMAGE_RASTER_CONTENT_TYPES.has(contentType)) return error(`生图服务未返回图片：${await describeNonImageReply(upstreamResponse, contentType)}`, 502);
     const contentLength = Number(upstreamResponse.headers.get('content-length') || 0);
     if (contentLength > IMAGE_MAX_BYTES) return error(`图片过大：${contentLength}/${IMAGE_MAX_BYTES}`, 413);
     const imageBytes = await readLimitedBody(
@@ -819,14 +819,14 @@ async function handleImageRender(request, env) {
 // 生图插件在浏览器里生成好图片后上传到这里；存放位置由参数算出（和直链生图同一个位置），插件不能指定。
 async function storeUploadedImage(request, env, bucket, primary) {
     if (getSyncPassword(env) && !await isRequestAuthorized(request, env)) {
-        return error('Sync password required.', 401, { authRequired: true });
+        return error('同步密码错误', 401, { authRequired: true });
     }
     const contentType = (request.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
-    if (!IMAGE_RASTER_CONTENT_TYPES.has(contentType)) return error('只接受 PNG、JPEG、WebP、AVIF 或 GIF 图片。', 415);
+    if (!IMAGE_RASTER_CONTENT_TYPES.has(contentType)) return error('只支持 PNG、JPEG、WebP、AVIF 或 GIF 图片', 415);
     const contentLength = Number(request.headers.get('content-length') || 0);
     if (contentLength > IMAGE_MAX_BYTES) return error(`图片过大：${contentLength}/${IMAGE_MAX_BYTES}`, 413);
     const imageBytes = await readLimitedBody(request.body, IMAGE_MAX_BYTES, '图片', 413, contentLength, IMAGE_FETCH_TIMEOUT_MS);
-    if (!imageBytes.byteLength) return error('图片为空。', 400);
+    if (!imageBytes.byteLength) return error('图片为空', 400);
     await bucket.put(primary.key, imageBytes, {
         httpMetadata: { contentType },
         customMetadata: {
@@ -845,7 +845,7 @@ async function storeUploadedImage(request, env, bucket, primary) {
 
 async function readThumbnailBytes(request) {
     const contentType = (request.headers.get('content-type') || '').split(';', 1)[0].trim().toLowerCase();
-    if (contentType !== 'image/webp') throw createHttpError('缩略图格式必须是 WebP。', 415);
+    if (contentType !== 'image/webp') throw createHttpError('缩略图必须是 WebP 格式', 415);
     const contentLength = Number(request.headers.get('content-length') || 0);
     if (contentLength > IMAGE_THUMB_MAX_BYTES) {
         throw createHttpError(`缩略图过大：${contentLength}/${IMAGE_THUMB_MAX_BYTES}`, 413);
@@ -862,7 +862,7 @@ async function readThumbnailBytes(request) {
 
 async function putImageThumbnail(bucket, imageKey, bytes) {
     const parsed = parseImageObjectKey(imageKey);
-    if (!parsed) throw new Error('图片路径无效。');
+    if (!parsed) throw new Error('图片路径无效');
     const thumbKey = createImageThumbKey(parsed.characterName, parsed.checksum);
     await bucket.put(thumbKey, bytes, {
         httpMetadata: { contentType: 'image/webp' },
@@ -878,7 +878,7 @@ async function putImageThumbnail(bucket, imageKey, bytes) {
 
 async function handleImageThumbUpload(request, env) {
     if (request.method !== 'PUT' && request.method !== 'POST') return error('Method not allowed.', 405);
-    if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401, { authRequired: true });
+    if (!await isRequestAuthorized(request, env)) return error('同步密码错误', 401, { authRequired: true });
     const url = new URL(request.url);
     const token = getImageRequestToken(request, url, env);
     const params = buildImageParams(url, token);
@@ -893,7 +893,7 @@ async function handleImageThumbUpload(request, env) {
             break;
         }
     }
-    if (!imageKey) return error('原图不存在，不能保存缩略图。', 404);
+    if (!imageKey) return error('原图不存在，无法保存缩略图', 404);
     if (await bucket.head(thumbKey)) return json({ ok: true, existed: true, key: thumbKey });
     const bytes = await readThumbnailBytes(request);
     await putImageThumbnail(bucket, imageKey, bytes);
@@ -1096,11 +1096,11 @@ async function writeImageSettings(bucket, value) {
 }
 
 const STORAGE_CATEGORIES = [
-    [`${IMAGE_OBJECT_PREFIX}/`, 'images', '生成的图片'],
+    [`${IMAGE_OBJECT_PREFIX}/`, 'images', '图片'],
     [`${IMAGE_THUMB_PREFIX}/`, 'thumbs', '缩略图'],
     [`${IMAGE_PREFIX}/`, 'imageMeta', '生图记录'],
     ['rp-sync/', 'sync', '云同步数据'],
-    [`${APP_UPDATE_PREFIX}/`, 'appUpdate', '在线更新的页面']
+    [`${APP_UPDATE_PREFIX}/`, 'appUpdate', '程序更新文件']
 ];
 
 // 统计整个存储桶；清理计划从最旧的图开始，连同缩略图一起算，直到总量回到上限以下。
@@ -1174,7 +1174,7 @@ async function runStorageCleanup(bucket) {
 
 function imageAdminHtml() {
     return new Response(`<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>角色图片管理</title>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>图片管理</title>
 <style>
 :root{color-scheme:light;--bg:#f7f8fa;--surface:#fff;--raised:#eef0f4;--hover:#f1f3f7;--line:#e4e7ec;--text:#1a1d23;--muted:#7a8191;--accent:#3b6cf6;--accent-soft:#e8eefe;--danger:#e04646;--danger-soft:#fdecec}
 :root[data-theme=dark]{color-scheme:dark;--bg:#16171b;--surface:#1e1f24;--raised:#2a2b31;--hover:#26272d;--line:#31323a;--text:#e5e6ea;--muted:#8e92a0;--accent:#7f9cff;--accent-soft:#283157;--danger:#f07070;--danger-soft:#3b2326}
@@ -1206,9 +1206,9 @@ button,input,a{font:inherit;color:inherit}.hidden{display:none!important}svg{wid
 .mobile-only{display:none}
 @media(max-width:720px){#app{grid-template-columns:minmax(0,1fr)}.side{border-right:0}.show-main .side{display:none}body:not(.show-main) .main{display:none}.mobile-only{display:inline-flex}.main-head{padding:10px 12px;flex-wrap:wrap}.actions{width:100%}.actions .btn{flex:1}.scroll{padding:10px 10px 90px}.gallery{grid-template-columns:repeat(3,1fr);gap:6px}.viewer img{max-width:100vw;max-height:calc(100vh - 110px);border-radius:0}.nav{display:none}.select-bar{left:10px;right:10px;bottom:10px;transform:none;justify-content:space-between}}
 </style></head><body>
-<section id="auth" class="auth hidden"><div class="card"><h2>角色图片管理</h2><div class="sub">输入云同步密码后进入。</div><input id="password" type="password" placeholder="同步密码" autocomplete="current-password"><button id="login" class="btn primary">进入</button><div id="authMsg" class="msg"></div></div></section>
+<section id="auth" class="auth hidden"><div class="card"><h2>图片管理</h2><div class="sub">请输入同步密码</div><input id="password" type="password" placeholder="同步密码" autocomplete="current-password"><button id="login" class="btn primary">进入</button><div id="authMsg" class="msg"></div></div></section>
 <section id="app" class="hidden">
-<aside class="side"><div class="side-head"><h1>角色图片管理</h1><div id="stats" class="sub">读取中…</div><label class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input id="filter" type="search" placeholder="搜索角色卡"></label></div><div id="characters" class="char-list"></div></aside>
+<aside class="side"><div class="side-head"><h1>图片管理</h1><div id="stats" class="sub">加载中…</div><label class="search"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg><input id="filter" type="search" placeholder="搜索角色"></label></div><div id="characters" class="char-list"></div></aside>
 <main class="main"><div class="main-head"><button id="back" class="btn icon mobile-only" type="button" aria-label="返回">‹</button><div class="main-title"><h2 id="groupTitle"></h2><div id="groupMeta" class="sub"></div></div><div class="actions">
 <button id="refresh" class="btn icon" title="刷新"><svg viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.64-6.36L21 8"/><path d="M21 3v5h-5"/></svg></button>
 <button id="blurToggle" class="btn icon" title="隐藏图片"><svg viewBox="0 0 24 24"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19M14.12 14.12a3 3 0 1 1-4.24-4.24M1 1l22 22"/></svg></button>
@@ -1242,12 +1242,12 @@ function allImages(){var list=[];groups().forEach(function(g){g.images.forEach(f
 var cachedAll=null;
 function images(){if(current===STORAGE)return [];if(current===ALL)return cachedAll||(cachedAll=allImages());var list=groups();for(var i=0;i<list.length;i++)if(list[i].id===current)return list[i].images;return [];}
 function viewName(){if(current===STORAGE)return '存储空间';if(current===ALL)return '全部图片';var g=groups().filter(function(x){return x.id===current;})[0];return g?g.name:'';}
-function renderStats(){var all=allImages();stats.textContent=all.length+' 张图片 / '+fmt(sum(all));}
-function renderCharacters(){var q=filter.value.trim().toLowerCase(),list=groups().filter(function(g){return !q||String(g.name||'').toLowerCase().indexOf(q)>=0;});var html='<button class="char'+(current===ALL?' active':'')+'" data-group="'+ALL+'"><span class="avatar"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></span><span class="char-name">全部图片</span><span class="char-count">'+allImages().length+'</span></button><button class="char'+(current===STORAGE?' active':'')+'" data-group="'+STORAGE+'"><span class="avatar"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span><span class="char-name">存储空间</span><span class="char-count"></span></button>';html+=list.map(function(g){return '<button class="char'+(g.id===current?' active':'')+'" data-group="'+esc(g.id)+'" title="'+esc(g.name)+'"><span class="avatar">'+esc(String(g.name||'?').replace(/^[“"'「『【[(（]+/,'').slice(0,1)||'?')+'</span><span class="char-name">'+esc(g.name)+'</span><span class="char-count">'+g.images.length+'</span></button>';}).join('');if(q&&!list.length)html+='<div class="empty">没有匹配的角色</div>';characters.innerHTML=html;}
-function renderHead(){var list=images(),storage=current===STORAGE;groupTitle.textContent=viewName();groupMeta.textContent=storage?'R2 存储桶用量与清理':list.length+' 张 · '+fmt(sum(list));[blurToggle,exportButton,$('selectMode')].forEach(function(b){b.classList.toggle('hidden',storage);});exportButton.disabled=!list.length||exporting;$('selectMode').disabled=!list.length;}
+function renderStats(){var all=allImages();stats.textContent=all.length+' 张图片 · '+fmt(sum(all));}
+function renderCharacters(){var q=filter.value.trim().toLowerCase(),list=groups().filter(function(g){return !q||String(g.name||'').toLowerCase().indexOf(q)>=0;});var html='<button class="char'+(current===ALL?' active':'')+'" data-group="'+ALL+'"><span class="avatar"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></span><span class="char-name">全部图片</span><span class="char-count">'+allImages().length+'</span></button><button class="char'+(current===STORAGE?' active':'')+'" data-group="'+STORAGE+'"><span class="avatar"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v14c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 12c0 1.7 3.6 3 8 3s8-1.3 8-3"/></svg></span><span class="char-name">存储空间</span><span class="char-count"></span></button>';html+=list.map(function(g){return '<button class="char'+(g.id===current?' active':'')+'" data-group="'+esc(g.id)+'" title="'+esc(g.name)+'"><span class="avatar">'+esc(String(g.name||'?').replace(/^[“"'「『【[(（]+/,'').slice(0,1)||'?')+'</span><span class="char-name">'+esc(g.name)+'</span><span class="char-count">'+g.images.length+'</span></button>';}).join('');if(q&&!list.length)html+='<div class="empty">未找到匹配的角色</div>';characters.innerHTML=html;}
+function renderHead(){var list=images(),storage=current===STORAGE;groupTitle.textContent=viewName();groupMeta.textContent=storage?'R2 存储用量':list.length+' 张 · '+fmt(sum(list));[blurToggle,exportButton,$('selectMode')].forEach(function(b){b.classList.toggle('hidden',storage);});exportButton.disabled=!list.length||exporting;$('selectMode').disabled=!list.length;}
 function tile(img,index){return '<button class="photo'+(selected.has(img.key)?' selected':'')+'" data-index="'+index+'"><img loading="lazy" decoding="async" src="'+esc(img.hasThumb?thumbUrl(img.key):imgUrl(img.key))+'" alt=""'+(img.hasThumb?'':' data-needs-thumb="1"')+'>'+(current===ALL?'<span class="photo-owner">'+esc(img.characterName)+'</span>':'')+'<span class="photo-size">'+esc(img.sizeHuman)+'</span><span class="check"></span></button>';}
 function appendBatch(){var list=images();if(shown>=list.length)return;var html='',end=Math.min(list.length,shown+BATCH);for(var i=shown;i<end;i++)html+=tile(list[i],i);shown=end;gallery.insertAdjacentHTML('beforeend',html);}
-function renderGallery(){shown=0;gallery.innerHTML='';renderHead();if(current===STORAGE){renderStorage();return;}if(!images().length){gallery.innerHTML='<div class="empty">'+(groups().length?'这里没有图片':'还没有图片')+'</div>';return;}appendBatch();fillGallery();}
+function renderGallery(){shown=0;gallery.innerHTML='';renderHead();if(current===STORAGE){renderStorage();return;}if(!images().length){gallery.innerHTML='<div class="empty">暂无图片</div>';return;}appendBatch();fillGallery();}
 // 底部标记离屏幕底部不到 800px 就继续加载，直到填满；按屏幕位置判断，不管是图片区还是整个页面在滚动。
 function fillGallery(){var sentinel=$('sentinel');for(var i=0;i<20&&shown<images().length&&sentinel.getBoundingClientRect().top<window.innerHeight+800;i++)appendBatch();}
 function selectGroup(id){current=id;setSelecting(false);document.body.classList.add('show-main');renderCharacters();renderGallery();$('scroll').scrollTop=0;}
@@ -1256,7 +1256,7 @@ function setSelecting(on){selecting=on;selected.clear();gallery.querySelectorAll
 function applyBlur(){var on=stored(blurStorageKey)==='1';gallery.classList.toggle('blurred',on);blurToggle.classList.toggle('on',on);blurToggle.title=on?'显示图片':'隐藏图片';}
 function ask(title,text,ok,danger){return new Promise(function(resolve){$('dialogTitle').textContent=title;$('dialogText').textContent=text;$('dialogOk').textContent=ok||'删除';$('dialogOk').className='btn '+(danger===false?'primary':'danger-fill');$('dialog').classList.remove('hidden');function done(v){$('dialog').classList.add('hidden');$('dialogOk').onclick=null;$('dialogCancel').onclick=null;resolve(v);}$('dialogOk').onclick=function(){done(true);};$('dialogCancel').onclick=function(){done(false);};$('dialogOk').focus();});}
 function forget(keys){var keySet=new Set(keys);data.characters=groups().map(function(g){g.images=g.images.filter(function(img){return !keySet.has(img.key);});return g;}).filter(function(g){return g.images.length;});cachedAll=null;if(current!==ALL&&!groups().some(function(g){return g.id===current;}))current=ALL;}
-async function remove(keys,title,text){if(!keys.length||!await ask(title,text))return false;try{var r,count=0,bytes=0;do{r=await api('/image/api/delete',{method:'POST',body:JSON.stringify({keys:keys})});count+=r.deletedCount;bytes+=r.deletedBytes;}while(r.remaining&&r.deletedCount);forget(keys);selected.clear();renderStats();renderCharacters();renderGallery();syncSelectBar();setNotice('已删除 '+count+' 张，释放 '+fmt(bytes)+'。');return true;}catch(e){setNotice(e.message,true);return false;}}
+async function remove(keys,title,text){if(!keys.length||!await ask(title,text))return false;try{var r,count=0,bytes=0;do{r=await api('/image/api/delete',{method:'POST',body:JSON.stringify({keys:keys})});count+=r.deletedCount;bytes+=r.deletedBytes;}while(r.remaining&&r.deletedCount);forget(keys);selected.clear();renderStats();renderCharacters();renderGallery();syncSelectBar();setNotice('已删除 '+count+' 张图片，释放 '+fmt(bytes));return true;}catch(e){setNotice(e.message,true);return false;}}
 function openViewer(index){var list=images(),img=list[index];if(!img)return;viewIndex=index;viewerImage.src=imgUrl(img.key);viewerDownload.href=imgUrl(img.key);viewerDownload.setAttribute('download',fileName(img,index));viewerInfo.textContent=(index+1)+' / '+list.length+' · '+(current===ALL?img.characterName+' · ':'')+img.sizeHuman+(img.uploaded?' · '+day(img.uploaded):'');$('prev').disabled=index===0;$('next').disabled=index===list.length-1;viewer.classList.remove('hidden');}
 function closeViewer(){viewer.classList.add('hidden');viewerImage.removeAttribute('src');viewIndex=-1;}
 function step(delta){var next=viewIndex+delta;if(viewIndex>=0&&next>=0&&next<images().length)openViewer(next);}
@@ -1266,25 +1266,25 @@ async function makeThumb(node){var tileNode=node.closest('.photo'),img=tileNode&
 function fileName(img,index){var ext=(String(img.contentType||'').split('/')[1]||'png').replace('jpeg','jpg');return String(index+1).padStart(4,'0')+'-'+String(img.uploaded||'').slice(0,10)+'.'+ext;}
 var crcTable=null;function crc32(bytes){if(!crcTable){crcTable=new Uint32Array(256);for(var n=0;n<256;n++){var c=n;for(var k=0;k<8;k++)c=c&1?0xedb88320^(c>>>1):c>>>1;crcTable[n]=c>>>0;}}var crc=0xffffffff;for(var i=0;i<bytes.length;i++)crc=crcTable[(crc^bytes[i])&255]^(crc>>>8);return (crc^0xffffffff)>>>0;}
 function safePart(s){return String(s||'未命名').replace(/[<>:"|?*]/g,'_').replace(/[\\/]/g,'_').trim().slice(0,80)||'未命名';}
-async function exportZip(){var list=images().slice();if(!list.length||exporting)return;var total=sum(list);if(total>EXPORT_WARN_BYTES&&!await ask('导出 '+fmt(total),'图片较多，打包会占用较多内存，手机上可能失败。建议按角色分别导出。仍要继续吗？','继续',false))return;exporting=true;renderHead();var parts=[],central=[],offset=0,enc=new TextEncoder(),now=new Date(),dosTime=(now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1),dosDate=((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate(),counters={};try{for(var i=0;i<list.length;i++){var img=list[i];setNotice('正在打包 '+(i+1)+' / '+list.length+'…');var res=await fetch(imgUrl(img.key),{headers:{'x-rp-sync-password':pass()}});if(!res.ok)throw new Error('第 '+(i+1)+' 张下载失败：HTTP '+res.status);var bytes=new Uint8Array(await res.arrayBuffer()),folder=safePart(img.characterName);counters[folder]=(counters[folder]||0)+1;var name=enc.encode((current===ALL?folder+'/':'')+fileName(img,counters[folder]-1)),crc=crc32(bytes),head=new DataView(new ArrayBuffer(30));head.setUint32(0,0x04034b50,true);head.setUint16(4,20,true);head.setUint16(6,0x0800,true);head.setUint16(10,dosTime,true);head.setUint16(12,dosDate,true);head.setUint32(14,crc,true);head.setUint32(18,bytes.length,true);head.setUint32(22,bytes.length,true);head.setUint16(26,name.length,true);parts.push(head.buffer,name,bytes);var dir=new DataView(new ArrayBuffer(46));dir.setUint32(0,0x02014b50,true);dir.setUint16(4,20,true);dir.setUint16(6,20,true);dir.setUint16(8,0x0800,true);dir.setUint16(12,dosTime,true);dir.setUint16(14,dosDate,true);dir.setUint32(16,crc,true);dir.setUint32(20,bytes.length,true);dir.setUint32(24,bytes.length,true);dir.setUint16(28,name.length,true);dir.setUint32(42,offset,true);central.push(dir.buffer,name);offset+=30+name.length+bytes.length;}var size=0;central.forEach(function(p){size+=p.byteLength;});var end=new DataView(new ArrayBuffer(22));end.setUint32(0,0x06054b50,true);end.setUint16(8,list.length,true);end.setUint16(10,list.length,true);end.setUint32(12,size,true);end.setUint32(16,offset,true);var blob=new Blob(parts.concat(central,[end.buffer]),{type:'application/zip'}),link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=safePart(viewName())+'.zip';document.body.appendChild(link);link.click();link.remove();setTimeout(function(){URL.revokeObjectURL(link.href);},60000);setNotice('已导出 '+list.length+' 张 · '+fmt(total)+'。');}catch(e){setNotice('导出失败：'+e.message,true);}finally{exporting=false;renderHead();}}
+async function exportZip(){var list=images().slice();if(!list.length||exporting)return;var total=sum(list);if(total>EXPORT_WARN_BYTES&&!await ask('导出图片','共 '+fmt(total)+'，手机上可能导出失败，建议按角色分别导出。','导出',false))return;exporting=true;renderHead();var parts=[],central=[],offset=0,enc=new TextEncoder(),now=new Date(),dosTime=(now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1),dosDate=((now.getFullYear()-1980)<<9)|((now.getMonth()+1)<<5)|now.getDate(),counters={};try{for(var i=0;i<list.length;i++){var img=list[i];setNotice('打包中… '+(i+1)+'/'+list.length);var res=await fetch(imgUrl(img.key),{headers:{'x-rp-sync-password':pass()}});if(!res.ok)throw new Error('第 '+(i+1)+' 张下载失败：HTTP '+res.status);var bytes=new Uint8Array(await res.arrayBuffer()),folder=safePart(img.characterName);counters[folder]=(counters[folder]||0)+1;var name=enc.encode((current===ALL?folder+'/':'')+fileName(img,counters[folder]-1)),crc=crc32(bytes),head=new DataView(new ArrayBuffer(30));head.setUint32(0,0x04034b50,true);head.setUint16(4,20,true);head.setUint16(6,0x0800,true);head.setUint16(10,dosTime,true);head.setUint16(12,dosDate,true);head.setUint32(14,crc,true);head.setUint32(18,bytes.length,true);head.setUint32(22,bytes.length,true);head.setUint16(26,name.length,true);parts.push(head.buffer,name,bytes);var dir=new DataView(new ArrayBuffer(46));dir.setUint32(0,0x02014b50,true);dir.setUint16(4,20,true);dir.setUint16(6,20,true);dir.setUint16(8,0x0800,true);dir.setUint16(12,dosTime,true);dir.setUint16(14,dosDate,true);dir.setUint32(16,crc,true);dir.setUint32(20,bytes.length,true);dir.setUint32(24,bytes.length,true);dir.setUint16(28,name.length,true);dir.setUint32(42,offset,true);central.push(dir.buffer,name);offset+=30+name.length+bytes.length;}var size=0;central.forEach(function(p){size+=p.byteLength;});var end=new DataView(new ArrayBuffer(22));end.setUint32(0,0x06054b50,true);end.setUint16(8,list.length,true);end.setUint16(10,list.length,true);end.setUint32(12,size,true);end.setUint32(16,offset,true);var blob=new Blob(parts.concat(central,[end.buffer]),{type:'application/zip'}),link=document.createElement('a');link.href=URL.createObjectURL(blob);link.download=safePart(viewName())+'.zip';document.body.appendChild(link);link.click();link.remove();setTimeout(function(){URL.revokeObjectURL(link.href);},60000);setNotice('已导出 '+list.length+' 张图片 · '+fmt(total));}catch(e){setNotice('导出失败：'+e.message,true);}finally{exporting=false;renderHead();}}
 function bar(part,whole,cls){return '<div class="meter"><div class="meter-bar'+(cls?' '+cls:'')+'" style="width:'+Math.min(100,whole?part/whole*100:0).toFixed(2)+'%"></div></div>';}
-async function renderStorage(){gallery.innerHTML='<div class="storage empty">正在统计存储桶…</div>';try{var r=await api('/image/api/storage');if(current!==STORAGE)return;var scale=Math.max(r.freeBytes,r.totalBytes),html='<div class="storage"><div class="big">'+esc(r.totalHuman)+'</div><div class="meter" style="margin-top:8px"><div class="meter-bar'+(r.over?' over':'')+'" style="width:'+Math.min(100,r.totalBytes/scale*100).toFixed(2)+'%"></div><div class="meter-limit" style="left:'+Math.min(100,r.limitBytes/scale*100).toFixed(2)+'%"></div></div><div class="meter-text">免费额度 '+fmt(r.freeBytes)+' · 清理上限 '+esc(r.limitHuman)+'（竖线）</div><h3>按类别</h3>';r.categories.filter(function(c){return c.bytes>0;}).sort(function(a,b){return b.bytes-a.bytes;}).forEach(function(c){html+='<div class="cat"><span>'+esc(c.label)+'</span>'+bar(c.bytes,r.totalBytes)+'<span class="cat-size">'+esc(c.human)+'</span></div>';});html+='<div class="cleanup">'+(r.over?'<p>已超出清理上限。从最早的图开始删除 <b>'+r.cleanup.count+'</b> 张，可腾出 <b>'+esc(r.cleanup.human)+'</b>'+(r.cleanup.enough?'。':'；只删图片仍降不到上限，其余是同步数据等其他内容。')+'</p><button id="runCleanup" class="btn danger-fill"'+(r.cleanup.count?'':' disabled')+'>立即清理</button>':'<p>未超出清理上限。</p>')+'<div class="limit-row"><label>清理上限 <input id="limitInput" class="limit-input" type="number" min="0.1" step="0.5" value="'+(Math.round(r.limitBytes/1073741824*10)/10)+'"> GB</label><button id="saveLimit" class="btn">保存</button></div><p class="sub" style="margin:10px 0 0">超出上限时，聊天页每天最多提醒一次，由你决定是否清理。删除的图在聊天里显示为「已删除」，不会重新生成。</p></div></div>';gallery.innerHTML=html;var run=$('runCleanup');if(run)run.onclick=function(){cleanupStorage(r.cleanup.count,r.cleanup.human);};$('saveLimit').onclick=async function(){try{var res=await api('/image/api/settings',{method:'PUT',body:JSON.stringify({storageLimitGb:Number($('limitInput').value)})});setNotice('清理上限已改为 '+res.settings.storageLimitGb+' GB。');renderStorage();}catch(e){setNotice('保存失败：'+e.message,true);}};}catch(e){gallery.innerHTML='<div class="storage empty">'+esc(e.message)+'</div>';}}
-async function cleanupStorage(count,human){if(!await ask('清理旧图','将从最早的图开始删除 '+count+' 张，腾出 '+human+'。删除后不能恢复。','清理'))return;try{var done=0,res;for(var i=0;i<50;i++){setNotice('正在清理… 已删除 '+done+' 张');res=await api('/image/api/storage/cleanup',{method:'POST',body:'{}'});done+=res.deletedCount;if(!res.remaining||!res.deletedCount)break;}setNotice('已清理 '+done+' 张。');data=await api('/image/api/library');cachedAll=null;renderStats();renderCharacters();renderStorage();}catch(e){setNotice('清理失败：'+e.message,true);}}
-async function load(){setNotice('');stats.textContent='读取中…';try{data=await api('/image/api/library');cachedAll=null;if(current!==ALL&&!groups().some(function(g){return g.id===current;}))current=ALL;renderStats();renderCharacters();renderGallery();syncSelectBar();}catch(e){stats.textContent='读取失败';setNotice(e.message,true);}}
+async function renderStorage(){gallery.innerHTML='<div class="storage empty">加载中…</div>';try{var r=await api('/image/api/storage');if(current!==STORAGE)return;var scale=Math.max(r.freeBytes,r.totalBytes),html='<div class="storage"><div class="big">'+esc(r.totalHuman)+'</div><div class="meter" style="margin-top:8px"><div class="meter-bar'+(r.over?' over':'')+'" style="width:'+Math.min(100,r.totalBytes/scale*100).toFixed(2)+'%"></div><div class="meter-limit" style="left:'+Math.min(100,r.limitBytes/scale*100).toFixed(2)+'%"></div></div><div class="meter-text">免费额度 '+fmt(r.freeBytes)+' · 清理上限 '+esc(r.limitHuman)+'（竖线）</div><h3>按类别</h3>';r.categories.filter(function(c){return c.bytes>0;}).sort(function(a,b){return b.bytes-a.bytes;}).forEach(function(c){html+='<div class="cat"><span>'+esc(c.label)+'</span>'+bar(c.bytes,r.totalBytes)+'<span class="cat-size">'+esc(c.human)+'</span></div>';});html+='<div class="cleanup">'+(r.over?'<p>已超出清理上限，可删除最早的 <b>'+r.cleanup.count+'</b> 张图片，释放 <b>'+esc(r.cleanup.human)+'</b>'+(r.cleanup.enough?'':'，删除后仍会超出上限')+'</p><button id="runCleanup" class="btn danger-fill"'+(r.cleanup.count?'':' disabled')+'>立即清理</button>':'<p>未超出清理上限</p>')+'<div class="limit-row"><label>清理上限 <input id="limitInput" class="limit-input" type="number" min="0.1" step="0.5" value="'+(Math.round(r.limitBytes/1073741824*10)/10)+'"> GB</label><button id="saveLimit" class="btn">保存</button></div></div></div>';gallery.innerHTML=html;var run=$('runCleanup');if(run)run.onclick=function(){cleanupStorage(r.cleanup.count,r.cleanup.human);};$('saveLimit').onclick=async function(){try{var res=await api('/image/api/settings',{method:'PUT',body:JSON.stringify({storageLimitGb:Number($('limitInput').value)})});setNotice('清理上限已改为 '+res.settings.storageLimitGb+' GB');renderStorage();}catch(e){setNotice('保存失败：'+e.message,true);}};}catch(e){gallery.innerHTML='<div class="storage empty">'+esc(e.message)+'</div>';}}
+async function cleanupStorage(count,human){if(!await ask('清理图片','将删除最早的 '+count+' 张图片，释放 '+human+'，删除后无法恢复。','清理'))return;try{var done=0,res;for(var i=0;i<50;i++){setNotice('清理中… 已删除 '+done+' 张');res=await api('/image/api/storage/cleanup',{method:'POST',body:'{}'});done+=res.deletedCount;if(!res.remaining||!res.deletedCount)break;}setNotice('已清理 '+done+' 张图片');data=await api('/image/api/library');cachedAll=null;renderStats();renderCharacters();renderStorage();}catch(e){setNotice('清理失败：'+e.message,true);}}
+async function load(){setNotice('');stats.textContent='加载中…';try{data=await api('/image/api/library');cachedAll=null;if(current!==ALL&&!groups().some(function(g){return g.id===current;}))current=ALL;renderStats();renderCharacters();renderGallery();syncSelectBar();}catch(e){stats.textContent='加载失败';setNotice(e.message,true);}}
 function checkAuth(p){return api('/image/api/auth-status',{method:'GET',headers:{'x-rp-sync-password':p||pass()}}).then(function(r){return r.authenticated;}).catch(function(){return false;});}
 function showApp(){authBox.classList.add('hidden');appBox.classList.remove('hidden');load();}
-function enter(){var p=passwordInput.value;authMsg.textContent='';checkAuth(p).then(function(ok){if(!ok){authMsg.textContent='密码不正确';passwordInput.focus();return;}store(passwordStorageKey,p);showApp();});}
+function enter(){var p=passwordInput.value;authMsg.textContent='';checkAuth(p).then(function(ok){if(!ok){authMsg.textContent='密码错误';passwordInput.focus();return;}store(passwordStorageKey,p);showApp();});}
 $('login').onclick=enter;passwordInput.onkeydown=function(e){if(e.key==='Enter')enter();};
 $('refresh').onclick=load;filter.oninput=renderCharacters;exportButton.onclick=exportZip;
 blurToggle.onclick=function(){store(blurStorageKey,stored(blurStorageKey)==='1'?'0':'1');applyBlur();};
 $('back').onclick=function(){document.body.classList.remove('show-main');setSelecting(false);};
 $('selectMode').onclick=function(){setSelecting(!selecting);};$('cancelSelect').onclick=function(){setSelecting(false);};
 $('selectAll').onclick=function(){images().forEach(function(img){selected.add(img.key);});gallery.querySelectorAll('.photo').forEach(function(n){n.classList.add('selected');});syncSelectBar();};
-deleteSelectedButton.onclick=function(){remove(Array.from(selected),'删除图片','确定删除选中的 '+selected.size+' 张图片吗？删除后不能恢复。').then(function(done){if(done)setSelecting(false);});};
+deleteSelectedButton.onclick=function(){remove(Array.from(selected),'删除 '+selected.size+' 张图片','删除后无法恢复。').then(function(done){if(done)setSelecting(false);});};
 characters.onclick=function(e){var item=e.target.closest('[data-group]');if(item)selectGroup(item.dataset.group);};
 gallery.onclick=function(e){var node=e.target.closest('.photo');if(!node)return;var index=Number(node.dataset.index),img=images()[index];if(!img)return;if(selecting){if(selected.has(img.key))selected.delete(img.key);else selected.add(img.key);node.classList.toggle('selected');syncSelectBar();}else openViewer(index);};
 gallery.addEventListener('load',function(e){if(e.target.dataset&&e.target.dataset.needsThumb){delete e.target.dataset.needsThumb;queueThumb(e.target);}},true);
-$('viewerDelete').onclick=function(){var img=images()[viewIndex];if(!img)return;var at=viewIndex;remove([img.key],'删除图片','确定删除这张图片吗？删除后不能恢复。').then(function(done){if(!done)return;if(images().length)openViewer(Math.min(at,images().length-1));else closeViewer();});};
+$('viewerDelete').onclick=function(){var img=images()[viewIndex];if(!img)return;var at=viewIndex;remove([img.key],'删除图片','删除后无法恢复。').then(function(done){if(!done)return;if(images().length)openViewer(Math.min(at,images().length-1));else closeViewer();});};
 $('closeViewer').onclick=closeViewer;$('prev').onclick=function(){step(-1);};$('next').onclick=function(){step(1);};
 viewer.onclick=function(e){if(e.target===viewer)closeViewer();};
 var touchX=null;viewer.addEventListener('touchstart',function(e){touchX=e.touches[0].clientX;},{passive:true});viewer.addEventListener('touchend',function(e){if(touchX===null)return;var dx=e.changedTouches[0].clientX-touchX;touchX=null;if(Math.abs(dx)>50)step(dx<0?1:-1);});
@@ -1325,7 +1325,7 @@ async function handleImageAdmin(request, env, url) {
         return error('Method not allowed.', 405);
     }
     if (url.pathname === `${IMAGE_ADMIN_PATH}/api/delete` && request.method !== 'POST') return error('Method not allowed.', 405);
-    if (!await isImageAdminAuthorized(request, env)) return error('Sync password required.', 401, { authRequired: true });
+    if (!await isImageAdminAuthorized(request, env)) return error('同步密码错误', 401, { authRequired: true });
     const bucket = getBucket(env);
     if (url.pathname === `${IMAGE_ADMIN_PATH}/api/library`) {
         if (request.method !== 'GET') return error('Method not allowed.', 405);
@@ -1336,11 +1336,11 @@ async function handleImageAdmin(request, env, url) {
     if (url.pathname === `${IMAGE_ADMIN_PATH}/api/image`) {
         if (request.method !== 'GET' && request.method !== 'HEAD') return error('Method not allowed.', 405);
         const key = url.searchParams.get('key') || '';
-        if (!key.startsWith(`${IMAGE_OBJECT_PREFIX}/`) || !parseImageObjectKey(key)) return error('图片路径无效。', 400);
+        if (!key.startsWith(`${IMAGE_OBJECT_PREFIX}/`) || !parseImageObjectKey(key)) return error('图片路径无效', 400);
         const object = await bucket.get(key);
-        if (!object) return error('图片不存在。', 404);
+        if (!object) return error('图片不存在', 404);
         const contentType = normalizeRasterContentType(object.httpMetadata?.contentType);
-        if (!contentType) return error('图片格式不受支持。', 415);
+        if (!contentType) return error('图片格式不受支持', 415);
         if (request.method === 'HEAD') await discardBody(object);
         return imageResponse(request.method === 'HEAD' ? null : object.body, contentType, {
             'content-length': String(object.size || 0), 'cache-control': 'private, no-store'
@@ -1348,18 +1348,18 @@ async function handleImageAdmin(request, env, url) {
     }
     if (url.pathname === `${IMAGE_ADMIN_PATH}/api/thumb`) {
         const key = url.searchParams.get('key') || '';
-        if (!key.startsWith(`${IMAGE_OBJECT_PREFIX}/`) || !parseImageObjectKey(key)) return error('图片路径无效。', 400);
+        if (!key.startsWith(`${IMAGE_OBJECT_PREFIX}/`) || !parseImageObjectKey(key)) return error('图片路径无效', 400);
         const thumbKey = createImageThumbKeyFromImageKey(key);
         if (request.method === 'GET' || request.method === 'HEAD') {
             const object = await bucket.get(thumbKey);
-            if (!object) return error('缩略图不存在。', 404);
+            if (!object) return error('缩略图不存在', 404);
             if (request.method === 'HEAD') await discardBody(object);
         return imageResponse(request.method === 'HEAD' ? null : object.body, object.httpMetadata?.contentType || 'image/webp', {
                 'content-length': String(object.size || 0), 'cache-control': 'private, no-store'
             });
         }
         if (request.method !== 'PUT' && request.method !== 'POST') return error('Method not allowed.', 405);
-        if (!await bucket.head(key)) return error('原图不存在，不能保存缩略图。', 404);
+        if (!await bucket.head(key)) return error('原图不存在，无法保存缩略图', 404);
         const bytes = await readThumbnailBytes(request);
         const savedKey = await putImageThumbnail(bucket, key, bytes);
         return json({ ok: true, key: savedKey, bytes: bytes.byteLength });
@@ -1412,7 +1412,7 @@ async function readR2JsonObject(bucket, key) {
             value: JSON.parse(await object.text())
         };
     } catch (err) {
-        throw new Error('R2 JSON 数据已损坏。');
+        throw new Error('云端数据已损坏。');
     }
 }
 
@@ -1478,10 +1478,10 @@ function normalizeChunkManifest(manifest, totalBytes, encoding = 'raw-bytes') {
         const length = Number(item?.length);
         const key = typeof item?.key === 'string' ? item.key : createChunkKey(checksum, encoding);
 
-        if (!Number.isInteger(chunkIndex) || chunkIndex !== index) throw new Error(`分片顺序异常：第 ${index} 片。`);
-        if (!/^[a-f0-9]{64}$/i.test(checksum)) throw new Error(`分片校验码异常：第 ${index} 片。`);
-        if (!Number.isInteger(length) || length <= 0 || length > MAX_PART_BYTES) throw new Error(`分片大小异常：第 ${index} 片。`);
-        if (key !== createChunkKey(checksum, encoding)) throw new Error(`分片存储路径异常：第 ${index} 片。`);
+        if (!Number.isInteger(chunkIndex) || chunkIndex !== index) throw new Error('数据格式不正确。');
+        if (!/^[a-f0-9]{64}$/i.test(checksum)) throw new Error('数据格式不正确。');
+        if (!Number.isInteger(length) || length <= 0 || length > MAX_PART_BYTES) throw new Error('数据格式不正确。');
+        if (key !== createChunkKey(checksum, encoding)) throw new Error('数据格式不正确。');
 
         const nextItem = {
             index,
@@ -1496,7 +1496,7 @@ function normalizeChunkManifest(manifest, totalBytes, encoding = 'raw-bytes') {
         return nextItem;
     });
 
-    if (byteOffset !== totalBytes) throw new Error('分片大小合计不一致。');
+    if (byteOffset !== totalBytes) throw new Error('数据校验失败。');
     return normalized;
 }
 
@@ -1742,24 +1742,24 @@ async function handleStatus(bucket, includeChunkManifest = false) {
 
 async function handleForkPage(bucket, body) {
     const index = Number(body.index);
-    if (!/^[a-f0-9]{64}$/.test(body.checksum) || !Number.isInteger(index) || index < 0 || index > 9999) return error('魔改版清单参数无效。');
+    if (!/^[a-f0-9]{64}$/.test(body.checksum) || !Number.isInteger(index) || index < 0 || index > 9999) return error('请求参数无效。');
     const object = await bucket.get(`${R2_PREFIX}/manifests/${body.checksum}/${String(index).padStart(4, '0')}.json`);
     let page = null;
     try { page = object ? JSON.parse(await object.text()) : null; } catch (_) { /* 当作不存在 */ }
-    if (!Array.isArray(page?.packs)) return error('魔改版清单分页不存在。', 404);
+    if (!Array.isArray(page?.packs)) return error('魔改版云端数据不完整。', 404);
     return json({ ok: true, packs: page.packs });
 }
 
 async function handleForkPacks(bucket, body) {
     const checksums = Array.isArray(body.checksums) ? body.checksums : [];
     if (!checksums.length || checksums.length > MAX_PULL_CHUNKS || checksums.some((checksum) => !/^[a-f0-9]{64}$/.test(checksum))) {
-        return error('魔改版数据包参数无效。');
+        return error('请求参数无效。');
     }
     const parts = await Promise.all(checksums.map(async (checksum) => {
         const object = await bucket.get(`${R2_PREFIX}/packs/${checksum}.bin`);
         return object ? object.arrayBuffer() : null;
     }));
-    if (parts.some((bytes) => !bytes)) return error('魔改版数据包不存在。', 404);
+    if (parts.some((bytes) => !bytes)) return error('魔改版云端数据不完整。', 404);
     return new Response(new Blob(parts), { headers: { 'content-type': 'application/octet-stream', 'cache-control': 'no-store' } });
 }
 
@@ -1772,9 +1772,9 @@ const TEST_ROOT_BACKUP_KEY = `${R2_PREFIX}/test-root-backup.json`;
 
 async function handleForkExportPack(request, bucket, url) {
     const checksum = url.searchParams.get('checksum') || '';
-    if (!/^[a-f0-9]{64}$/.test(checksum)) return error('魔改版数据包校验码无效。');
+    if (!/^[a-f0-9]{64}$/.test(checksum)) return error('请求参数无效。');
     const bytes = await readLimitedBody(request.body, FORK_PACK_MAX_BYTES, '魔改版数据包');
-    if (await sha256Bytes(bytes) !== checksum) return error('魔改版数据包校验失败。', 409);
+    if (await sha256Bytes(bytes) !== checksum) return error('数据校验失败。', 409);
     // 魔改版下载时核对包里的条数（就是换行数），条数记在对象的元数据里。
     let entryCount = 0;
     for (let index = bytes.indexOf(10); index !== -1; index = bytes.indexOf(10, index + 1)) entryCount += 1;
@@ -1788,28 +1788,28 @@ async function handleForkExportPack(request, bucket, url) {
 // 分页哈希链、布隆过滤器和根清单校验码都重算一遍，对得上才换上根清单；测试版的清单另存一份。
 async function handleForkExportCommit(bucket, body) {
     const state = await getManifestState(bucket);
-    if (!state.manifest || state.manifest.checksum !== body.expectedChecksum) return error('云端数据刚刚变了，请重新转换。', 409);
+    if (!state.manifest || state.manifest.checksum !== body.expectedChecksum) return error('云端数据已更新，请重新转换。', 409);
     const pages = Array.isArray(body.pages) ? body.pages : [];
-    if (pages.length > FORK_EXPORT_MAX_PAGES) return error('数据太多，一次转不过去。');
+    if (pages.length > FORK_EXPORT_MAX_PAGES) return error('数据量超过上限，无法转换。');
     const packs = pages.flatMap((page) => (Array.isArray(page?.packs) ? page.packs : []));
     if (packs.some((pack) => !/^[a-f0-9]{64}$/.test(pack?.checksum) || !(pack.length > 0 && pack.length <= FORK_PACK_MAX_BYTES)
         || !Number.isInteger(pack.length) || !Number.isInteger(pack.entryCount) || !Number.isInteger(pack.part)
-        || typeof pack.bucketKey !== 'string' || typeof pack.group !== 'string')) return error('魔改版数据包清单异常。');
+        || typeof pack.bucketKey !== 'string' || typeof pack.group !== 'string')) return error('数据格式不正确，请重新转换。');
     let pageRoot = '0'.repeat(64);
     for (const [index, page] of pages.entries()) {
-        if (!page.packs?.length || page.packs.length > FORK_PAGE_PACKS || page.previousPageHash !== pageRoot) return error('魔改版清单分页不连续。');
+        if (!page.packs?.length || page.packs.length > FORK_PAGE_PACKS || page.previousPageHash !== pageRoot) return error('数据格式不正确，请重新转换。');
         pageRoot = await sha256Text(JSON.stringify(['rp-sync-manifest-page-v1', index, pageRoot,
             page.packs.map((pack) => [pack.bucketKey, pack.group, pack.part, pack.checksum, pack.length, pack.entryCount])]));
-        if (page.pageHash !== pageRoot) return error('魔改版清单分页校验失败。');
+        if (page.pageHash !== pageRoot) return error('数据校验失败，请重新转换。');
     }
     let bloom;
     try { bloom = Uint8Array.from(atob(String(body.bloom || '')), (char) => char.charCodeAt(0)); } catch (_) { bloom = new Uint8Array(); }
-    if (bloom.byteLength !== FORK_BLOOM_BYTES) return error('魔改版布隆过滤器大小异常。');
+    if (bloom.byteLength !== FORK_BLOOM_BYTES) return error('数据格式不正确，请重新转换。');
     const bloomChecksum = await sha256Bytes(bloom);
     const totalBytes = packs.reduce((sum, pack) => sum + pack.length, 0);
     const entryCount = packs.reduce((sum, pack) => sum + pack.entryCount, 0);
     const checksum = await sha256Text(JSON.stringify(['rp-sync-paged-jsonl-v4', 13, totalBytes, packs.length, entryCount, pages.length, pageRoot, bloomChecksum]));
-    if (checksum !== body.checksum) return error('魔改版根清单校验失败。');
+    if (checksum !== body.checksum) return error('数据校验失败，请重新转换。');
 
     const putJson = (key, value, options = {}) => bucket.put(key, JSON.stringify(value), { httpMetadata: { contentType: 'application/json; charset=utf-8' }, ...options });
     await Promise.all(pages.map((page, index) => putJson(`${R2_PREFIX}/manifests/${checksum}/${String(index).padStart(4, '0')}.json`, {
@@ -1826,37 +1826,37 @@ async function handleForkExportCommit(bucket, body) {
         format: FORK_ROOT_FORMAT, version, checksum, updatedAt: Date.now(), totalBytes, packCount: packs.length, entryCount,
         pageCount: pages.length, pageRoot, bloomChecksum, snapshotFormat: 'rp-sync-paged-jsonl-v4', schemaVersion: 13
     }, { onlyIf: { etagMatches: state.etag || state.httpEtag.replace(/^"|"$/g, '') } });
-    if (!written) return error('云端数据刚刚变了，请重新转换。', 409);
+    if (!written) return error('云端数据已更新，请重新转换。', 409);
     return json({ ok: true, version });
 }
 
 async function handlePullJsonPart(bucket, body) {
     const manifest = await getManifest(bucket);
-    if (!manifest) return error('服务器当前没有可同步的数据。', 404);
+    if (!manifest) return error('云端暂无数据。', 404);
 
     const version = Number(body.version);
     const start = Number(body.start);
     const count = Number(body.count);
-    if (!Number.isInteger(version) || version !== manifest.version) return error('服务器版本已变化，请重试。', 409);
+    if (!Number.isInteger(version) || version !== manifest.version) return error('云端数据已更新，请重新下载。', 409);
     if (!Number.isInteger(start) || start < 0 || !Number.isInteger(count) || count <= 0 || count > MAX_PULL_CHUNKS) {
-        return error('下载分段范围无效。');
+        return error('请求参数无效。');
     }
-    if (start >= manifest.chunkCount || start + count > manifest.chunkCount) return error('下载分段范围无效。');
+    if (start >= manifest.chunkCount || start + count > manifest.chunkCount) return error('请求参数无效。');
 
     const selectedChunks = manifest.chunkManifest.slice(start, start + count);
     const byteLength = selectedChunks.reduce((sum, item) => sum + Number(item.byteLength || item.length || 0), 0);
     if (!Number.isFinite(byteLength) || byteLength <= 0) {
-        return error('R2 分段字节信息异常。', 409);
+        return error('云端数据格式不正确。', 409);
     }
 
     const parts = await Promise.all(selectedChunks.map(async (chunk) => {
         const object = await bucket.get(chunk.key);
         return object ? new Uint8Array(await object.arrayBuffer()) : null;
     }));
-    if (parts.some((bytes) => !bytes)) return error('R2 快照分片不存在。', 404);
+    if (parts.some((bytes) => !bytes)) return error('云端数据不完整。', 404);
     const gzip = selectedChunks.some((chunk) => chunk.encoding === 'gzip');
     if (!gzip && parts.some((bytes, index) => bytes.byteLength !== getChunkLength(selectedChunks[index]))) {
-        return error('R2 快照分片大小校验失败。', 409);
+        return error('云端数据校验失败。', 409);
     }
     const storedLength = parts.reduce((sum, bytes) => sum + bytes.byteLength, 0);
     const merged = new Uint8Array(storedLength);
@@ -1887,22 +1887,22 @@ async function handleUploadCreate(bucket, body) {
     const totalBytes = Number.isFinite(Number(body.totalBytes)) ? Number(body.totalBytes) : 0;
     const snapshotMetadata = normalizeSnapshotMetadata(body);
 
-    if (!/^[a-f0-9]{64}$/i.test(checksum)) return error('本地数据校验码无效。');
-    if (!snapshotMetadata) return error('本地快照格式无效。');
-    if (!Number.isInteger(recordCount) || recordCount < 0) return error('本地数据记录数量异常。');
+    if (!/^[a-f0-9]{64}$/i.test(checksum)) return error('数据格式不正确。');
+    if (!snapshotMetadata) return error('数据格式不正确。');
+    if (!Number.isInteger(recordCount) || recordCount < 0) return error('数据格式不正确。');
     if (chunkCount === 0 && totalBytes === 0) {
         return json({ ok: true, alreadyUpToDate: true, remote: buildEmptyRemoteInfo(checksum, recordCount, totalBytes, snapshotMetadata) });
     }
-    if (!Number.isInteger(chunkCount) || chunkCount <= 0 || chunkCount > MAX_CHUNK_COUNT) return error(`本地数据数量异常：${chunkCount}/${MAX_CHUNK_COUNT}。`);
-    if (!Number.isInteger(totalBytes) || totalBytes <= 0) return error('本地数据大小异常。');
+    if (!Number.isInteger(chunkCount) || chunkCount <= 0 || chunkCount > MAX_CHUNK_COUNT) return error(`数据块数量超出范围：${chunkCount}/${MAX_CHUNK_COUNT}。`);
+    if (!Number.isInteger(totalBytes) || totalBytes <= 0) return error('数据格式不正确。');
 
     let chunkManifest;
     try {
         chunkManifest = normalizeChunkManifest(body.chunkManifest, totalBytes, chunkEncodingForSchema(snapshotMetadata.schemaVersion));
     } catch (err) {
-        return error(err instanceof Error ? err.message : '分片清单无效。');
+        return error(err instanceof Error ? err.message : '数据格式不正确。');
     }
-    if (!chunkManifest || chunkManifest.length !== chunkCount) return error('分片清单数量不一致。');
+    if (!chunkManifest || chunkManifest.length !== chunkCount) return error('数据格式不正确。');
     if (snapshotMetadata.snapshotFormat === STREAM_SNAPSHOT_FORMAT
         && await sha256Text(JSON.stringify([
             STREAM_SNAPSHOT_FORMAT,
@@ -1911,7 +1911,7 @@ async function handleUploadCreate(bucket, body) {
             Number(totalBytes || 0),
             chunkManifest.map((chunk) => [String(chunk.checksum).toLowerCase(), getChunkLength(chunk)])
         ])) !== checksum) {
-        return error('本地快照清单校验失败。');
+        return error('数据校验失败。');
     }
 
     const current = await getManifest(bucket);
@@ -1953,20 +1953,20 @@ async function handleUploadPart(request, bucket, url) {
     const expectedChecksum = (request.headers.get('x-rp-part-checksum') || '').toLowerCase();
     const expectedLength = Number(request.headers.get('x-rp-part-length') || 0);
 
-    if (!Number.isInteger(partNumber) || partNumber <= 0 || partNumber > MAX_CHUNK_COUNT) return error('上传数据序号异常。');
-    if (!Number.isInteger(index) || index < 0 || index + 1 !== partNumber) return error('上传数据索引异常。');
-    if (!/^[a-f0-9]{64}$/i.test(expectedChecksum)) return error('上传数据校验码无效。');
-    if (!Number.isInteger(expectedLength) || expectedLength <= 0 || expectedLength > MAX_PART_BYTES) return error('上传数据大小异常。');
+    if (!Number.isInteger(partNumber) || partNumber <= 0 || partNumber > MAX_CHUNK_COUNT) return error('请求参数无效。');
+    if (!Number.isInteger(index) || index < 0 || index + 1 !== partNumber) return error('请求参数无效。');
+    if (!/^[a-f0-9]{64}$/i.test(expectedChecksum)) return error('请求参数无效。');
+    if (!Number.isInteger(expectedLength) || expectedLength <= 0 || expectedLength > MAX_PART_BYTES) return error('请求参数无效。');
 
     const encoding = request.headers.get('x-rp-part-encoding') === 'gzip' ? 'gzip' : 'raw-bytes';
     const storedChecksum = encoding === 'gzip' ? (request.headers.get('x-rp-part-stored-checksum') || '').toLowerCase() : expectedChecksum;
     const storedLength = encoding === 'gzip' ? Number(request.headers.get('x-rp-part-stored-length') || 0) : expectedLength;
-    if (!/^[a-f0-9]{64}$/i.test(storedChecksum)) return error('上传数据校验码无效。');
-    if (!Number.isInteger(storedLength) || storedLength <= 0 || storedLength > MAX_PART_BYTES) return error('上传数据大小异常。');
+    if (!/^[a-f0-9]{64}$/i.test(storedChecksum)) return error('请求参数无效。');
+    if (!Number.isInteger(storedLength) || storedLength <= 0 || storedLength > MAX_PART_BYTES) return error('请求参数无效。');
 
     const bytes = new Uint8Array(await request.arrayBuffer());
-    if (bytes.byteLength !== storedLength) return error('上传数据大小与声明不一致。', 409);
-    if (await sha256Bytes(bytes) !== storedChecksum) return error('上传数据校验失败。', 409);
+    if (bytes.byteLength !== storedLength) return error('数据校验失败。', 409);
+    if (await sha256Bytes(bytes) !== storedChecksum) return error('数据校验失败。', 409);
 
     const key = createChunkKey(expectedChecksum, encoding);
     try {
@@ -1975,7 +1975,7 @@ async function handleUploadPart(request, bucket, url) {
             customMetadata: { dataset: DATASET_ID, checksum: expectedChecksum }
         });
     } catch (err) {
-        return error(err instanceof Error ? err.message : '上传数据失败。', 409);
+        return error(err instanceof Error ? err.message : '保存到云端失败。', 409);
     }
     return json({
         ok: true,
@@ -1996,20 +1996,20 @@ async function handleUploadComplete(bucket, body, ctx) {
     const expectedVersion = Number(body.expectedVersion);
     const snapshotMetadata = normalizeSnapshotMetadata(body);
 
-    if (!/^[a-f0-9]{64}$/i.test(checksum)) return error('本地数据校验码无效。');
-    if (!snapshotMetadata) return error('本地快照格式无效。');
-    if (!Number.isInteger(recordCount) || recordCount < 0) return error('本地数据记录数量异常。');
-    if (!Number.isInteger(chunkCount) || chunkCount <= 0 || chunkCount > MAX_CHUNK_COUNT) return error('上传数据数量异常。');
-    if (!Number.isInteger(totalBytes) || totalBytes <= 0) return error('本地数据大小异常。');
-    if (!Number.isInteger(expectedVersion) || expectedVersion < 0) return error('上传会话版本无效，请重新开始上传。', 409);
+    if (!/^[a-f0-9]{64}$/i.test(checksum)) return error('数据格式不正确。');
+    if (!snapshotMetadata) return error('数据格式不正确。');
+    if (!Number.isInteger(recordCount) || recordCount < 0) return error('数据格式不正确。');
+    if (!Number.isInteger(chunkCount) || chunkCount <= 0 || chunkCount > MAX_CHUNK_COUNT) return error('数据格式不正确。');
+    if (!Number.isInteger(totalBytes) || totalBytes <= 0) return error('数据格式不正确。');
+    if (!Number.isInteger(expectedVersion) || expectedVersion < 0) return error('上传已失效，请重新上传。', 409);
 
     let chunkManifest;
     try {
         chunkManifest = normalizeChunkManifest(body.chunkManifest, totalBytes, chunkEncodingForSchema(snapshotMetadata.schemaVersion));
     } catch (err) {
-        return error(err instanceof Error ? err.message : '上传数据清单无效。');
+        return error(err instanceof Error ? err.message : '数据格式不正确。');
     }
-    if (!chunkManifest || chunkManifest.length !== chunkCount) return error('上传数据清单数量不一致。');
+    if (!chunkManifest || chunkManifest.length !== chunkCount) return error('数据格式不正确。');
     if (snapshotMetadata.snapshotFormat === STREAM_SNAPSHOT_FORMAT
         && await sha256Text(JSON.stringify([
             STREAM_SNAPSHOT_FORMAT,
@@ -2018,7 +2018,7 @@ async function handleUploadComplete(bucket, body, ctx) {
             Number(totalBytes || 0),
             chunkManifest.map((chunk) => [String(chunk.checksum).toLowerCase(), getChunkLength(chunk)])
         ])) !== checksum) {
-        return error('本地快照清单校验失败。');
+        return error('数据校验失败。');
     }
 
     const manifestState = await getManifestState(bucket);
@@ -2041,7 +2041,7 @@ async function handleUploadComplete(bucket, body, ctx) {
 
     const actualVersion = Number(previous?.version || 0);
     if (actualVersion !== expectedVersion) {
-        return error('同步冲突：云端数据已被其他设备更新，请重试。', 409);
+        return error('云端数据已被其他设备更新，请重试。', 409);
     }
 
     const committedManifest = {
@@ -2060,7 +2060,7 @@ async function handleUploadComplete(bucket, body, ctx) {
     let onlyIf;
     if (manifestState.object) {
         const etag = manifestState.etag || manifestState.httpEtag.replace(/^"|"$/g, '');
-        if (!etag) throw new Error('R2 manifest 缺少 ETag，无法安全提交。');
+        if (!etag) throw new Error('云端数据异常，请稍后重试。');
         onlyIf = { etagMatches: etag };
     } else {
         onlyIf = { etagDoesNotMatch: '*' };
@@ -2077,7 +2077,7 @@ async function handleUploadComplete(bucket, body, ctx) {
         httpMetadata: { contentType: 'application/json; charset=utf-8' }
     });
     if (!committedObject) {
-        return error('同步冲突：云端数据已被其他设备更新，请重试。', 409);
+        return error('云端数据已被其他设备更新，请重试。', 409);
     }
 
     scheduleManifestMaintenance(ctx, bucket, committedManifest);
@@ -2104,7 +2104,7 @@ function createAppUpdateRequestBudget() {
         used: 0,
         consume() {
             if (this.used >= MAX_APP_UPDATE_EXTERNAL_REQUESTS) {
-                const failure = new Error(`在线更新外部请求超过 ${MAX_APP_UPDATE_EXTERNAL_REQUESTS} 次限制，已拒绝更新。`);
+                const failure = new Error(`请求次数超过上限（${MAX_APP_UPDATE_EXTERNAL_REQUESTS} 次），已取消更新。`);
                 failure.code = 'RP_HUB_APP_UPDATE_REQUEST_LIMIT';
                 throw failure;
             }
@@ -2128,17 +2128,17 @@ async function fetchWithBudgetedRedirects(url, options = {}, requestBudget = nul
         if (!isRedirectStatus(response.status)) return response;
         if (redirectCount >= MAX_APP_UPDATE_REDIRECTS) {
             await response.body?.cancel().catch(() => {});
-            throw new Error(`在线更新重定向超过 ${MAX_APP_UPDATE_REDIRECTS} 次限制。`);
+            throw new Error('重定向次数过多。');
         }
         const location = response.headers.get('location');
         if (!location) {
             await response.body?.cancel().catch(() => {});
-            throw new Error('在线更新收到缺少 Location 的重定向响应。');
+            throw new Error('服务器返回了无效的重定向。');
         }
         const nextUrl = new URL(location, currentUrl);
         if (nextUrl.protocol !== 'https:' && nextUrl.protocol !== 'http:') {
             await response.body?.cancel().catch(() => {});
-            throw new Error(`在线更新拒绝非 HTTP 重定向：${nextUrl.protocol}`);
+            throw new Error(`重定向地址无效：${nextUrl.protocol}`);
         }
         await response.body?.cancel().catch(() => {});
         currentUrl = nextUrl;
@@ -2166,7 +2166,7 @@ async function fetchGitHubJson(url, env, requestBudget = null) {
     try {
         return JSON.parse(text);
     } catch (err) {
-        throw new Error('GitHub 返回的数据不是有效 JSON。');
+        throw new Error('GitHub 返回的数据格式不正确。');
     }
 }
 
@@ -2217,7 +2217,7 @@ async function fetchReleaseVersions(env, requestBudget = null) {
         requestBudget
     );
     const versions = parseReleaseFeed(xml);
-    if (versions.length === 0) throw new Error('没有从 RP-Hub Releases 读取到版本。');
+    if (versions.length === 0) throw new Error('没有获取到 RP-Hub 官方版本。');
     return versions.slice(0, APP_RELEASE_VERSION_LIMIT);
 }
 
@@ -2231,10 +2231,10 @@ function getAppUpdateMirrorBase(env) {
     try {
         url = new URL(rawBase);
     } catch {
-        throw new Error(`在线更新镜像地址无效：${rawBase}`);
+        throw new Error(`分发站地址无效：${rawBase}`);
     }
     if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-        throw new Error(`在线更新镜像地址必须使用 HTTP(S)：${rawBase}`);
+        throw new Error(`分发站地址必须以 http:// 或 https:// 开头：${rawBase}`);
     }
     url.hash = '';
     url.search = '';
@@ -2245,30 +2245,30 @@ function normalizeMirrorFile(file) {
     const path = typeof file?.path === 'string' ? file.path : '';
     const sha256 = typeof file?.sha256 === 'string' ? file.sha256.toLowerCase() : '';
     const size = Number(file?.size);
-    if (!isAllowedAppUpdatePath(path)) throw new Error(`镜像清单包含非法文件路径：${path || '(empty)'}`);
-    if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error(`镜像清单文件 SHA-256 无效：${path}`);
+    if (!isAllowedAppUpdatePath(path)) throw new Error(`分发站文件列表有误：路径无效（${path || '空'}）`);
+    if (!/^[a-f0-9]{64}$/.test(sha256)) throw new Error(`分发站文件列表有误：SHA-256 无效（${path}）`);
     if (!Number.isSafeInteger(size) || size < 0 || size > MAX_APP_UPDATE_FILE_BYTES) {
-        throw new Error(`镜像清单文件大小无效：${path}`);
+        throw new Error(`分发站文件列表有误：大小无效（${path}）`);
     }
     return { path, sha256, size };
 }
 
 function parseMirrorManifest(value, mirrorBase) {
     if (!value || typeof value !== 'object' || value.schema !== 1 || value.upstreamRepo !== UPSTREAM_REPO) {
-        throw new Error(`在线更新镜像清单格式无效：${mirrorBase}/manifest.json`);
+        throw new Error(`分发站版本列表格式不正确：${mirrorBase}/manifest.json`);
     }
     if (!Array.isArray(value.versions) || value.versions.length === 0) {
-        throw new Error(`在线更新镜像没有可用版本：${mirrorBase}/manifest.json`);
+        throw new Error(`分发站暂无可用版本：${mirrorBase}/manifest.json`);
     }
     const versions = value.versions.slice(0, APP_RELEASE_VERSION_LIMIT).map((version) => {
         const tag = sanitizeReleaseTag(version?.tag);
         const commit = typeof version?.commit === 'string' ? version.commit.toLowerCase() : '';
         if (!tag || !/^[a-f0-9]{40}$/.test(commit) || !Array.isArray(version?.files)) {
-            throw new Error(`在线更新镜像版本条目无效：${tag || '(unknown)'}`);
+            throw new Error(`分发站版本信息有误：${tag || '未知版本'}`);
         }
         const files = version.files.map(normalizeMirrorFile);
         if (new Set(files.map((file) => file.path)).size !== files.length) {
-            throw new Error(`在线更新镜像版本包含重复文件：${tag}`);
+            throw new Error(`分发站版本 ${tag} 有重复文件。`);
         }
         return {
             tag,
@@ -2292,15 +2292,15 @@ async function fetchMirrorReleaseVersions(mirrorBase, requestBudget = null) {
             headers: { accept: 'application/json' }
         }, requestBudget);
     } catch (err) {
-        throw new Error(`在线更新镜像不可达（${mirrorBase}）：${err?.name === 'AbortError' ? 'timeout' : err?.message || 'request failed'}`);
+        throw new Error(`无法连接分发站（${mirrorBase}）：${err?.name === 'AbortError' ? '请求超时' : err?.message || '请求失败'}`);
     }
     const text = await response.text();
-    if (!response.ok) throw new Error(`在线更新镜像请求失败（${mirrorBase}）：HTTP ${response.status}`);
+    if (!response.ok) throw new Error(`分发站请求失败（${mirrorBase}）：HTTP ${response.status}`);
     let manifest;
     try {
         manifest = JSON.parse(text);
     } catch {
-        throw new Error(`在线更新镜像清单不是有效 JSON：${mirrorBase}/manifest.json`);
+        throw new Error(`分发站版本列表格式不正确：${mirrorBase}/manifest.json`);
     }
     return parseMirrorManifest(manifest, mirrorBase);
 }
@@ -2670,7 +2670,7 @@ async function fetchUpstreamFile(path, ref, env, requestBudget = null) {
                     : buildGitHubHeaders(env, 'application/octet-stream')
             }, requestBudget);
             if (!response.ok) {
-                failures.push(`${source.name}: HTTP ${response.status}`);
+                failures.push(`${source.name}：HTTP ${response.status}`);
                 continue;
             }
             return {
@@ -2679,10 +2679,10 @@ async function fetchUpstreamFile(path, ref, env, requestBudget = null) {
             };
         } catch (err) {
             if (err?.code === 'RP_HUB_APP_UPDATE_REQUEST_LIMIT') throw err;
-            failures.push(`${source.name}: ${err?.name === 'AbortError' ? 'timeout' : err?.message || 'request failed'}`);
+            failures.push(`${source.name}：${err?.name === 'AbortError' ? '请求超时' : err?.message || '请求失败'}`);
         }
     }
-    throw new Error(`下载上游文件失败：${path}；${failures.join('；')}`);
+    throw new Error(`下载更新文件失败：${path}；${failures.join('；')}`);
 }
 
 async function fetchMirrorUpstreamFile(path, version, mirrorBase, requestBudget = null) {
@@ -2692,7 +2692,7 @@ async function fetchMirrorUpstreamFile(path, version, mirrorBase, requestBudget 
         ? version.files.find((file) => file.path === path)
         : null;
     if (!tag || !/^[a-f0-9]{40}$/.test(commit) || !descriptor) {
-        throw new Error(`在线更新镜像缺少文件清单项：${path}`);
+        throw new Error(`分发站缺少文件：${path}`);
     }
     const url = `${mirrorBase}/snapshots/${encodePathSegments(tag)}/${commit}/${encodePathSegments(path)}`;
     let response;
@@ -2702,13 +2702,13 @@ async function fetchMirrorUpstreamFile(path, version, mirrorBase, requestBudget 
         }, requestBudget);
     } catch (err) {
         if (err?.code === 'RP_HUB_APP_UPDATE_REQUEST_LIMIT') throw err;
-        throw new Error(`下载镜像文件失败（${mirrorBase}）：${path}；${err?.name === 'AbortError' ? 'timeout' : err?.message || 'request failed'}`);
+        throw new Error(`从分发站下载文件失败（${mirrorBase}）：${path}；${err?.name === 'AbortError' ? '请求超时' : err?.message || '请求失败'}`);
     }
-    if (!response.ok) throw new Error(`下载镜像文件失败（${mirrorBase}）：${path}；HTTP ${response.status}`);
+    if (!response.ok) throw new Error(`从分发站下载文件失败（${mirrorBase}）：${path}；HTTP ${response.status}`);
     const bytes = await response.arrayBuffer();
     const checksum = await sha256Bytes(bytes);
     if (checksum !== descriptor.sha256) {
-        throw new Error(`镜像文件 SHA-256 不匹配，已拒绝更新：${path}`);
+        throw new Error(`文件校验失败，已取消更新：${path}`);
     }
     return { bytes, source: 'mirror' };
 }
@@ -2773,7 +2773,7 @@ async function listUpstreamFilesFromContents(ref, env, requestBudget = null) {
             : '';
         const url = `https://api.github.com/repos/${UPSTREAM_REPO}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`;
         const entries = await fetchGitHubJson(url, env, requestBudget);
-        if (!Array.isArray(entries)) throw new Error('GitHub 文件列表格式异常。');
+        if (!Array.isArray(entries)) throw new Error('GitHub 返回的文件列表格式不正确。');
 
         for (const entry of entries) {
             const path = typeof entry?.path === 'string' ? entry.path : '';
@@ -2785,17 +2785,17 @@ async function listUpstreamFilesFromContents(ref, env, requestBudget = null) {
             if (entry.type !== 'file') continue;
             const size = Number(entry.size || 0);
             if (size > MAX_APP_UPDATE_FILE_BYTES) {
-                throw new Error(`上游文件过大，已停止更新：${path}`);
+                throw new Error(`文件过大：${path}`);
             }
             files.push(path);
             if (files.length > MAX_APP_UPDATE_FILES) {
-                throw new Error(`上游文件数量超过限制（${MAX_APP_UPDATE_FILES}），已停止更新。`);
+                throw new Error(`文件数量超过上限（${MAX_APP_UPDATE_FILES} 个）。`);
             }
         }
     }
     files.sort((a, b) => a.localeCompare(b));
     for (const required of REQUIRED_UPSTREAM_FILES) {
-        if (!files.includes(required)) throw new Error(`上游 Release 缺少必要文件：${required}`);
+        if (!files.includes(required)) throw new Error(`缺少必要文件：${required}`);
     }
     return files;
 }
@@ -2807,7 +2807,7 @@ async function getUpstreamFilesForUpdate(ref, env, requestBudget = null) {
             source: 'github-contents'
         };
     } catch (err) {
-        const failure = new Error(`读取上游完整文件列表失败，已拒绝更新：${err instanceof Error ? err.message : '未知错误'}`);
+        const failure = new Error(`获取文件列表失败，已取消更新：${err instanceof Error ? err.message : '未知错误'}`);
         failure.code = 'RP_HUB_APP_FILE_LIST_FAILED';
         throw failure;
     }
@@ -2817,15 +2817,15 @@ async function getMirrorUpstreamFilesForUpdate(version) {
     try {
         const descriptors = Array.isArray(version?.files) ? version.files.map(normalizeMirrorFile) : [];
         if (descriptors.length > MAX_APP_UPDATE_FILES) {
-            throw new Error(`上游文件数量超过限制（${MAX_APP_UPDATE_FILES}），已停止更新。`);
+            throw new Error(`文件数量超过上限（${MAX_APP_UPDATE_FILES} 个）。`);
         }
         const files = descriptors.map((file) => file.path).sort((a, b) => a.localeCompare(b));
         for (const required of REQUIRED_UPSTREAM_FILES) {
-            if (!files.includes(required)) throw new Error(`上游 Release 缺少必要文件：${required}`);
+            if (!files.includes(required)) throw new Error(`缺少必要文件：${required}`);
         }
         return { files, source: 'mirror-manifest' };
     } catch (err) {
-        const failure = new Error(`读取上游完整文件列表失败，已拒绝更新：${err instanceof Error ? err.message : '未知错误'}`);
+        const failure = new Error(`获取文件列表失败，已取消更新：${err instanceof Error ? err.message : '未知错误'}`);
         failure.code = 'RP_HUB_APP_FILE_LIST_FAILED';
         throw failure;
     }
@@ -2841,7 +2841,7 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
     const requestBudget = createAppUpdateRequestBudget();
     const releaseResult = await getConfiguredReleaseVersions(bucket, env, { requestBudget });
     const targetTag = sanitizeReleaseTag(body.target) || releaseResult.versions[0]?.tag || '';
-    if (!targetTag) return error('没有可更新的 Release 版本。', 409);
+    if (!targetTag) return error('暂无可更新的版本。', 409);
     const latest = releaseResult.versions.find((version) => version.tag === targetTag) || {
         tag: targetTag,
         sha: targetTag,
@@ -2894,14 +2894,14 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
                     bytes = encodeText(patchUpstreamTextFile(path, text, latest.tag));
                 }
                 if (bytes.byteLength > MAX_APP_UPDATE_FILE_BYTES) {
-                    throw new Error(`上游文件过大，已停止更新：${path}`);
+                    throw new Error(`文件过大，已取消更新：${path}`);
                 }
                 const checksum = await sha256Bytes(bytes);
                 const stored = await bucket.put(getStoredAppUpdateKey(stagingSlot, path), bytes, {
                     httpMetadata: { contentType: getContentType(path) },
                     customMetadata: { upstreamTag: latest.tag, checksum, source: upstreamFile.source }
                 });
-                if (!stored) throw new Error(`写入新版本槽失败：${path}`);
+                if (!stored) throw new Error(`保存文件失败：${path}`);
                 return {
                     path,
                     checksum,
@@ -2911,7 +2911,7 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
             } catch (err) {
                 return {
                     path,
-                    error: err instanceof Error ? err.message : '下载上游文件失败。',
+                    error: err instanceof Error ? err.message : '下载更新文件失败。',
                     code: err?.code || '',
                     patchRejected: err instanceof RpHubAppPatchError || err?.code === 'RP_HUB_APP_PATCH_REJECTED'
                 };
@@ -2934,17 +2934,17 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
         files = await listStagedAppUpdateFiles(bucket, stagingSlot);
         const missing = upstreamFiles.find((path) => !files.some((file) => file.path === path));
         if (missing) {
-            const failure = new Error(`新版本文件没有存全（${missing}），请重新更新。`);
+            const failure = new Error(`更新文件不完整（缺少 ${missing}），请重新更新。`);
             failure.code = 'RP_HUB_APP_RELEASE_INCOMPLETE';
             throw failure;
         }
         totalBytes = files.reduce((sum, file) => sum + file.byteLength, 0);
         if (totalBytes > MAX_APP_UPDATE_TOTAL_BYTES) {
-            throw new Error(`上游文件总大小超过限制（${Math.round(MAX_APP_UPDATE_TOTAL_BYTES / 1024 / 1024)}MiB），已停止更新。`);
+            throw new Error(`更新文件总大小超过上限（${Math.round(MAX_APP_UPDATE_TOTAL_BYTES / 1024 / 1024)}MB），已取消更新。`);
         }
         for (const required of REQUIRED_UPSTREAM_FILES) {
             if (!files.some((file) => file.path === required)) {
-                const failure = new Error(`上游 Release 缺少必要文件：${required}`);
+                const failure = new Error(`该版本缺少必要文件：${required}`);
                 failure.code = 'RP_HUB_APP_RELEASE_INCOMPLETE';
                 throw failure;
             }
@@ -2992,7 +2992,7 @@ async function handleAppUpdateApply(bucket, body = {}, env, ctx) {
             ).catch((cleanupError) => {
                 console.warn('[RP App Update] Failed to clean conflicted version slot:', cleanupError);
             });
-            return error('在线更新冲突：当前版本已被其他请求切换，请重新检查后重试。', 409, {
+            return error('程序版本已在其他页面切换，请重新检查更新。', 409, {
                 code: 'RP_HUB_APP_UPDATE_CONFLICT'
             });
         }
@@ -3044,9 +3044,9 @@ async function handleAppUpdateRollback(bucket) {
     const applied = manifestState.manifest;
     const current = getManifestCurrent(applied);
     const previous = getManifestPrevious(applied);
-    if (!previous) return error('没有可回滚的上一版。', 409);
+    if (!previous) return error('没有可回退的上一版。', 409);
     if (!hasCurrentAppPatchRevision(previous)) {
-        return error('上一版未通过当前角色卡存储补丁验证，已拒绝回滚。', 409, {
+        return error('上一版与当前程序不兼容，无法回退。', 409, {
             code: 'RP_HUB_APP_ROLLBACK_PATCH_MISMATCH'
         });
     }
@@ -3081,7 +3081,7 @@ async function handleAppUpdateRollback(bucket) {
         committedObject = true;
     }
     if (!committedObject) {
-        return error('在线更新冲突：当前版本已被其他请求切换，请重新检查后重试。', 409, {
+        return error('程序版本已在其他页面切换，请重新检查更新。', 409, {
             code: 'RP_HUB_APP_UPDATE_CONFLICT'
         });
     }
@@ -3105,7 +3105,7 @@ async function handleJsonApi(request, env, ctx) {
     const body = await request.json().catch(() => null);
     if (!body || typeof body !== 'object') return error('Invalid JSON body.');
     if (body.action === 'auth-status') return handleAuthStatus(request, env);
-    if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401, { authRequired: true });
+    if (!await isRequestAuthorized(request, env)) return error('同步密码错误', 401, { authRequired: true });
 
     const bucket = getBucket(env);
     const actions = {
@@ -3157,11 +3157,11 @@ async function cfApi(path, token, init = {}) {
 
 async function fetchTestReleaseManifest(env) {
     const base = getAppUpdateMirrorBase(env);
-    if (!base) throw createHttpError('分发端已关闭（APP_UPDATE_MIRROR_BASE=off）。', 409);
+    if (!base) throw createHttpError('分发站已关闭（APP_UPDATE_MIRROR_BASE=off）。', 409);
     const response = await fetchWithTimeout(base + TEST_RELEASE_MANIFEST_PATH, { headers: { accept: 'application/json' } });
-    if (!response.ok) throw createHttpError(`分发端测试版清单请求失败：HTTP ${response.status}`, 502);
+    if (!response.ok) throw createHttpError(`获取测试版列表失败：HTTP ${response.status}`, 502);
     const manifest = await response.json().catch(() => null);
-    if (!Array.isArray(manifest?.versions)) throw createHttpError('分发端测试版清单格式无效。', 502);
+    if (!Array.isArray(manifest?.versions)) throw createHttpError('分发站测试版列表格式不正确。', 502);
     const versions = manifest.versions.filter((version) => TEST_RELEASE_TAG_PATTERN.test(version?.tag)
         && /^\/test-releases\//.test(version.bundle?.path) && /^[a-f0-9]{64}$/.test(version.bundle?.sha256));
     return { base, versions };
@@ -3170,12 +3170,12 @@ async function fetchTestReleaseManifest(env) {
 // 用令牌找出本站所在的账户和 Pages 项目；只有 Pages 编辑权限的令牌列不出账户，此时要求设置 CF_ACCOUNT_ID。
 async function resolvePagesTarget(env, host) {
     // 没有同步密码时接口对所有人开放，不能让任何人都能给站点部署或回退。
-    if (!getSyncPassword(env)) throw createHttpError('站点未设置同步密码 RP_SYNC_PASSWORD，为了安全不允许一键更新和回退。', 409);
+    if (!getSyncPassword(env)) throw createHttpError('请先设置同步密码 RP_SYNC_PASSWORD，再更新或回退。', 409);
     const token = String(env.CF_API_TOKEN || '').trim();
-    if (!token) throw createHttpError('站点未设置 CF_API_TOKEN，无法一键更新；可下载部署包手动上传。', 409);
+    if (!token) throw createHttpError('未设置 CF_API_TOKEN，无法在站内更新，请下载部署包手动上传。', 409);
     const configuredAccount = String(env.CF_ACCOUNT_ID || '').trim();
     const accounts = configuredAccount ? [configuredAccount] : (await cfApi('/accounts', token)).map((account) => account.id);
-    if (!accounts.length) throw createHttpError('令牌查不到账户：请给令牌加上“帐户设置：读取”权限，或在项目变量中设置 CF_ACCOUNT_ID。', 409);
+    if (!accounts.length) throw createHttpError('无法获取 Cloudflare 帐户：请给令牌添加“帐户设置：读取”权限，或在项目变量中设置 CF_ACCOUNT_ID。', 409);
     for (const account of accounts) {
         for (let page = 1; page <= MAX_PAGES_PROJECT_LIST_PAGES; page += 1) {
             const projects = await cfApi(`/accounts/${account}/pages/projects?page=${page}`, token);
@@ -3188,7 +3188,7 @@ async function resolvePagesTarget(env, host) {
             if (!projects.length) break;
         }
     }
-    throw createHttpError(`找不到网址 ${host} 对应的 Pages 项目，请确认令牌有该账户的 Pages 编辑权限。`, 409);
+    throw createHttpError(`找不到 ${host} 对应的 Pages 项目，请确认令牌有该帐户的 Pages 编辑权限。`, 409);
 }
 
 function validateReleaseBundle(bundle, tag) {
@@ -3196,7 +3196,7 @@ function validateReleaseBundle(bundle, tag) {
     if (bundle?.format !== 'rph-release-bundle-v1' || bundle.version !== tag || typeof bundle.worker !== 'string' || !bundle.worker
         || !Array.isArray(bundle.assets) || !bundle.assets.length
         || !bundle.assets.every((asset) => validPath(asset?.path) && typeof asset.base64 === 'string')) {
-        throw createHttpError('发布包内容格式无效，已取消更新。', 502);
+        throw createHttpError('更新包格式不正确，已取消更新。', 502);
     }
     return bundle;
 }
@@ -3230,7 +3230,7 @@ async function deployReleaseBundle(target, bundle) {
     const form = new FormData();
     form.set('manifest', JSON.stringify(Object.fromEntries(assets.map((asset) => [`/${asset.path}`, asset.hash]))));
     form.set('branch', target.branch || 'main');
-    form.set('commit_message', `RP-Hub 测试版 ${bundle.version}（站内一键更新）`);
+    form.set('commit_message', `RP-Hub 测试版 ${bundle.version}（站内更新）`);
     form.set('_worker.bundle', new File([await new Response(workerBundle).blob()], '_worker.bundle'));
     const deployment = await cfApi(`${projectPath}/deployments`, target.token, { method: 'POST', body: form });
     return { id: deployment.id, url: deployment.url, uploaded: uploads.length };
@@ -3260,11 +3260,11 @@ async function handleSelfUpdateApply(request, env, body) {
     const { base, versions } = await fetchTestReleaseManifest(env);
     const tag = String(body.target || versions[0]?.tag || '');
     const version = versions.find((item) => item.tag === tag);
-    if (!version) return error(`分发端没有测试版 ${tag || '（空）'}。`, 404);
+    if (!version) return error(`分发站没有测试版 ${tag || '（未指定）'}。`, 404);
     const response = await fetchWithTimeout(base + version.bundle.path);
-    if (!response.ok) return error(`发布包下载失败：HTTP ${response.status}`, 502);
+    if (!response.ok) return error(`下载更新包失败：HTTP ${response.status}`, 502);
     const bytes = new Uint8Array(await response.arrayBuffer());
-    if (await sha256Bytes(bytes) !== version.bundle.sha256) return error('发布包校验失败，已取消更新。', 502);
+    if (await sha256Bytes(bytes) !== version.bundle.sha256) return error('更新包校验失败，已取消更新。', 502);
     const bundle = validateReleaseBundle(JSON.parse(new TextDecoder().decode(bytes)), version.tag);
     const deployment = await deployReleaseBundle(target, bundle);
     return json({ ok: true, version: version.tag, deployment });
@@ -3277,7 +3277,7 @@ async function handleSelfUpdateRollback(request, env) {
     const deployments = await cfApi(`${projectPath}/deployments?env=production`, target.token);
     const currentIndex = deployments.findIndex((item) => item.id === target.currentDeployment);
     const previous = deployments[currentIndex + 1];
-    if (currentIndex < 0 || !previous) return error('没有可回退的上一次部署。', 409);
+    if (currentIndex < 0 || !previous) return error('没有可回退的上一版。', 409);
     const result = await cfApi(`${projectPath}/deployments/${previous.id}/rollback`, target.token, { method: 'POST' });
     return json({ ok: true, deployment: { id: result.id, url: result.url } });
 }
@@ -3287,24 +3287,24 @@ const USAGE_STATE_KEY = '_feedback/usage.json';
 
 async function forwardFeedback(env, path, payload) {
     const base = getAppUpdateMirrorBase(env);
-    if (!base) throw createHttpError('分发端已关闭，请下载报告文件。', 409);
+    if (!base) throw createHttpError('分发站已关闭，请下载报告', 409);
     const response = await fetch(base + '/api/feedback/' + path, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload), signal: AbortSignal.timeout(8000), redirect: 'error'
     });
-    if (!response.ok) throw createHttpError('分发端暂时无法接收，请稍后重试或下载报告文件。', 502);
+    if (!response.ok) throw createHttpError('分发站暂时不可用，请稍后重试', 502);
     return response.json();
 }
 
 async function handleFeedback(request, env) {
     if (request.method !== 'POST') return error('Method not allowed.', 405);
-    if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401);
+    if (!await isRequestAuthorized(request, env)) return error('同步密码错误', 401);
     const text = await request.text();
-    if (new TextEncoder().encode(text).byteLength > 128 * 1024) return error('报告过大。', 413);
+    if (new TextEncoder().encode(text).byteLength > 128 * 1024) return error('报告过大', 413);
     let body;
     try { body = JSON.parse(text); } catch { return error('Invalid JSON body.'); }
     if (body?.action === 'report') {
-        if (body.report?.schema !== 1) return error('报告格式无效。');
+        if (body.report?.schema !== 1) return error('报告格式无效');
         return json(await forwardFeedback(env, 'reports', body.report));
     }
     if (body?.action !== 'usage') return error('Unsupported action.', 404);
@@ -3326,7 +3326,7 @@ async function handleApi(request, env, url, ctx) {
     const action = url.searchParams.get('action');
     if (action !== 'upload-part' && action !== 'fork-export-pack') return handleJsonApi(request, env, ctx);
     if (request.method !== 'POST') return error('Method not allowed.', 405);
-    if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401, { authRequired: true });
+    if (!await isRequestAuthorized(request, env)) return error('同步密码错误', 401, { authRequired: true });
     const handler = action === 'upload-part' ? handleUploadPart : handleForkExportPack;
     return handler(request, getBucket(env), url);
 }

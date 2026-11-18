@@ -398,7 +398,7 @@ async function testChecksumMismatchFailsClosed(version181) {
             { APP_UPDATE_MIRROR_BASE: mirror.baseUrl }
         );
         assert.equal(result.response.status, 500);
-        assert.match(result.payload.error, /SHA-256 不匹配/);
+        assert.match(result.payload.error, /文件校验失败/);
         assert.equal(bucket.records.has(APP_UPDATE_MANIFEST_KEY), false);
         assert.equal(bucket.keys(`${APP_UPDATE_PREFIX}/versions/`).length, 0);
     } finally {
@@ -446,7 +446,7 @@ async function testUnreachableMirrorFailsClosed() {
         { APP_UPDATE_MIRROR_BASE: unreachableBase }
     );
     assert.equal(result.response.status, 500);
-    assert.match(result.payload.error, /在线更新镜像不可达/);
+    assert.match(result.payload.error, /无法连接分发站/);
     assert.match(result.payload.error, new RegExp(unreachableBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     assert.deepEqual(calls, [`${unreachableBase}/manifest.json`]);
 }

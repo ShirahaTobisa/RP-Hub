@@ -32,7 +32,7 @@ assert.match(source, /tx\.onabort = \(\) => reject\(firstError/);
 assert.match(source, /RPH_R2_FLUSH_PERSISTENCE !== 'function'/);
 assert.doesNotMatch(source, /manualSave\(\)/);
 assert.match(source, /RPHubCharStore\.assertPushAllowed\(\)/);
-assert.match(source, /读取本地数据库 \$\{dbName\} 失败，已取消上传以避免云端数据缺失/);
+assert.match(source, /读取本地数据库 \$\{dbName\} 失败。/);
 assert.doesNotMatch(source, /console\.warn\('\[RP Sync\] Failed to read IndexedDB:/);
 assert.match(source, /conflictAttempt < 4/);
 assert.match(source, /expectedVersion: uploadSession\.previousVersion/);
@@ -79,7 +79,7 @@ assert.match(source, /remote\.snapshotFormat === 'rp-sync-jsonl-v2' \|\| Number\
 assert.match(source, /downloadLegacyRemoteSnapshot\(remote\)/);
 assert.doesNotMatch(source, /buildSnapshotFromData|buildStableSnapshot|RPHubSyncLargeValues/);
 assert.match(source, /snapshotEncoder\.encode\(serialized\)\.byteLength/);
-assert.match(source, /旧快照角色卡 UUID 重复/);
+assert.match(source, /角色卡 ID 重复/);
 
 const restoreBody = source.slice(
     source.indexOf('async function restoreStreamSnapshot('),

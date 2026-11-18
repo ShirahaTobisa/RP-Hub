@@ -3,7 +3,7 @@
 // 只改发往主供应商地址的请求（聊天、记忆总结与向量、UI 分析、识图，以及角色卡生成页、小说页里的请求）；
 // 被别的插件（如柳贯一分流）改到其他地址的请求不动。同名模型按面板里的顺序，取排在前面的供应商。
 RPHubSDK.register({
-    id: 'multi-provider', name: '多供应商模型', version: '1.0.0', requiresApi: 3,
+    id: 'multi-provider', name: '多供应商模型', version: '1.0.1', requiresApi: 3,
     init(ctx) {
         'use strict';
         const read = (key, fallback) => { try { return JSON.parse(ctx.storage.get(key)) ?? fallback; } catch (_) { return fallback; } };
@@ -14,7 +14,8 @@ RPHubSDK.register({
         let enabled = read('enabled', []);
         let custom = read('custom', []);
         let routes = read('routes', {});
-        const SLOTS = [['qualityModel', '主力模型'], ['balancedModel', '均衡模型'], ['fastModel', '快速模型'], ['visionModel', '识图模型'], ['uiTemplateModel', 'UI 模板模型']];
+        // 名称照 RPH 设置页：聊天主模型的三个槽位、变量分析模型；识图模型是旧版 RPH 的。
+        const SLOTS = [['qualityModel', '聊天主模型（槽位 1）'], ['balancedModel', '聊天主模型（槽位 2）'], ['fastModel', '聊天主模型（槽位 3）'], ['visionModel', '识图模型'], ['uiTemplateModel', '变量分析模型']];
 
         const settings = () => ctx.app.get('settings') || {};
         const endpoint = (base, path) => {
@@ -74,7 +75,7 @@ RPHubSDK.register({
                 : Reflect.apply(nativeFetch, win, [endpoint(provider.url, 'models'), { headers: { authorization: `Bearer ${provider.key}` }, signal: init?.signal }]).then(readModels))
                 .then((models) => ({ models }), (error) => ({ models: [], error }))));
             const failed = providers.map((provider, index) => (lists[index].error ? `${provider.name}（${lists[index].error.message}）` : '')).filter(Boolean);
-            if (failed.length) ctx.ui.toast(`这些供应商的模型列表没取到：${failed.join('、')}`, { kind: 'warning' });
+            if (failed.length) ctx.ui.toast(`获取模型列表失败：${failed.join('、')}`, { kind: 'warning' });
             if (lists.every((list) => !list.models.length)) return mainResponse;
             const seen = new Set();
             const data = [];
@@ -169,18 +170,18 @@ RPHubSDK.register({
                         const counts = {};
                         for (const id of Object.values(routes)) counts[id] = (counts[id] || 0) + 1;
                         body.innerHTML = `
-                            <p class="rph-ui-note">启用后，在 RPH「设置」里选模型时会列出所有已启用供应商的模型，旁边标出供应商；选了哪个模型，请求就自动发到它所在的供应商。改完这里的设置，到「设置」里点一次「获取模型」刷新列表。</p>
-                            <p class="rph-ui-muted">主供应商：<b>${escapeHtml(main.name)}</b>（在 RPH 设置里选，自动包含，同名模型优先用它）${counts[main.id] ? ` · ${counts[main.id]} 个模型` : ''}</p>
+                            <p class="rph-ui-note">已启用供应商的模型会合并到模型列表中，修改后请在「设置」中点击「刷新可用模型列表」。</p>
+                            <p class="rph-ui-muted">主供应商：<b>${escapeHtml(main.name)}</b>（在「设置」中选择）${counts[main.id] ? ` · ${counts[main.id]} 个模型` : ''}</p>
                             ${providers.map((provider) => {
                                 const on = enabled.includes(provider.id);
                                 return `<div class="rph-ui-row" data-provider="${escapeHtml(provider.id)}">
                                     <div class="rph-ui-row-main">
                                         <b>${escapeHtml(provider.name)}</b>${on && counts[provider.id] ? ` <span class="rph-ui-muted">· ${counts[provider.id]} 个模型</span>` : ''}
-                                        <div class="rph-ui-muted">${escapeHtml(provider.url || '（还没填地址，在 RPH 设置里选「自定义」填写）')}</div>
+                                        <div class="rph-ui-muted">${escapeHtml(provider.url || '未填写地址，请在「设置」中选择「自定义」后填写')}</div>
                                         <input class="rph-ui-input" type="password" data-key placeholder="API 密钥" value="${escapeHtml(provider.key)}" style="margin-top:6px">
                                     </div>
                                     <div class="rph-ui-actions">
-                                        ${enabled.indexOf(provider.id) > 0 ? '<button type="button" class="modal-secondary-button rph-ui-button" data-act="up" title="排到前面（同名模型优先）">上移</button>' : ''}
+                                        ${enabled.indexOf(provider.id) > 0 ? '<button type="button" class="modal-secondary-button rph-ui-button" data-act="up" title="同名模型优先使用排在前面的供应商">上移</button>' : ''}
                                         ${provider.kind === 'plugin' ? '<button type="button" class="modal-secondary-button rph-ui-button rph-ui-danger" data-act="delete">删除</button>' : ''}
                                         <label class="rph-ui-check"><input type="checkbox" class="settings-toggle-input sr-only" data-act="toggle" ${on ? 'checked' : ''}><span class="settings-toggle"></span><span>启用</span></label>
                                     </div>
@@ -188,7 +189,7 @@ RPHubSDK.register({
                             }).join('')}
                             <section class="rph-ui-section" style="margin-top:16px">
                                 <h3>添加供应商</h3>
-                                <label class="rph-ui-field">名称<input class="rph-ui-input" data-new="name" placeholder="比如：我的中转站"></label>
+                                <label class="rph-ui-field">名称<input class="rph-ui-input" data-new="name" placeholder="例如：我的中转站"></label>
                                 <label class="rph-ui-field">API 地址<input class="rph-ui-input" data-new="url" placeholder="https://example.com/v1"></label>
                                 <label class="rph-ui-field">API 密钥<input class="rph-ui-input" type="password" data-new="key"></label>
                                 <div class="rph-ui-actions"><button type="button" class="modal-primary-button rph-ui-button" data-act="add">添加并启用</button></div>
@@ -210,13 +211,13 @@ RPHubSDK.register({
                                 if (event.target.checked) {
                                     if (!provider.url || !(row.querySelector('[data-key]').value.trim())) {
                                         event.target.checked = false;
-                                        return ctx.ui.toast(`「${provider.name}」还没填${provider.url ? '密钥' : '地址'}，填好再启用`, { kind: 'warning' });
+                                        return ctx.ui.toast(`请先填写「${provider.name}」的${provider.url ? '密钥' : '地址'}`, { kind: 'warning' });
                                     }
                                     enabled = [...enabled.filter((id) => id !== provider.id), provider.id];
                                 } else {
                                     const using = slotsUsing(provider.id);
                                     enabled = enabled.filter((id) => id !== provider.id);
-                                    if (using.length) ctx.ui.toast(`这些模型位还在用「${provider.name}」的模型：${using.join('、')}。关掉后它们会改发到主供应商，请到设置里重新选。`, { kind: 'warning' });
+                                    if (using.length) ctx.ui.toast(`已停用「${provider.name}」，${using.join('、')}将改用主供应商，请在「设置」中重新选择模型`, { kind: 'warning' });
                                 }
                                 write('enabled', enabled);
                                 draw();
@@ -230,7 +231,7 @@ RPHubSDK.register({
                             };
                             const remove = row.querySelector('[data-act="delete"]');
                             if (remove) remove.onclick = async () => {
-                                if (!await window.RPHubUI.confirm({ title: '删除供应商', message: `删除「${provider.name}」和它的密钥？`, confirmText: '删除', danger: true })) return;
+                                if (!await window.RPHubUI.confirm({ title: '删除供应商', message: `「${provider.name}」及其密钥将被删除。`, confirmText: '删除', danger: true })) return;
                                 custom = custom.filter((item) => item.id !== provider.id);
                                 enabled = enabled.filter((id) => id !== provider.id);
                                 write('custom', custom);
@@ -243,13 +244,13 @@ RPHubSDK.register({
                             const name = value('name');
                             const url = value('url').replace(/\/+$/, '');
                             const key = value('key');
-                            if (!name || !/^https?:\/\//.test(url) || !key) return ctx.ui.toast('名称、以 http(s):// 开头的地址和密钥都要填', { kind: 'warning' });
+                            if (!name || !/^https?:\/\//.test(url) || !key) return ctx.ui.toast('请填写名称、地址和密钥，地址需以 http:// 或 https:// 开头', { kind: 'warning' });
                             const id = `p-${Date.now().toString(36)}`;
                             custom = [...custom, { id, name, url, key }];
                             enabled = [...enabled, id];
                             write('custom', custom);
                             write('enabled', enabled);
-                            ctx.ui.toast(`已添加并启用「${name}」，到设置里点「获取模型」就能看到它的模型`, { kind: 'success' });
+                            ctx.ui.toast(`已添加并启用「${name}」，刷新模型列表后即可选择`, { kind: 'success' });
                             draw();
                         };
                     };

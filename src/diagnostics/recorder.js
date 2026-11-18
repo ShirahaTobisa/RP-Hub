@@ -74,9 +74,9 @@
             method: 'POST', headers: { 'content-type': 'application/json', ...(password ? { 'x-rp-sync-password': password } : {}) },
             body: JSON.stringify({ action, ...(report ? { report } : {}) }), signal: AbortSignal.timeout(10000)
         });
-        if (response.status === 401) throw new Error('请先在云同步中填写同步密码，或下载报告文件。');
+        if (response.status === 401) throw new Error('请先在云同步中填写同步密码');
         const result = await response.json();
-        if (!response.ok) throw new Error(result.error || '发送失败，请稍后重试或下载报告文件。');
+        if (!response.ok) throw new Error(result.error || '请稍后重试');
         return result;
     }
 
@@ -107,7 +107,7 @@
         set enabled(value) { settings.enabled = value; saveSettings(); if (value) usage(); },
         start() {
             if (window.RPH_R2_DIAGNOSTICS?.usage && !settings.notified) {
-                window.RPHubUI.toast('测试版按 Cloudflare 账户统计活跃量，可在「运行日志」关闭。问题日志仅在你点击发送后上传。', { duration: 12000 });
+                window.RPHubUI.toast('测试版会收集使用统计，可在「运行日志」中关闭', { duration: 12000 });
                 settings.notified = true;
                 saveSettings();
             }

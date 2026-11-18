@@ -59,7 +59,7 @@ try {
     const row = (name) => page.locator('[data-scheme]').filter({ has: page.locator('b', { hasText: new RegExp(`^${name}$`) }) });
     const saveAs = async (name) => {
         await page.locator('[data-new]').fill(name);
-        await page.getByRole('button', { name: '存成方案', exact: true }).click();
+        await page.locator('[data-rph-workshop-panel]').getByRole('button', { name: '保存', exact: true }).click();
         await row(name).waitFor();
     };
 
@@ -70,11 +70,11 @@ try {
     await setSwitch('B', true);
     await setSwitch('第二个', true);
     await saveAs('战斗');
-    assert.match(await page.locator('.rph-ui-muted').filter({ hasText: '现在用的是' }).textContent(), /「战斗」/);
-    assert.equal(await row('日常').locator('.rph-ui-muted').first().textContent(), '切换后：开 文风A；关 文风B、重名');
+    assert.equal(await page.locator('.rph-ui-muted').filter({ hasText: '当前方案' }).textContent(), '当前方案：战斗');
+    assert.equal(await row('日常').locator('.rph-ui-muted').first().textContent(), '切换后：开启 文风A；关闭 文风B、重名');
     await row('日常').getByRole('button', { name: '切换' }).click();
     assert.deepEqual(await switches(), ['A:true', 'B:false', '第一个:true', '第二个:false']);
-    await row('日常').getByText('正在用').waitFor();
+    await row('日常').getByText('使用中').waitFor();
     console.log('PASS the current switches are saved as schemes and one click switches back, same-name entries in order');
 
     await waitStored((presets) => presets.find((preset) => preset.content === 'B')?.enabled === false
@@ -95,7 +95,7 @@ try {
     assert.equal(await page.locator('[data-entry]:visible').count(), 1);
     await page.locator('[data-filter]').fill('');
     await page.locator('[data-entry]').filter({ hasText: '文风B' }).locator('.settings-toggle').click();
-    assert.match(await page.locator('[data-entry]').filter({ hasText: '新条目' }).textContent(), /新条目，还没记进方案/);
+    assert.match(await page.locator('[data-entry]').filter({ hasText: '新条目' }).textContent(), /新条目，未加入方案/);
     await page.getByRole('button', { name: '保存方案' }).click();
     assert.deepEqual(await switches(), ['A:false', 'B:true', '第一个:true', '第二个:true', 'new:true'], 'editing a scheme does not touch the current switches');
     await row('战斗').getByRole('button', { name: '切换' }).click();
@@ -122,7 +122,7 @@ try {
     await chooser.setFiles({ name: 'schemes.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(imported)) });
     await row('分享来的').waitFor();
     assert.equal(await page.locator('[data-scheme]').count(), 3, 'importing replaces same-name schemes instead of duplicating them');
-    await page.getByText('新加了 2 个预设条目').first().waitFor();
+    await page.getByText('新增 2 个预设条目').first().waitFor();
     assert.deepEqual(await switches(), ['A:false', '第一个:true', '第二个:true', 'B:false', 'new:false']);
     // RPH 改完预设约 1 秒后才存，等它存好再刷新。
     await waitStored((presets) => presets.at(-1)?.name === '新条目' && presets.at(-2)?.name === '文风B' && presets.at(-2).content === 'B', '导入补上的条目');
@@ -133,10 +133,10 @@ try {
     await row('分享来的').getByRole('button', { name: '切换' }).click();
     assert.deepEqual(await switches(), ['A:true', '第一个:true', '第二个:true', 'B:true', 'new:false']);
     await saveAs('同上');
-    assert.equal(await row('同上').locator('.rph-ui-muted').first().textContent(), '和现在的开关一样');
+    assert.equal(await row('同上').locator('.rph-ui-muted').first().textContent(), '与当前开关相同');
     console.log('PASS schemes survive a reload and switch after it');
 
-    // RPH 自己的「预设管理」页：列表上方的方案下拉框显示当前方案、选中就切换；手动改开关后显示没存成方案；切走再回来只有一个。
+    // RPH 自己的「预设管理」页：列表上方的方案下拉框显示当前方案、选中就切换；手动改开关后显示「当前开关未保存为方案」；切走再回来只有一个。
     await page.keyboard.press('Escape');
     const setView = (view) => page.evaluate((view) => {
         const a = document.querySelector('#app').__vue_app__;
@@ -153,7 +153,7 @@ try {
     assert.deepEqual(await switches(), ['A:true', '第一个:true', '第二个:false', 'B:false', 'new:false']);
     await page.waitForFunction(() => document.querySelector('[data-preset-schemes-bar] button[aria-haspopup="listbox"]').textContent.trim() === '日常');
     await setSwitch('第二个', true);
-    await page.waitForFunction(() => document.querySelector('[data-preset-schemes-bar] button[aria-haspopup="listbox"]').textContent.trim() === '现在的开关没存成方案');
+    await page.waitForFunction(() => document.querySelector('[data-preset-schemes-bar] button[aria-haspopup="listbox"]').textContent.trim() === '当前开关未保存为方案');
     await setView('chat');
     await bar.waitFor({ state: 'detached' });
     await setView('presets');
@@ -193,7 +193,7 @@ try {
     await saveAs('正则一');
     await editRegexes({ 正则A: false, 正则B: true, 卡里的: false });
     await saveAs('正则二');
-    assert.equal(await row('正则一').locator('.rph-ui-muted').first().textContent(), '切换后：开正则 1 条；关正则 1 条');
+    assert.equal(await row('正则一').locator('.rph-ui-muted').first().textContent(), '切换后：开启 1 条正则；关闭 1 条正则');
     await row('正则一').getByRole('button', { name: '切换' }).click();
     assert.deepEqual(await regexSwitches(), ['正则A:true', '正则B:false', '卡里的:false'], 'switching sets the global regexes and leaves the card ones alone');
     await row('分享来的').getByRole('button', { name: '切换' }).click();
@@ -217,7 +217,7 @@ try {
     await editRegexes('drop B');
     const [regexChooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: '导入', exact: true }).click()]);
     await regexChooser.setFiles({ name: 'regex.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(regexFile)) });
-    await page.getByText('新加了 1 条正则').first().waitFor();
+    await page.getByText('新增 1 条正则').first().waitFor();
     assert.deepEqual(await regexSwitches(), ['正则A:true', '卡里的:false', '正则B:false'], 'a missing regex comes back switched off');
     await row('正则二').getByRole('button', { name: '切换' }).click();
     assert.deepEqual(await regexSwitches(), ['正则A:true', '卡里的:false', '正则B:true']);
@@ -233,7 +233,7 @@ try {
     await load();
     await button.click();
     assert.deepEqual((await regexSwitches()).filter((item) => !item.startsWith('卡里的')), ['正则A:true', '正则B:true']);
-    await row('正则二').getByText('正在用').waitFor();
+    await row('正则二').getByText('使用中').waitFor();
     console.log('PASS exported schemes carry their regexes; importing adds the missing ones as global and off, and they survive a reload');
 } finally {
     await browser.close();

@@ -3,24 +3,24 @@ const USAGE_STATE_KEY = '_feedback/usage.json';
 
 async function forwardFeedback(env, path, payload) {
     const base = getAppUpdateMirrorBase(env);
-    if (!base) throw createHttpError('分发端已关闭，请下载报告文件。', 409);
+    if (!base) throw createHttpError('分发站已关闭，请下载报告', 409);
     const response = await fetch(base + '/api/feedback/' + path, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify(payload), signal: AbortSignal.timeout(8000), redirect: 'error'
     });
-    if (!response.ok) throw createHttpError('分发端暂时无法接收，请稍后重试或下载报告文件。', 502);
+    if (!response.ok) throw createHttpError('分发站暂时不可用，请稍后重试', 502);
     return response.json();
 }
 
 async function handleFeedback(request, env) {
     if (request.method !== 'POST') return error('Method not allowed.', 405);
-    if (!await isRequestAuthorized(request, env)) return error('Sync password required.', 401);
+    if (!await isRequestAuthorized(request, env)) return error('同步密码错误', 401);
     const text = await request.text();
-    if (new TextEncoder().encode(text).byteLength > 128 * 1024) return error('报告过大。', 413);
+    if (new TextEncoder().encode(text).byteLength > 128 * 1024) return error('报告过大', 413);
     let body;
     try { body = JSON.parse(text); } catch { return error('Invalid JSON body.'); }
     if (body?.action === 'report') {
-        if (body.report?.schema !== 1) return error('报告格式无效。');
+        if (body.report?.schema !== 1) return error('报告格式无效');
         return json(await forwardFeedback(env, 'reports', body.report));
     }
     if (body?.action !== 'usage') return error('Unsupported action.', 404);

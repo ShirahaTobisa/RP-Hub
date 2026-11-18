@@ -58,7 +58,7 @@
     // RPH 只在消息条数变化、自己编辑或生成结束时才存，插件改了正文不存就等于没改。
     function saveChatHistory() {
         const save = globalThis.RPH_R2_SAVE_CHAT_HISTORY;
-        if (typeof save !== 'function') throw new Error('这个版本的 RPH 不支持插件保存聊天记录');
+        if (typeof save !== 'function') throw new Error('当前版本不支持插件保存聊天记录');
         return save();
     }
 

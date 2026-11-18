@@ -108,7 +108,7 @@ try {
     assert.deepEqual(sent.at(-1), { host: 'b.example', path: '/v1/chat/completions', auth: 'Bearer b-key', model: 'b-model' });
     console.log('PASS requests from embedded same-site pages are routed too');
 
-    // 关掉 B：主力模型还在用 B 的模型，要提示；之后 B 的模型改发到主供应商。
+    // 关掉 B：聊天主模型槽位 1 还在用 B 的模型，要提示；之后 B 的模型改发到主供应商。
     await setApp('settings.qualityModel', 'b-model');
     await page.evaluate(() => [...document.querySelectorAll('.app-nav-trigger')].find((trigger) => trigger.offsetParent)?.click());
     await page.locator('[data-rph-workshop-manager-entry]').waitFor({ state: 'attached' });
@@ -116,11 +116,11 @@ try {
     await page.locator('[data-rph-workshop-launcher] button', { hasText: '多供应商模型' }).click();
     const row = (id) => page.locator(`[data-rph-workshop-panel] [data-provider="${id}"]`);
     await row('b-prov').locator('.settings-toggle').click();
-    await page.locator('.toast-item', { hasText: '主力模型' }).waitFor({ timeout: 5000 });
+    await page.locator('.toast-item', { hasText: '聊天主模型（槽位 1）' }).waitFor({ timeout: 5000 });
     assert.deepEqual(await ask('b-model'), { host: 'main.example', path: '/v1/chat/completions', auth: 'Bearer main-key', model: 'b-model' });
     console.log('PASS turning a provider off warns about slots still using it and stops sending to it');
 
-    // 在面板里添加 C 供应商：添加即启用，获取模型后可选、请求发到 C；刷新页面后照样分发。
+    // 在面板里添加 C 供应商：添加即启用，刷新模型列表后可选、请求发到 C；刷新页面后照样分发。
     const field = (name) => page.locator(`[data-rph-workshop-panel] [data-new="${name}"]`);
     await field('name').fill('C 供应商');
     await field('url').fill('https://c.example/v1/');

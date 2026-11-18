@@ -11,7 +11,7 @@
             modalStatus.textContent = state.statusText;
         }
         if (state.background && floatRoot && !floatRoot.hidden && floatRoot.dataset.kind === 'busy') {
-            showFloat({ text: `上传中 ${Math.round(state.progress)}%`, progress: state.progress });
+            showFloat({ text: `上传中… ${Math.round(state.progress)}%`, progress: state.progress });
         }
     }
 
@@ -28,16 +28,16 @@
         const from = Number(options.from || state.progress || 8);
         const to = Number(options.to || 88);
         const durationMs = Number(options.durationMs || 150_000);
-        const text = options.text || '正在连接 RP-Hub 上游';
+        const text = options.text || '正在下载更新';
 
-        updateProgress(from, `${text}，已等待 0 秒...`);
+        updateProgress(from, `${text}，已等待 0 秒…`);
         estimatedProgressTimer = setInterval(() => {
             const elapsedMs = Date.now() - startedAt;
             const elapsedSeconds = Math.floor(elapsedMs / 1000);
             const ratio = Math.min(1, elapsedMs / durationMs);
             const eased = 1 - Math.pow(1 - ratio, 2);
             const nextProgress = Math.min(to, Math.round(from + (to - from) * eased));
-            updateProgress(nextProgress, `${text}，已等待 ${elapsedSeconds} 秒...`);
+            updateProgress(nextProgress, `${text}，已等待 ${elapsedSeconds} 秒…`);
         }, 800);
     }
 
@@ -66,7 +66,7 @@
 
     async function flushAppState() {
         if (typeof globalThis.RPH_R2_FLUSH_PERSISTENCE !== 'function') {
-            throw new Error('当前程序缺少持久化同步桥，已取消同步或版本切换。');
+            throw new Error('程序尚未加载完成，请稍后重试。');
         }
         await globalThis.RPH_R2_FLUSH_PERSISTENCE();
         await globalThis.RPHubSDK?.flush?.();
@@ -94,7 +94,7 @@
                     </div>
                     <button type="button" class="rp-sync-modal__close modal-close-button" aria-label="关闭"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
                 </div>
-                <p class="rp-sync-modal__intro">当前站点已开启同步密码。输入一次后会保存在这个浏览器里，下次同步不需要再输入。</p>
+                <p class="rp-sync-modal__intro">输入一次后，本浏览器会记住密码。</p>
                 <label class="rp-sync-password-field">
                     <span>密码</span>
                     <input type="password" autocomplete="current-password" placeholder="请输入同步密码">
@@ -102,7 +102,7 @@
                 <p class="rp-sync-password-status">请输入同步密码。</p>
                 <div class="rp-sync-modal__actions">
                     <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="cancel-password">取消</button>
-                    <button type="submit" class="rp-sync-modal__button modal-primary-button" data-action="submit-password">继续同步</button>
+                    <button type="submit" class="rp-sync-modal__button modal-primary-button" data-action="submit-password">确定</button>
                 </div>
             </form>
         `;
@@ -138,7 +138,7 @@
     }
 
     function openSyncPanel() {
-        state.statusText = '请选择同步方向。';
+        state.statusText = '请选择上传或下载。';
         state.progress = 0;
         openModal();
     }
@@ -229,22 +229,19 @@
         setActionButtonsDisabled(true);
 
         try {
-            updateProgress(15, '正在检测 RP-Hub 上游版本...');
+            updateProgress(15, '正在检查更新…');
             const result = await postSync({ action: 'app-update-check' });
             renderAppUpdateVersions(result?.versions);
             const current = formatCurrentAppVersion(result);
             const latest = result?.latest?.tag || formatShortSha(result?.latest?.sha);
-            const previous = result?.previous?.tag || result?.previous?.sha ? `，可回滚 ${result?.previous?.tag || formatShortSha(result.previous.sha)}` : '';
-            const cacheText = result?.cache?.hit
-                ? (result.cache.stale ? '，使用缓存列表' : '，命中缓存')
-                : '';
+            const previous = result?.previous?.tag || result?.previous?.sha ? `，可回退到 ${result?.previous?.tag || formatShortSha(result.previous.sha)}` : '';
             if (result?.updateAvailable) {
-                updateProgress(100, `发现 Release ${latest}：当前为 ${current}，可以更新${previous}${cacheText}。`);
+                updateProgress(100, `发现新版本 ${latest}，当前版本 ${current}${previous}。`);
             } else {
-                updateProgress(100, `当前已是最新 Release：${current}${previous}${cacheText}。`);
+                updateProgress(100, `已是最新版本：${current}${previous}。`);
             }
         } catch (error) {
-            updateProgress(100, error.message || '版本检测失败。');
+            updateProgress(100, error.message || '检查更新失败，请稍后重试。');
         } finally {
             state.syncing = false;
             setActionButtonsDisabled(false);
@@ -258,9 +255,9 @@
         const target = getSelectedAppUpdateTarget();
         const targetText = target || '最新版';
         const confirmed = await openInlineConfirm({
-            title: '更新版本',
-            message: `将从 RP-Hub 拉取 ${targetText} 并写入服务器覆盖层。只保留当前版和上一版，云同步数据不会被覆盖。`,
-            confirmText: '开始更新'
+            title: '更新程序',
+            message: `程序将更新到 ${targetText}，云同步数据不受影响。`,
+            confirmText: '更新'
         });
         if (!confirmed) return;
 
@@ -275,28 +272,28 @@
                 from: 10,
                 to: 88,
                 durationMs: 165_000,
-                text: '正在连接 RP-Hub 上游'
+                text: '正在下载更新'
             });
             let result = await postSync({ action: 'app-update-apply', target }, { timeoutMs: 180_000, retryCount: 1 });
             // 站点每个请求只处理一部分文件（Cloudflare 每个请求的子请求有限），没处理完就带着进度接着请求。
             while (result?.done === false) {
-                startEstimatedProgress({ to: 88, durationMs: 165_000, text: `正在下载上游文件 ${result.staged}/${result.total}` });
+                startEstimatedProgress({ to: 88, durationMs: 165_000, text: `正在下载更新 ${result.staged}/${result.total}` });
                 result = await postSync({ action: 'app-update-apply', target, slot: result.slot, offset: result.staged }, { timeoutMs: 180_000, retryCount: 1 });
             }
             stopEstimatedProgress();
             const latest = result?.latest?.tag || formatShortSha(result?.latest?.sha);
             if (result?.alreadyUpToDate) {
-                updateProgress(100, `程序已是最新版本：${latest}。`);
+                updateProgress(100, `已是最新版本：${latest}。`);
                 setActionButtonsDisabled(false);
                 return;
             }
-            updateProgress(100, `程序更新完成：${latest}。页面即将刷新...`);
+            updateProgress(100, `更新完成：${latest}，页面即将刷新…`);
             setTimeout(() => {
                 location.reload();
             }, 900);
         } catch (error) {
             stopEstimatedProgress();
-            updateProgress(100, error.message || '程序更新失败。');
+            updateProgress(100, error.message || '更新失败，请稍后重试。');
             setActionButtonsDisabled(false);
         } finally {
             stopEstimatedProgress();
@@ -309,9 +306,9 @@
         if (state.syncing) return;
 
         const confirmed = await openInlineConfirm({
-            title: '回滚上一版',
-            message: '将切换到上一版程序覆盖层，云同步数据不会被覆盖。',
-            confirmText: '确认回滚',
+            title: '回退上一版',
+            message: '程序将回退到上一版，云同步数据不受影响。',
+            confirmText: '回退',
             variant: 'danger'
         });
         if (!confirmed) return;
@@ -323,17 +320,17 @@
 
         try {
             await flushAppState();
-            updateProgress(20, '正在回滚上一版程序...');
+            updateProgress(20, '正在回退…');
             const result = await postSync({ action: 'app-update-rollback' }, {
                 timeoutMs: 120_000,
                 retryCount: 1
             });
-            updateProgress(100, `已回滚到 ${result?.rolledBackTo?.tag || formatShortSha(result?.rolledBackTo?.sha)}，页面即将刷新...`);
+            updateProgress(100, `已回退到 ${result?.rolledBackTo?.tag || formatShortSha(result?.rolledBackTo?.sha)}，页面即将刷新…`);
             setTimeout(() => {
                 location.reload();
             }, 900);
         } catch (error) {
-            updateProgress(100, error.message || '程序回滚失败。');
+            updateProgress(100, error.message || '回退失败，请稍后重试。');
             setActionButtonsDisabled(false);
         } finally {
             state.syncing = false;
@@ -353,13 +350,13 @@
 
         checkingPassword = true;
         passwordSubmitButton.disabled = true;
-        passwordStatus.textContent = '正在验证密码...';
+        passwordStatus.textContent = '正在验证密码…';
 
         try {
             const auth = await getAuthStatus(password);
             if (auth.authRequired && !auth.authenticated) {
                 clearStoredSyncPassword();
-                passwordStatus.textContent = '密码不正确，请重新输入。';
+                passwordStatus.textContent = '密码错误，请重新输入。';
                 passwordInput.select();
                 return;
             }
@@ -372,7 +369,7 @@
             passwordModalRoot.classList.remove('is-open');
             openSyncPanel();
         } catch (error) {
-            passwordStatus.textContent = error.message || '密码验证失败，请稍后再试。';
+            passwordStatus.textContent = error.message || '密码验证失败，请稍后重试。';
         } finally {
             checkingPassword = false;
             passwordSubmitButton.disabled = false;
@@ -400,7 +397,7 @@
                 return;
             }
 
-            window.RPHubUI.toast(error.message || '同步验证失败，请稍后再试。', { kind: 'error' });
+            window.RPHubUI.toast(error.message || '连接失败，请稍后重试。', { kind: 'error' });
         } finally {
             updateButtonState();
         }
@@ -422,11 +419,11 @@
                     <button type="button" class="rp-sync-modal__close modal-close-button" aria-label="关闭"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg></button>
                 </div>
                 <div class="rp-sync-main-actions">
-                    <button type="button" class="rp-sync-action-button" data-action="pull">拉取</button>
+                    <button type="button" class="rp-sync-action-button" data-action="pull">下载</button>
                     <button type="button" class="rp-sync-action-button is-primary" data-action="push">快速上传</button>
                     <button type="button" class="rp-sync-action-button" data-action="push-full">完整上传</button>
                 </div>
-                <p class="rp-sync-modal__status">选择同步</p>
+                <p class="rp-sync-modal__status">请选择上传或下载。</p>
                 <div class="rp-sync-progress">
                     <div class="rp-sync-progress__bar"></div>
                 </div>
@@ -434,7 +431,7 @@
                 <details class="rp-sync-update-details">
                     <summary>程序更新</summary>
                     <div class="rp-sync-update-body">
-                        <p class="rp-sync-choice__desc">只显示正式发布版本。</p>
+                        <p class="rp-sync-choice__desc">只显示 RP-Hub 官方正式版。</p>
                         <div class="rp-sync-version-fields">
                             <label>
                                 <span>目标版本</span>
@@ -445,16 +442,16 @@
                             </label>
                         </div>
                         <div class="rp-sync-inline-actions">
-                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="app-update-check">检测版本</button>
-                            <button type="button" class="rp-sync-modal__button modal-primary-button" data-action="app-update-apply">更新版本</button>
-                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="app-update-rollback">回滚上一版</button>
+                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="app-update-check">检查更新</button>
+                            <button type="button" class="rp-sync-modal__button modal-primary-button" data-action="app-update-apply">立即更新</button>
+                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="app-update-rollback">回退上一版</button>
                         </div>
                     </div>
                 </details>
                 <details class="rp-sync-update-details">
                     <summary>测试版更新</summary>
                     <div class="rp-sync-update-body">
-                        <p class="rp-sync-choice__desc" data-role="self-update-info">从分发端获取测试版。站点设置 CF_API_TOKEN 后可一键更新。</p>
+                        <p class="rp-sync-choice__desc" data-role="self-update-info">从分发站获取测试版，设置 CF_API_TOKEN 后可直接更新。</p>
                         <div class="rp-sync-version-fields">
                             <label>
                                 <span>目标版本</span>
@@ -465,9 +462,9 @@
                             </label>
                         </div>
                         <div class="rp-sync-inline-actions">
-                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="self-update-check">检测版本</button>
-                            <button type="button" class="rp-sync-modal__button modal-primary-button" data-action="self-update-apply">一键更新</button>
-                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="self-update-rollback">回退上一次部署</button>
+                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="self-update-check">检查更新</button>
+                            <button type="button" class="rp-sync-modal__button modal-primary-button" data-action="self-update-apply">立即更新</button>
+                            <button type="button" class="rp-sync-modal__button modal-secondary-button" data-action="self-update-rollback">回退上一版</button>
                         </div>
                     </div>
                 </details>
@@ -535,7 +532,7 @@
         try {
             await task();
         } catch (error) {
-            updateProgress(100, error.message || '测试版操作失败。');
+            updateProgress(100, error.message || '操作失败，请稍后重试。');
         } finally {
             state.syncing = false;
             setActionButtonsDisabled(false);
@@ -544,26 +541,26 @@
     }
 
     function reloadAfterDeploy(text) {
-        updateProgress(100, `${text}约半分钟后生效，页面将自动刷新。`);
+        updateProgress(100, `${text}约 30 秒后生效，页面将自动刷新。`);
         setTimeout(() => location.reload(), 40_000);
     }
 
     function checkSelfUpdate() {
         return runSelfUpdateTask(async () => {
-            updateProgress(20, '正在检测测试版...');
+            updateProgress(20, '正在检查更新…');
             selfUpdateStatus = await postSync({ action: 'self-update-status' });
-            selfUpdateApplyButton.textContent = selfUpdateStatus.selfDeploy ? '一键更新' : '下载部署包';
+            selfUpdateApplyButton.textContent = selfUpdateStatus.selfDeploy ? '立即更新' : '下载部署包';
             const current = selfUpdateStatus.current;
             const formatLabel = (version, index) => [index === 0 ? `最新版：${version.tag}` : version.tag,
                 version.publishedAt ? new Date(version.publishedAt).toLocaleDateString('zh-CN') : '',
                 version.tag === current ? '当前' : ''].filter(Boolean).join(' · ');
             renderVersionPicker(selfUpdateVersionButton, selfUpdateVersionMenu, selfUpdateStatus.versions, formatLabel, (version) => {
                 selfUpdateSelected = version;
-                selfUpdateInfo.textContent = version ? `${version.tag}：${version.notes || '无更新说明'}` : '分发端暂无测试版。';
+                selfUpdateInfo.textContent = version ? `${version.tag}：${version.notes || '暂无更新说明'}` : '暂无测试版。';
             });
             updateProgress(100, selfUpdateStatus.updateAvailable
-                ? `发现测试版 ${selfUpdateStatus.latest}，当前为 ${selfUpdateStatus.current}。`
-                : `当前已是最新测试版：${selfUpdateStatus.current}。`);
+                ? `发现新版本 ${selfUpdateStatus.latest}，当前版本 ${selfUpdateStatus.current}。`
+                : `已是最新版本：${selfUpdateStatus.current}。`);
         });
     }
 
@@ -573,49 +570,49 @@
         if (!target) return;
         if (!selfUpdateStatus.selfDeploy) {
             if (target.zipUrl) window.open(target.zipUrl, '_blank', 'noopener');
-            updateProgress(100, `站点未设置 CF_API_TOKEN，请下载部署包后上传到 Cloudflare Pages：${target.zipUrl || '分发端暂无下载地址'}`);
+            updateProgress(100, `未设置 CF_API_TOKEN，请下载部署包并上传到 Cloudflare Pages：${target.zipUrl || '暂无下载地址'}`);
             return;
         }
         const confirmed = await openInlineConfirm({
             title: '更新测试版',
-            message: `将把本站部署为测试版 ${target.tag}。云同步数据不受影响，出问题可回退上一次部署。`,
-            confirmText: '开始更新'
+            message: `将更新到测试版 ${target.tag}，云同步数据不受影响。`,
+            confirmText: '更新'
         });
         if (!confirmed) return;
         await runSelfUpdateTask(async () => {
             await flushAppState();
-            updateProgress(30, `正在部署测试版 ${target.tag}...`);
+            updateProgress(30, `正在更新到 ${target.tag}…`);
             const result = await postSync({ action: 'self-update-apply', target: target.tag }, { timeoutMs: 180_000, retryCount: 0 });
-            reloadAfterDeploy(`测试版 ${result.version} 已提交部署，`);
+            reloadAfterDeploy(`测试版 ${result.version} 正在部署，`);
         });
     }
 
     async function rollbackSelfUpdate() {
         const confirmed = await openInlineConfirm({
-            title: '回退上一次部署',
-            message: '将把本站切回上一次 Cloudflare 部署，云同步数据不受影响。',
-            confirmText: '确认回退',
+            title: '回退上一版',
+            message: '将回退到上一次部署的版本，云同步数据不受影响。',
+            confirmText: '回退',
             variant: 'danger'
         });
         if (!confirmed) return;
         await runSelfUpdateTask(async () => {
-            updateProgress(30, '正在回退...');
+            updateProgress(30, '正在回退…');
             await postSync({ action: 'self-update-rollback' }, { timeoutMs: 120_000, retryCount: 0 });
-            reloadAfterDeploy('已切回上一次部署，');
+            reloadAfterDeploy('正在回退，');
         });
     }
 
     // 换成魔改版的第一步：本站把云端数据转成它的格式。程序由魔改版自己的部署页「更新」这个站点来换，测试版不替别人部署代码。
     async function convertToFork() {
         const confirmed = await openInlineConfirm({
-            title: '转成魔改版的数据',
-            message: '把云端数据转成魔改版（cy-2-u/rp）的格式存进同一个存储桶，测试版自己的数据另存一份，不删。插件、API 预设这些魔改版不同步的东西不会带过去，但还留在各设备本机。',
-            confirmText: '开始转换'
+            title: '迁移到魔改版',
+            message: '云端数据将转换为魔改版（cy-2-u/rp）格式，测试版数据另存一份；插件、API 预设等魔改版不同步的数据不会转换，仍保留在各设备上。',
+            confirmText: '转换'
         });
         if (!confirmed) return;
         await runSelfUpdateTask(async () => {
             await exportForkSnapshot();
-            updateProgress(100, '已经转好。接下来用魔改版的一键部署页「更新」这个站点，程序就换成魔改版了；换完后每台设备在魔改版里点一次「下载」。');
+            updateProgress(100, '转换完成。请用魔改版的一键部署页更新本站，完成后在每台设备的魔改版里点击「从云端恢复」。');
         });
     }
 
@@ -627,7 +624,7 @@
         let section = headings.find((node) => node.textContent.trim() === '空间管理')?.closest('.pt-6');
         const row = document.createElement('div');
         row.className = `flex items-center justify-between gap-3 text-xs text-gray-500${section ? ' mt-6' : ''}`;
-        row.innerHTML = '<span>要换成魔改版（cy-2-u/rp）时用</span><button type="button" class="settings-action flex-shrink-0 whitespace-nowrap" data-action="fork-export">转成魔改版的数据</button>';
+        row.innerHTML = '<span>迁移到魔改版（cy-2-u/rp）</span><button type="button" class="settings-action flex-shrink-0 whitespace-nowrap" data-action="fork-export">转换数据</button>';
         row.lastChild.addEventListener('click', () => convertToFork().catch(() => { }));
         if (!section) {
             const last = headings[headings.length - 1].closest('.pt-6');
@@ -648,7 +645,7 @@
         grid.dataset.rphCloudRestore = '1';
         grid.classList.replace('grid-cols-2', 'grid-cols-1');
         for (const button of grid.children) if (button.textContent.includes('上传备份')) button.hidden = true;
-        grid.insertAdjacentHTML('afterend', '<p class="mt-3 text-xs text-gray-500">从官方 RP-Hub 搬过来：在那边的设置页点「上传备份」拿到密钥，再在这里点「下载备份」输入，角色卡和聊天记录就会合并到本机。</p>');
+        grid.insertAdjacentHTML('afterend', '<p class="mt-3 text-xs text-gray-500">从官方 RP-Hub 迁移：在官方设置页点击「上传备份」获取密钥，再在这里点击「下载备份」输入，角色卡和聊天记录会合并到本机。</p>');
     }
 
     function decorateSettingsView() {
@@ -685,7 +682,7 @@
         hideFloat();
         modalRoot.classList.add('is-open');
         setModalTitle();
-        updateProgress(state.progress, state.statusText || '选择同步');
+        updateProgress(state.progress, state.statusText || '请选择上传或下载。');
         setActionButtonsDisabled(state.syncing);
         if (!modalRoot.contains(document.activeElement)) closeButton?.focus();
     }
@@ -695,6 +692,6 @@
         if ((state.syncing && !state.background) || !modalRoot) return;
         modalRoot.classList.remove('is-open');
         returnSyncFocus();
-        if (state.background) showFloat({ text: `上传中 ${Math.round(state.progress)}%`, progress: state.progress });
+        if (state.background) showFloat({ text: `上传中… ${Math.round(state.progress)}%`, progress: state.progress });
     }
 

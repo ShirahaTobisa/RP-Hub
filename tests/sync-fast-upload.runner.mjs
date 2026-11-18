@@ -92,7 +92,7 @@ const write = (page, entries, removals = []) => writeTo(page, 'RPHubDB', 'store'
 const push = (page, mode) => page.evaluate((value) => api.pushToServer(value).then(() => api.state.statusText), mode);
 const dirtyState = (page) => page.evaluate(() => api.readDirty());
 const fastResult = (status) => {
-    const [, rebuilt, total] = status.match(/^快速上传成功：重做了 (\d+) 个分片，共 (\d+) 个。$/) || [];
+    const [, rebuilt, total] = status.match(/^快速上传成功：更新了 (\d+) 个数据块，共 (\d+) 个。$/) || [];
     assert.ok(rebuilt, status);
     return { rebuilt: Number(rebuilt), total: Number(total) };
 };
@@ -308,7 +308,7 @@ try {
     fastResult(await push(pageA, 'fast'));
 
     // 8. 没改动：快速上传直接说已是同一份；拉取过的设备下次上传完整扫描；改动太多、布局丢了也完整扫描。
-    assert.equal(await push(pageA, 'fast'), '服务器已是同一份数据，无需重复上传。');
+    assert.equal(await push(pageA, 'fast'), '云端数据已是最新，无需上传。');
     assert.equal((await dirtyState(pageB)).full, true, 'a pull marks everything as changed');
     await write(pageB, [['rp_hub_settings', { theme: 'light' }]]);
     assert.equal(await push(pageB, 'fast'), '上传成功。');
@@ -343,7 +343,7 @@ try {
     await pageA.unroute('**/api/rp-sync?action=upload-part*');
     console.log('PASS the panel can be closed during the upload, a floating bar shows progress, and writes made meanwhile wait for the next upload');
 
-    // 10. 传到一半断了：悬浮条显示失败和「重试」；重新打开页面提示「上次上传没传完」，点「继续上传」只补没传上去的分片。
+    // 10. 传到一半断了：悬浮条显示失败和「重试」；重新打开页面提示「上次上传未完成」，点「继续上传」只补没传上去的分片。
     await write(pageA, Array.from({ length: 12 }, (_, i) => [`rp_hub_chat_role-${10 + i}`, Array.from({ length: 120 }, (__, m) => message(m + 7, 20))]));
     await pageA.evaluate(() => { api.CONFIG.retryCount = 0; });
     const uploadedBefore = new Set();
@@ -376,7 +376,7 @@ try {
     await pageA.reload({ waitUntil: 'domcontentloaded' });
     await initializeFixture(pageA);
     await pageA.evaluate(() => { api.CONFIG.chunkSize = 256 * 1024; });
-    await pageA.locator('[data-rph-sync-float][data-kind="resume"]', { hasText: '上次上传没传完' }).waitFor();
+    await pageA.locator('[data-rph-sync-float][data-kind="resume"]', { hasText: '上次上传未完成' }).waitFor();
     await pageA.locator('[data-rph-sync-float] [data-act]', { hasText: '继续上传' }).click();
     await pageA.waitForFunction(() => !api.state.syncing && /^快速上传成功/.test(api.state.statusText), null, { timeout: 60_000 });
     assert.ok(uploadedBefore.size >= 3 && uploadedAfter.length > 0, `${uploadedBefore.size} parts went up before the break, ${uploadedAfter.length} after`);

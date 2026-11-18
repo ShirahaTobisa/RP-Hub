@@ -138,7 +138,7 @@ try {
     const feedback = page.locator('[data-rph-diagnostics]');
     await feedback.waitFor();
     await feedback.locator('button[aria-haspopup="listbox"]').click();
-    await page.getByRole('option', { name: '图片不对', exact: true }).click();
+    await page.getByRole('option', { name: '图片异常', exact: true }).click();
     assert.equal(JSON.parse(await feedback.locator('[data-preview]').inputValue()).issue, 'image', 'native RPH selector updates the report');
     assert.equal(await feedback.locator('[data-details]').getAttribute('open'), null);
     const theme = await page.evaluate(() => ({ data: document.documentElement.dataset.appTheme, classes: document.documentElement.className }));

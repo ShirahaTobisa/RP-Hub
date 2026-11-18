@@ -33,5 +33,5 @@ assert.deepEqual(shown.splice(0), ['图片生成失败：' + 'A'.repeat(79) + '�
 report(null);
 report('纯字符串');
 await flush();
-assert.deepEqual(shown.splice(0), ['图片生成失败，请检查密钥或服务状态']);
+assert.deepEqual(shown.splice(0), ['图片生成失败，请检查生图密钥或稍后重试']);
 console.log('PASS image failure toasts merge per request, keep emoji whole, fall back without a reason');

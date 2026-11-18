@@ -678,7 +678,7 @@ async function testProviderFailuresAndHeadMiss() {
         const worker = await loadWorker(upstream.fetchImpl);
         const response = await worker.fetch(imageGenerationRequest(imageRequestUrl({ id: SVG_CARD })), makeEnv(bucket), new WaitUntilContext());
         assert.equal(response.status, 502, 'SVG upstream payload must not be cached as an image');
-        assert.equal((await response.json()).error, '生图服务没有返回图片，它说：生成失败 密钥无效或已被禁用。');
+        assert.equal((await response.json()).error, '生图服务未返回图片：生成失败 密钥无效或已被禁用。');
         assert.equal(bucket.keys('rp-images/').length, 0);
     }
     {
@@ -688,7 +688,7 @@ async function testProviderFailuresAndHeadMiss() {
         const worker = await loadWorker(upstream.fetchImpl);
         const response = await worker.fetch(imageGenerationRequest(imageRequestUrl({ id: SVG_CARD })), makeEnv(bucket), new WaitUntilContext());
         assert.equal(response.status, 502);
-        assert.equal((await response.json()).error, '生图服务没有返回图片，它说：余额不足');
+        assert.equal((await response.json()).error, '生图服务未返回图片：余额不足');
         assert.equal(bucket.keys('rp-images/').length, 0);
     }
     {

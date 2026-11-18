@@ -23,9 +23,9 @@
             } else {
                 // 选了插件提供的生图接口：插件在浏览器里生成，外壳把图片上传存进 R2（存放位置和直链生图相同）。
                 const provider = generation.providers.get(generator);
-                if (!provider) throw new Error(`生图接口「${generator}」的插件没有加载，请在模块管理里启用它，或在设置里改回直链`);
+                if (!provider) throw new Error(`生图接口「${generator}」未加载，请在模块管理中启用对应插件，或改回直链`);
                 const blob = await provider.generate({ params: Object.fromEntries(url.searchParams), token });
-                if (!(blob instanceof Blob) || !blob.type.startsWith('image/')) throw new Error(`生图接口「${provider.label}」没有返回图片`);
+                if (!(blob instanceof Blob) || !blob.type.startsWith('image/')) throw new Error(`生图接口「${provider.label}」未返回图片`);
                 response = await fetch(url, { method: 'PUT', headers: { ...headers, 'content-type': blob.type }, body: blob });
             }
             if (!response.ok) {
@@ -51,7 +51,7 @@
         const currentState = image.dataset.rphImageGenerationState || '';
         if (image.dataset.rphImageReadOnly === '1') {
             image.dataset.rphImageGenerationState = 'missing';
-            image.alt = '原图读取失败，可点击重新生成';
+            image.alt = '图片加载失败，可重新生成';
             frame.style.minHeight = '96px';
             return;
         }
@@ -68,7 +68,7 @@
             image.src = retryUrl.toString();
         }).catch((error) => {
             image.dataset.rphImageGenerationState = 'failed';
-            image.alt = `生图失败：${describeGenerationError(error) || '请检查密钥或服务状态'}`;
+            image.alt = `图片生成失败：${describeGenerationError(error) || '请检查生图密钥或稍后重试'}`;
             reportImageGenerationFailure(error);
         });
     }

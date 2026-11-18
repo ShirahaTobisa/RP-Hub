@@ -199,7 +199,7 @@ try {
     const updateChooser = a.waitForEvent('filechooser');
     await a.locator('[data-rph-workshop-replace]').click();
     await (await updateChooser).setFiles({ name: 'liuguanyi-update.js', mimeType: 'text/javascript', buffer: Buffer.from(updatedPlugin) });
-    await a.getByText('插件文件已更新，原数据保留，刷新后生效', { exact: true }).waitFor();
+    await a.getByText('插件已更新，刷新后生效', { exact: true }).waitFor();
     await a.reload({ waitUntil: 'domcontentloaded' });
     await moduleReady(a);
     const updated = await records(a);

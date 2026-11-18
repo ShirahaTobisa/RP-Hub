@@ -314,7 +314,7 @@
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
             const source = await response.text();
             if (UNPATCHED_CHARACTER_SAVE.test(source)) {
-                const reason = '检测到当前 app.js 未应用角色卡分键补丁。为避免新旧存储并存，本次上传已被阻止；请先更新程序。';
+                const reason = '当前程序版本不兼容，上传已被阻止，请先更新程序。';
                 patchAudit = { status: 'blocked', reason };
                 console.error(`[RPHubCharStore] ${reason}`);
                 try {

@@ -71,7 +71,7 @@ try {
 
     await open();
     await page.waitForFunction(() => JSON.parse(localStorage.getItem('rp_hub_workshop_modules_v1'))[0].lastStatus === 'ok', null, { timeout: 30000 });
-    await page.locator('.toast-item', { hasText: '要再刷新一次才能完整生效' }).waitFor({ timeout: 5000 });
+    await page.locator('.toast-item', { hasText: '需要再刷新一次才能完全生效' }).waitFor({ timeout: 5000 });
     const first = await page.evaluate(() => ({ status: window.__sakuraNativeFiveStatus ?? null, entry: JSON.parse(localStorage.getItem('rp_hub_workshop_modules_v1'))[0] }));
     assert.equal(first.status, null, 'the first load has not seen beforeMount yet');
     assert.equal(first.entry.beforeMount, true);

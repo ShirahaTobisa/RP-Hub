@@ -190,13 +190,13 @@
         frame.style.cssText = 'width:auto;height:auto;max-width:100%;box-sizing:border-box;padding:2px;border:1px solid rgba(148,163,184,.35);background:rgba(255,255,255,.55);position:relative;border-radius:8px;overflow:hidden;display:inline-flex;justify-content:center;align-items:center;box-shadow:0 4px 14px rgba(15,23,42,.08);vertical-align:middle;';
         if (manual) {
             const label = document.createElement('span');
-            label.textContent = '未生成，点击按钮生成';
+            label.textContent = '图片未生成，点击右上角按钮生成';
             label.style.cssText = 'min-width:180px;min-height:96px;display:flex;align-items:center;justify-content:center;padding:16px 44px 16px 16px;color:#475569;text-align:center;';
             frame.appendChild(label);
         } else {
             const image = document.createElement('img');
             image.src = buildImageRenderUrl(record.paramsSnapshot);
-            image.alt = '生成图片';
+            image.alt = '生成的图片';
             image.loading = 'lazy';
             image.decoding = 'async';
             image.referrerPolicy = 'no-referrer';

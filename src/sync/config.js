@@ -60,6 +60,9 @@
     const FNV1A_OFFSET_BASIS = 0x811c9dc5;
     const FNV1A_PRIME = 0x01000193;
     const UINT32_RANGE = 0x100000000;
+    // 下载时云端数据有问题统一这样提示（具体哪一步出错，运行日志里有位置）
+    const CLOUD_DATA_INVALID = '云端数据格式不正确。';
+    const CLOUD_DATA_MISMATCH = '云端数据校验失败。';
 
     // ---- 快速上传的记账：哪些键改过了 ----
     // 写库的地方太多（官方代码、插件、生图模块都写），所以挂在 IndexedDB 的原型上记，谁写都记得到。
@@ -185,7 +188,7 @@
         syncLockHeld: false,
         reloadPending: false,
         progress: 0,
-        statusText: '请选择同步方向。'
+        statusText: '请选择上传或下载。'
     };
 
     const deferredPersistenceWrites = [];

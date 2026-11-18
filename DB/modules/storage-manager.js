@@ -2,7 +2,7 @@
 // 看网页存储用了多少、各类数据各占多少，一键清理已删角色留下的聊天、记忆、分支和旧版残留。
 // 官方页面还有「空间管理」时（2.0.3 及更早）什么都不做。
 RPHubSDK.register({
-    id: 'storage-manager', name: '空间管理', version: '1.0.0', requiresApi: 3,
+    id: 'storage-manager', name: '空间管理', version: '1.0.1', requiresApi: 3,
     init(ctx) {
         'use strict';
         const SCOPED_NAMES = ['chat', 'classic_memories', 'branches'];
@@ -148,7 +148,7 @@ RPHubSDK.register({
             if (!count) return ctx.ui.toast('没有发现无用残留', { kind: 'info' });
             const message = `将清理 ${count} 项无用残留（约 ${formatSize(orphanBytes)}）。现有角色的数据不会受到影响。`;
             if (!await window.RPHubUI.confirm({ title: '清理无用残留', message, confirmText: '清理', danger: true })) return;
-            if (globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS === true) return ctx.ui.toast('正在从云端恢复数据，恢复完再清理', { kind: 'warning' });
+            if (globalThis.RPH_R2_PULL_RESTORE_IN_PROGRESS === true) return ctx.ui.toast('正在从云端恢复数据，请稍后重试', { kind: 'warning' });
             state.cleaning = true;
             render();
             try {
