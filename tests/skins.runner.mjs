@@ -280,6 +280,43 @@ try {
     await option('splash').click();
     assert.ok(!(await early()).includes('.entry-transition'));
     console.log('PASS the custom skin takes a theme color and your own photos (upright for upright screens, wide for wide screens), exports as a skin package, and the splash can be turned off');
+
+    // 预览：选中的图在用得到的设备上各有开屏、页面、聊天三张小图；点开放大，缩放、拖动后位置存下，页面上的图跟着变，刷新后还在，导出时记成人物在哪边；恢复默认后清掉。
+    const bar = page.locator('[data-rph-workshop-attach="skins"]');
+    const frames = (device) => bar.locator(`.rph-skin-preview .rph-skin-frame[data-device="${device}"]`).count();
+    assert.deepEqual([await frames('phone'), await frames('desktop')], [3, 0], 'an upright photo is previewed on phones only while there is a wide one');
+    await bar.locator('.rph-skin-photo > button:first-child').nth(1).click();
+    assert.deepEqual([await frames('phone'), await frames('desktop')], [0, 3]);
+    await bar.locator('.rph-skin-frame[data-device="desktop"][data-kind="chat"]').click();
+    const viewer = page.locator('.rph-skin-viewer');
+    await viewer.waitFor();
+    await viewer.locator('input[type="range"]').evaluate((input) => {
+        input.value = 200;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--rph-skin-wide-zoom') === '2');
+    const box = await viewer.locator('.rph-skin-frame').boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    for (let step = 1; step <= 6; step += 1) await page.mouse.move(box.x + box.width * (0.5 + step * 0.1), box.y + box.height / 2);
+    await page.mouse.up();
+    await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--rph-skin-wide-pos') === '0% 30%');
+    assert.equal(await viewer.locator('.rph-skin-frame-art').evaluate((art) => art.style.transform), 'scale(2)');
+    await page.keyboard.press('Escape');
+    const [shared] = await Promise.all([page.waitForEvent('download'), bar.locator('[data-export]').click()]);
+    assert.match(JSON.parse(await (await import('node:fs/promises')).readFile(await shared.path(), 'utf8')).wide[0], /^data:image\/jpeg;base64,[^#]+#left$/);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => document.documentElement.style.getPropertyValue('--rph-skin-wide-pos') === '0% 30%', null, { timeout: 20000 });
+    assert.equal(await variable('--rph-skin-wide-zoom'), '2');
+    await ready();
+    await view('settings');
+    await bar.locator('.rph-skin-photo > button:first-child').nth(1).click();
+    await bar.locator('.rph-skin-frame[data-device="desktop"][data-kind="splash"]').click();
+    await viewer.locator('button', { hasText: '恢复默认' }).click();
+    await page.waitForFunction(() => !document.documentElement.style.getPropertyValue('--rph-skin-wide-pos') && !document.documentElement.style.getPropertyValue('--rph-skin-wide-zoom'));
+    await page.keyboard.press('Escape');
+    console.log('PASS your own photos have a preview for phones and computers; zooming and dragging in the large preview moves the picture on the page, stays after a reload and goes into the exported package, and resetting puts it back');
     assert.deepEqual(errors, []);
 } finally {
     await context.close();
