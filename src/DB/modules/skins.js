@@ -789,7 +789,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
     }
 
     RPHubSDK.register({
-        id: 'skins', name: '皮肤', version: '1.3.1', requiresApi: 10,
+        id: 'skins', name: '皮肤', version: '1.3.2', requiresApi: 10,
         beforeMount({ ctx: context }) {
             start(context);
             // 页面挂上后就收起开屏，至少显示 1.6 秒，不用等插件全部就绪。
