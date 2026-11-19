@@ -47,9 +47,10 @@
 .app-main::before{content:"";position:absolute;inset:0;z-index:-1;background:var(--rph-skin-art) var(--rph-skin-pos,center 18%)/cover no-repeat;transform:scale(var(--rph-skin-zoom,1));transform-origin:var(--rph-skin-pos,center 18%);opacity:var(--rph-skin-fade,.18);pointer-events:none}
 :root[data-app-theme="dark"] .app-main::before{opacity:calc(var(--rph-skin-fade,.18) + .06)}
 @media (min-aspect-ratio:1/1){.rph-skin-wide .app-main::before{background-image:var(--rph-skin-wide);background-position:var(--rph-skin-wide-pos,var(--rph-skin-side,center) 30%);transform:scale(var(--rph-skin-wide-zoom,1));transform-origin:var(--rph-skin-wide-pos,var(--rph-skin-side,center) 30%)}}`,
-        // 聊天页：官方把背景图模糊了一层（它用的是小头像）；横版图里人物就在聊天栏旁边，是给人看的，不模糊。
+        // 聊天页：官方把背景图模糊了一层（它用的是小头像）；皮肤图够清楚，人物是给人看的，手机和电脑都不模糊。
         chat: `.char-bg-blur{background-image:var(--rph-skin-art)!important;background-position:var(--rph-skin-pos,center 18%)!important;transform:scale(var(--rph-skin-zoom,1));transform-origin:var(--rph-skin-pos,center 18%)}
-@media (min-aspect-ratio:1/1){.rph-skin-wide .char-bg-blur{background-image:var(--rph-skin-wide)!important;background-position:var(--rph-skin-wide-pos,var(--rph-skin-side,center) 30%)!important;transform:scale(var(--rph-skin-wide-zoom,1));transform-origin:var(--rph-skin-wide-pos,var(--rph-skin-side,center) 30%);filter:none!important}}`,
+.rph-skin-art .char-bg-blur{filter:none!important}
+@media (min-aspect-ratio:1/1){.rph-skin-wide .char-bg-blur{background-image:var(--rph-skin-wide)!important;background-position:var(--rph-skin-wide-pos,var(--rph-skin-side,center) 30%)!important;transform:scale(var(--rph-skin-wide-zoom,1));transform-origin:var(--rph-skin-wide-pos,var(--rph-skin-side,center) 30%)}}`,
         icons: `[data-rph-skin-icon]{padding:0!important;background:var(--rph-skin-icons) calc(var(--rph-skin-x)*20%) calc(var(--rph-skin-y)*33.3333%)/600% 400% no-repeat!important}
 [data-rph-skin-icon]>*{opacity:0}
 .app-navigation-icon[data-rph-skin-icon]{width:34px;height:34px;border-radius:0}
@@ -788,7 +789,7 @@ h2>svg[data-rph-skin-icon]{width:2.125rem;height:2.125rem}`
     }
 
     RPHubSDK.register({
-        id: 'skins', name: '皮肤', version: '1.3.0', requiresApi: 10,
+        id: 'skins', name: '皮肤', version: '1.3.1', requiresApi: 10,
         beforeMount({ ctx: context }) {
             start(context);
             // 页面挂上后就收起开屏，至少显示 1.6 秒，不用等插件全部就绪。
