@@ -102,7 +102,7 @@ reply = () => json({ candidates: [{ finishReason: 'IMAGE_SAFETY', content: { par
 await assert.rejects(providers.get('ci-gem').generate({ params }), { message: '生图服务没有返回图片（IMAGE_SAFETY）：无法生成这张图片' });
 console.log('PASS Gemini format: v1beta endpoint, header key, aspect ratio, inline image, refusal reason');
 
-// NovelAI 官方：画风串在前、提示词在后；尺寸按外壳尺寸表；参数原样带上；返回的 zip（存储或 deflate）里取出 PNG。
+// NovelAI 官方：画风串在前、提示词在后；尺寸按外壳尺寸表；参数原样带上；返回的 JSON 或 zip（存储或 deflate）里取出 PNG。
 reply = () => new Response(zip('image_0.png', PNG, 0));
 calls.length = 0;
 blob = await providers.get('ci-nai').generate({ params: { ...params, size: '2K竖图' } });
@@ -122,6 +122,9 @@ reply = () => new Response(zip('image_0.png', PNG, 8));
 assert.deepEqual(await bytesOf(await providers.get('ci-nai').generate({ params })), PNG);
 reply = () => new Response(PNG);
 assert.equal((await providers.get('ci-nai').generate({ params })).type, 'image/png');
+// 官方接口实测回的是 JSON：images[0].image 是 base64 的 PNG。
+reply = () => json({ images: [{ image: PNG.toString('base64') }] });
+assert.deepEqual(await bytesOf(await providers.get('ci-nai').generate({ params })), PNG);
 // V5：params_version 4，不带 noise_schedule 和 skip_cfg_above_sigma。
 reply = () => new Response(zip('image_0.png', PNG, 0));
 calls.length = 0;
@@ -129,7 +132,7 @@ await providers.get('ci-nai').generate({ params: { ...params, model: 'nai-diffus
 assert.equal(calls[0].body.parameters.params_version, 4);
 assert.equal('noise_schedule' in calls[0].body.parameters, false);
 assert.equal('skip_cfg_above_sigma' in calls[0].body.parameters, false);
-console.log('PASS NovelAI format: artist before tags, shell sizes, all parameters, V5 differences, stored or deflated zip, or a plain image');
+console.log('PASS NovelAI format: artist before tags, shell sizes, all parameters, V5 differences, JSON, stored or deflated zip, or a plain image');
 
 // 出错：服务报错带上它的原因；连不上换成能看懂的一句；回的不是图片要说清楚。
 reply = () => json({ error: { message: 'Incorrect API key provided' } }, 401);

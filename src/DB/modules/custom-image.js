@@ -47,9 +47,17 @@
         return new Blob([bytes], { type: mime });
     }
 
-    // NovelAI 返回 zip，里面是 image_0.png：从中央目录读第一项，存储（0）和 deflate（8）两种压缩方式都认。直接回图片的转发也照收。
-    async function unzipFirst(buffer) {
+    // NovelAI 的返回有两种：JSON {images:[{image: base64 的 PNG}]}（2026-11-21 用官方密钥实测是这种），
+    // 或 zip（里面是 image_0.png，从中央目录读第一项，存储和 deflate 两种压缩方式都认）。直接回图片的转发也照收。
+    async function readNovelAI(buffer) {
         const bytes = new Uint8Array(buffer);
+        if (bytes[0] === 0x7b) {
+            let data = null;
+            try { data = JSON.parse(new TextDecoder().decode(bytes)); } catch (_) { /* 不是 JSON 就按图片认，认不出会报错 */ }
+            const image = data?.images?.[0];
+            const base64 = typeof image === 'string' ? image : image?.image;
+            if (base64) return imageBlob(base64.replace(/^data:[^,]*,/, ''));
+        }
         if (bytes[0] !== 0x50 || bytes[1] !== 0x4b) return imageBlob(bytes);
         const view = new DataView(buffer);
         let end = buffer.byteLength - 22;
@@ -131,12 +139,12 @@
                 headers: { authorization: `Bearer ${service.key}`, 'content-type': 'application/json' },
                 body: JSON.stringify({ input: prompt, model, action: 'generate', parameters })
             });
-            return unzipFirst(await response.arrayBuffer());
+            return readNovelAI(await response.arrayBuffer());
         }
     };
 
     RPHubSDK.register({
-        id: 'custom-image', name: '自定义生图', version: '1.0.0', requiresApi: 5,
+        id: 'custom-image', name: '自定义生图', version: '1.0.1', requiresApi: 5,
         init(ctx) {
             let services = [];
             try { services = (JSON.parse(ctx.storage.get('services')) || []).filter((item) => FORMATS[item?.format]); } catch (_) { services = []; }
