@@ -251,26 +251,17 @@
             throw new TypeError('panel render must be a function');
         }
         closePanel();
-        let cleanup = null;
         const panel = window.RPHubUI.openModal({
             title: String(options.title || '').trim(),
             attributes: { 'data-rph-workshop-panel': '' },
             bodyAttributes: { 'data-rph-workshop-panel-body': '' },
             closeAttributes: { 'data-rph-workshop-panel-close': '' },
             onClose: () => {
-                if (cleanup) {
-                    const fn = cleanup;
-                    cleanup = null;
-                    try { fn(); } catch (error) { log('panel cleanup failed', error); }
-                }
                 if (state.panel !== panel) return;
                 state.panel = null;
                 state.managementBody = null;
             },
-            render: (body, modal) => {
-                const result = options.render(body, modal);
-                if (typeof result === 'function') cleanup = result;
-            }
+            render: (body) => options.render(body)
         });
         state.panel = panel;
     }
@@ -1297,11 +1288,7 @@
             model: String(model || settings.uiTemplateModel || settings.model || '').trim(),
             messages: marked, temperature, stream: false, signal
         });
-        const content = String(result?.content || '');
-        if (!content.trim() && result?.reasoning) {
-            throw new Error('模型只返回了思考过程，未给出正文：请换个非思考模型，或在接口端调大输出上限');
-        }
-        return content;
+        return String(result?.content || '');
     }
 
     function imageModule() {

@@ -290,48 +290,52 @@
                 }
             });
 
-            // 把原生下拉框换成 RPH 自己的下拉框（展开的列表、深色模式都和原生设置页一样）。值还在隐藏的 <select> 里，
-            // 别的代码照旧读写 .value、监听 change；选项或选中项变了会自己跟上。页面没有这个组件（旧版 RPH）时保持原生下拉框。
-            function styledSelect(select) {
-                const Component = window.RPHubCustomSelect;
-                const Vue = globalThis.Vue;
-                if (!select || !Component || !Vue?.createApp) return { unmount() {} };
-                const view = Vue.reactive({ value: '', options: [] });
-                const sync = () => Object.assign(view, {
-                    value: select.value,
-                    options: [...select.options].map((option) => ({ value: option.value, label: option.textContent, disabled: option.disabled }))
-                });
-                const host = document.createElement('div');
-                const app = Vue.createApp({
-                    render: () => Vue.h(Component, {
-                        modelValue: view.value, options: view.options, buttonClass: 'rph-ui-input', menuClass: 'text-sm',
-                        'onUpdate:modelValue': (value) => {
-                            select.value = value;
-                            sync();
-                            select.dispatchEvent(new Event('change', { bubbles: true }));
-                        }
-                    })
-                });
-                app.mount(host);
-                select.hidden = true;
-                select.after(host);
-                const observer = new MutationObserver(sync);
-                observer.observe(select, { childList: true, subtree: true, attributes: true });
-                sync();
-                return {
-                    unmount() {
-                        observer.disconnect();
-                        app.unmount();
-                    }
-                };
+                // 把原生下拉框换成 RPH 自己的下拉框（展开的列表、深色模式都和原生设置页一样）。值还在隐藏的 <select> 里，
+    // 别的代码照旧读写 .value、监听 change；选项或选中项变了会自己跟上。页面没有这个组件（旧版 RPH）时保持原生下拉框。
+    function styledSelect(select) {
+        const Component = window.RPHubCustomSelect;
+        const Vue = globalThis.Vue;
+        if (!select || !Component || !Vue?.createApp) return { unmount() {} };
+        const view = Vue.reactive({ value: '', options: [] });
+        const sync = () => Object.assign(view, {
+            value: select.value,
+            options: [...select.options].map((option) => ({ value: option.value, label: option.textContent, disabled: option.disabled }))
+        });
+        const host = document.createElement('div');
+        const app = Vue.createApp({
+            render: () => Vue.h(Component, {
+                modelValue: view.value, options: view.options, buttonClass: 'rph-ui-input', menuClass: 'text-sm',
+                'onUpdate:modelValue': (value) => {
+                    select.value = value;
+                    sync();
+                    select.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            })
+        });
+        app.mount(host);
+        select.hidden = true;
+        select.after(host);
+        const observer = new MutationObserver(sync);
+        observer.observe(select, { childList: true, subtree: true, attributes: true });
+        sync();
+        return {
+            unmount() {
+                observer.disconnect();
+                app.unmount();
             }
+        };
+    }
 
+
+            let cleanupPanel = null;
             ctx.ui.addSidebarEntry({
                 label: '朗读设置',
                 onClick() {
                     ctx.ui.openPanel({
                         title: '朗读',
                         render(body) {
+                            cleanupPanel?.();
+                            cleanupPanel = null;
                             // 样式类名见 WORKSHOP-MOD-GUIDE.md「面板样式」，跟随页面主题和深色模式。
                             const toggle = (attrs, label) => `<div class="rph-ui-field"><label class="rph-ui-check" style="white-space:normal"><input type="checkbox" class="settings-toggle-input sr-only" ${attrs}><span class="settings-toggle"></span><span>${label}</span></label></div>`;
                             const range = (key, label) => `<label class="rph-ui-field"><span>${label} <span data-show="${key}"></span></span><input type="range" min="0.5" max="2" step="0.1" class="${RANGE_CLASS}" data-k="${key}"></label>`;
@@ -410,10 +414,20 @@
                                 preview.hidden = false;
                             };
                             body.querySelector('[data-try]').onclick = () => speak([{ el: null, text: '你好，这是朗读的试听。语速和音调可以在上面调整。' }], null).catch((error) => ctx.log('试听失败', error));
-                            return () => {
+                            let cleaned = false;
+                            const cleanup = () => {
+                                if (cleaned) return;
+                                cleaned = true;
+                                closeObserver.disconnect();
                                 synth.removeEventListener?.('voiceschanged', fillVoices);
                                 voiceSelect.unmount();
+                                if (cleanupPanel === cleanup) cleanupPanel = null;
                             };
+                            const closeObserver = new MutationObserver(() => {
+                                if (!body.isConnected) cleanup();
+                            });
+                            closeObserver.observe(document.body, { childList: true });
+                            cleanupPanel = cleanup;
                         }
                     });
                 }

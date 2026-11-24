@@ -1171,8 +1171,12 @@ ${translate ? `
                 if (!lines.length || characterId() !== card) return;
                 const key = keyOf(lines);
                 ctx.ui.openPanel({
-                    title: '配音预览与编辑',
+                    title: '配音预览',
                     render(body, modal) {
+                        const closeModal = () => {
+                            if (modal?.close) return modal.close();
+                            body.closest('[data-rph-workshop-panel], .rph-ui-overlay')?.querySelector('[data-rph-workshop-panel-close], .modal-close-button')?.click();
+                        };
                         const people = readCast();
                         const knownNames = [...new Set([NARRATOR, userName(), ...people.map((p) => p.name)].filter(Boolean))];
                         const datalistId = `rph-voice-names-${Date.now()}`;
@@ -1236,7 +1240,7 @@ ${translate ? `
                             };
                             playOne.onclick = () => {
                                 collectAndSave();
-                                modal?.close();
+                                closeModal();
                                 unlock();
                                 speak(index, { from: i }).catch((error) => ctx.log('角色语音失败', error));
                             };
@@ -1258,9 +1262,9 @@ ${translate ? `
                         };
                         const saveAll = () => inputs[0]?.collectAndSave();
                         actions.append(
-                            makeBtn('重新分析', false, () => { modal?.close(); openPreviewModal(index, true).catch((error) => ctx.log('分析失败', error)); }),
-                            makeBtn('导出 WAV', false, () => { saveAll(); modal?.close(); exportWav(index); }),
-                            makeBtn('保存并播放', true, () => { saveAll(); modal?.close(); unlock(); speak(index).catch((error) => ctx.log('角色语音失败', error)); })
+                            makeBtn('重新分析', false, () => { closeModal(); openPreviewModal(index, true).catch((error) => ctx.log('分析失败', error)); }),
+                            makeBtn('导出音频', false, () => { saveAll(); closeModal(); exportWav(index); }),
+                            makeBtn('保存并播放', true, () => { saveAll(); closeModal(); unlock(); speak(index).catch((error) => ctx.log('角色语音失败', error)); })
                         );
                         body.append(datalist, hint, list, actions);
                     }
@@ -1544,41 +1548,7 @@ ${translate ? `
                 return { voices, reason: String(want.reason || '') };
             }
 
-            // 把原生下拉框换成 RPH 自己的下拉框（展开的列表、深色模式都和原生设置页一样）。值还在隐藏的 <select> 里，
-            // 别的代码照旧读写 .value、监听 change；选项或选中项变了会自己跟上。页面没有这个组件（旧版 RPH）时保持原生下拉框。
-            function styledSelect(select) {
-                const Component = window.RPHubCustomSelect;
-                const Vue = globalThis.Vue;
-                if (!select || !Component || !Vue?.createApp) return { unmount() {} };
-                const view = Vue.reactive({ value: '', options: [] });
-                const sync = () => Object.assign(view, {
-                    value: select.value,
-                    options: [...select.options].map((option) => ({ value: option.value, label: option.textContent, disabled: option.disabled }))
-                });
-                const host = document.createElement('div');
-                const app = Vue.createApp({
-                    render: () => Vue.h(Component, {
-                        modelValue: view.value, options: view.options, buttonClass: 'rph-ui-input', menuClass: 'text-sm',
-                        'onUpdate:modelValue': (value) => {
-                            select.value = value;
-                            sync();
-                            select.dispatchEvent(new Event('change', { bubbles: true }));
-                        }
-                    })
-                });
-                app.mount(host);
-                select.hidden = true;
-                select.after(host);
-                const observer = new MutationObserver(sync);
-                observer.observe(select, { childList: true, subtree: true, attributes: true });
-                sync();
-                return {
-                    unmount() {
-                        observer.disconnect();
-                        app.unmount();
-                    }
-                };
-            }
+            /* @shared/styled-select */
 
             // 设置页：插件接口 8 起在导航菜单里单独一项，点开占满主区域；旧外壳没有页面接口时退回「模块管理」里的弹窗。
             // 切换角色卡时重画（配音表按卡记）。
@@ -1623,7 +1593,7 @@ ${translate ? `
                     const toggle = (key, label) => `<div class="rph-ui-field"><label class="rph-ui-check" style="white-space:normal"><input type="checkbox" class="settings-toggle-input sr-only" data-k="${key}"><span class="settings-toggle" style="flex-shrink:0"></span><span>${label}</span></label></div>`;
                     const range = (key, label, min, max) => `<label class="rph-ui-field"><span>${label} <span data-show="${key}"></span></span><input type="range" min="${min}" max="${max}" step="0.05" class="${RANGE_CLASS}" data-k="${key}"></label>`;
                     body.innerHTML = card('语音接口', [SPEAKER_PATH], select('provider', '接口', [['fish', 'Fish Audio'], ['openai', 'OpenAI 兼容接口']]) + (fish
-                        ? select('fishProtocol', '接口格式', [['compat', 'OpenAI 兼容格式'], ['native', 'Fish 原生格式（/v1/tts）']])
+                        ? select('fishProtocol', '接口格式', [['compat', 'OpenAI 兼容格式'], ['native', 'Fish 原生格式']])
                             + text('fishUrl', '接口地址', '留空使用官方地址，或填写中转地址')
                             + text('fishKey', '密钥', '官方密钥在 fish.audio 获取（无认证自建可留空）', SECRET)
                             + select('fishModel', '模型', [['fish-audio/s2.1-pro-free', 'S2.1 Pro 免费版'], ['fish-audio/s2.1-pro', 'S2.1 Pro（按字数收费）'], ['__custom__', '自定义模型…']])
@@ -1644,10 +1614,10 @@ ${translate ? `
                         ${toggle('continuous', '连续播放')}
                         ${toggle('userLines', '播放用户台词')}
                         ${toggle('widget', '显示悬浮窗')}
-                        ${toggle('follow', '播放时跟随滚动到正在念的句子')}
-                        ${toggle('hotkeys', '快捷键（Alt+P 播放/暂停，Alt+S 停止，Alt+[/] 上下句）')}
-                        ${toggle('persistCache', '本地持久缓存合成音频（刷新后免重复扣费）')}
-                        <div class="rph-ui-actions" style="justify-content:flex-end;margin:-0.25rem 0 0.75rem"><button type="button" class="modal-secondary-button rph-ui-button" data-clear-audio>清空音频缓存</button></div>
+                        ${toggle('follow', '播放时跟着滚动到正在念的句子')}
+                        ${toggle('hotkeys', '快捷键（Alt+P 播放/暂停，Alt+S 停止，Alt+[ / ] 上下句）')}
+                        ${toggle('persistCache', '记住合成过的语音（刷新页面不重生成）')}
+                        <div class="rph-ui-actions" style="justify-content:flex-end;margin:-0.25rem 0 0.75rem"><button type="button" class="modal-secondary-button rph-ui-button" data-clear-audio>清空语音缓存</button></div>
                         ${range('volume', '音量', 0, 1)}
                         ${range('speed', '语速', 0.5, 2)}`)
                         + card('读音替换', [SWAP_PATH], '<div data-rules></div><div class="rph-ui-actions" style="margin-top:0.75rem"><button type="button" class="modal-secondary-button rph-ui-button" data-add-rule>添加</button></div>')
@@ -1999,11 +1969,20 @@ ${translate ? `
                 paint();
                 let stopWatch = null;
                 stopWatch = ctx.app.watch(() => characterId(), () => (body.isConnected ? paint() : stopWatch?.()));
-                return () => {
+                let cleaned = false;
+                const cleanup = () => {
+                    if (cleaned) return;
+                    cleaned = true;
+                    closeObserver.disconnect();
                     stopSample();
                     stopWatch?.();
                     [...selects, ...castSelects].forEach((item) => item.unmount());
                 };
+                const closeObserver = new MutationObserver(() => {
+                    if (!body.isConnected) cleanup();
+                });
+                closeObserver.observe(document.body, { childList: true });
+                return cleanup;
             }
             const page = typeof ctx.ui.addPage === 'function' ? ctx.ui.addPage({ label: '角色语音', iconPaths: [TALK_PATH], render: renderSettings }) : null;
             if (!page) ctx.ui.addSidebarEntry({ label: '角色语音设置', onClick: () => ctx.ui.openPanel({ title: '角色语音', render: renderSettings }) });
