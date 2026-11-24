@@ -101,9 +101,16 @@ const RPHubSDK = (() => {
     function dataTransaction(mode, operation) {
         database ||= new Promise((resolve, reject) => {
             const request = indexedDB.open('RPHubUserscript', 1);
-            request.onupgradeneeded = () => request.result.createObjectStore('data');
-            request.onsuccess = () => resolve(request.result);
+            request.onupgradeneeded = () => {
+                if (!request.result.objectStoreNames.contains('data')) request.result.createObjectStore('data');
+            };
+            request.onsuccess = () => {
+                const db = request.result;
+                db.onversionchange = () => { db.close(); database = null; };
+                resolve(db);
+            };
             request.onerror = () => reject(request.error);
+            request.onblocked = () => reject(new Error('插件数据库被其他标签页占用'));
         }).catch((error) => { database = null; throw error; });
         return database.then((db) => new Promise((resolve, reject) => {
             const tx = db.transaction('data', mode);
@@ -130,7 +137,11 @@ const RPHubSDK = (() => {
             model: String(model || settings.uiTemplateModel || settings.model || '').trim(),
             messages: marked, temperature, stream: false, signal
         });
-        return String(result?.content || '');
+        const content = String(result?.content || '');
+        if (!content.trim() && result?.reasoning) {
+            throw new Error('模型只返回了思考过程，未给出正文：请换个非思考模型，或在接口端调大输出上限');
+        }
+        return content;
     }
 
     function toast(message, options = {}) {
@@ -139,7 +150,21 @@ const RPHubSDK = (() => {
 
     function openPanel({ title, render }) {
         panel?.close();
-        panel = window.RPHubUI.openModal({ title: String(title || '').trim(), render });
+        let cleanup = null;
+        panel = window.RPHubUI.openModal({
+            title: String(title || '').trim(),
+            onClose: () => {
+                if (cleanup) {
+                    const fn = cleanup;
+                    cleanup = null;
+                    safeCall('panel cleanup', fn);
+                }
+            },
+            render: (body, modal) => {
+                const result = render(body, modal);
+                if (typeof result === 'function') cleanup = result;
+            }
+        });
     }
 
     // 插件自己的整页：导航菜单里加一个入口，点开像「设置」那样占满主区域；没有主区域的页面退回弹窗。
@@ -223,7 +248,9 @@ const RPHubSDK = (() => {
                 get(key) {
                     try { return localStorage.getItem(prefix + key); } catch (_) { return null; }
                 },
-                set: (key, value) => localStorage.setItem(prefix + key, String(value)),
+                set(key, value) {
+                    try { localStorage.setItem(prefix + key, String(value)); } catch (error) { log(`storage.set(${key}) failed`, error); }
+                },
                 remove(key) {
                     try { localStorage.removeItem(prefix + key); } catch (_) { /* no-op */ }
                 }

@@ -131,7 +131,7 @@ try {
     const panel = page.locator('[data-rph-workshop-panel]');
     await openSettings();
     assert.deepEqual(await panel.locator('[data-voice] option').evaluateAll((items) => items.map((item) => item.value)),
-        ['Microsoft Huihui - Chinese (Simplified, PRC)', 'Microsoft Xiaoxiao Online (Natural) - Chinese (Mainland)']);
+        ['Microsoft Huihui - Chinese (Simplified, PRC)', 'Microsoft Xiaoxiao Online (Natural) - Chinese (Mainland)', 'Google US English']);
     assert.equal(await panel.locator('[data-voice]').inputValue(), 'Microsoft Xiaoxiao Online (Natural) - Chinese (Mainland)');
     assert.equal(await panel.locator('select:visible').count(), 0, 'the voice dropdown is the RPH dropdown, not the browser one');
     await panel.locator('[data-voice] + div button[aria-haspopup="listbox"]').click();

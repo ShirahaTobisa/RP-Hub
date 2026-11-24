@@ -251,17 +251,26 @@
             throw new TypeError('panel render must be a function');
         }
         closePanel();
+        let cleanup = null;
         const panel = window.RPHubUI.openModal({
             title: String(options.title || '').trim(),
             attributes: { 'data-rph-workshop-panel': '' },
             bodyAttributes: { 'data-rph-workshop-panel-body': '' },
             closeAttributes: { 'data-rph-workshop-panel-close': '' },
             onClose: () => {
+                if (cleanup) {
+                    const fn = cleanup;
+                    cleanup = null;
+                    try { fn(); } catch (error) { log('panel cleanup failed', error); }
+                }
                 if (state.panel !== panel) return;
                 state.panel = null;
                 state.managementBody = null;
             },
-            render: (body) => options.render(body)
+            render: (body, modal) => {
+                const result = options.render(body, modal);
+                if (typeof result === 'function') cleanup = result;
+            }
         });
         state.panel = panel;
     }

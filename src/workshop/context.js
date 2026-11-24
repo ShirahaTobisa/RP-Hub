@@ -165,7 +165,11 @@
             model: String(model || settings.uiTemplateModel || settings.model || '').trim(),
             messages: marked, temperature, stream: false, signal
         });
-        return String(result?.content || '');
+        const content = String(result?.content || '');
+        if (!content.trim() && result?.reasoning) {
+            throw new Error('模型只返回了思考过程，未给出正文：请换个非思考模型，或在接口端调大输出上限');
+        }
+        return content;
     }
 
     function imageModule() {

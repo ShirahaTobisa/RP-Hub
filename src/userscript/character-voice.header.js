@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RPH 角色语音
 // @namespace    https://github.com/ShirahaTobisa/RP-Hub
-// @version      1.3.2
+// @version      1.4.0
 // @description  让回复里的人物用各自的声音说出台词，谁说的、用什么语气由 AI 分析。接 Fish Audio（官方或中转）或 OpenAI 格式的语音接口。
 // @author       aphrissa
 // @license      CC BY-NC 4.0

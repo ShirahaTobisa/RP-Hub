@@ -588,7 +588,10 @@ try {
         ['https://api.siliconflow.cn', 'sk-test', 'FunAudioLLM/CosyVoice2-0.5B'], 'a preset fills the address and model and leaves the key');
     assert.equal(await panel.locator('[data-k="openaiTone"]').inputValue(), 'none');
     await choose('provider', 'Fish Audio');
-    assert.deepEqual([await picked('同桌'), await picked('班长')], ['Fish 默认声音', '大叔']);
+    assert.deepEqual([await picked('同桌'), await picked('班长')], ['温柔少女', '大叔'], 'switching back restores the Fish voices');
+    await choose('provider', 'OpenAI 兼容接口');
+    assert.equal(await picked('同桌'), 'coral', 'switching back restores the OpenAI voice too');
+    await choose('provider', 'Fish Audio');
     await backToChat();
     await panel.waitFor({ state: 'detached' });
     console.log('PASS an OpenAI-style service is set up from a preset, takes voice names per person and gets the tone as instructions');

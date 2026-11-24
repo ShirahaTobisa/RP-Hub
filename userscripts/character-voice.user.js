@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         RPH 角色语音
 // @namespace    https://github.com/ShirahaTobisa/RP-Hub
-// @version      1.3.2
+// @version      1.4.0
 // @description  让回复里的人物用各自的声音说出台词，谁说的、用什么语气由 AI 分析。接 Fish Audio（官方或中转）或 OpenAI 格式的语音接口。
 // @author       aphrissa
 // @license      CC BY-NC 4.0
@@ -572,9 +572,16 @@ const RPHubSDK = (() => {
     function dataTransaction(mode, operation) {
         database ||= new Promise((resolve, reject) => {
             const request = indexedDB.open('RPHubUserscript', 1);
-            request.onupgradeneeded = () => request.result.createObjectStore('data');
-            request.onsuccess = () => resolve(request.result);
+            request.onupgradeneeded = () => {
+                if (!request.result.objectStoreNames.contains('data')) request.result.createObjectStore('data');
+            };
+            request.onsuccess = () => {
+                const db = request.result;
+                db.onversionchange = () => { db.close(); database = null; };
+                resolve(db);
+            };
             request.onerror = () => reject(request.error);
+            request.onblocked = () => reject(new Error('插件数据库被其他标签页占用'));
         }).catch((error) => { database = null; throw error; });
         return database.then((db) => new Promise((resolve, reject) => {
             const tx = db.transaction('data', mode);
@@ -601,7 +608,11 @@ const RPHubSDK = (() => {
             model: String(model || settings.uiTemplateModel || settings.model || '').trim(),
             messages: marked, temperature, stream: false, signal
         });
-        return String(result?.content || '');
+        const content = String(result?.content || '');
+        if (!content.trim() && result?.reasoning) {
+            throw new Error('模型只返回了思考过程，未给出正文：请换个非思考模型，或在接口端调大输出上限');
+        }
+        return content;
     }
 
     function toast(message, options = {}) {
@@ -610,7 +621,21 @@ const RPHubSDK = (() => {
 
     function openPanel({ title, render }) {
         panel?.close();
-        panel = window.RPHubUI.openModal({ title: String(title || '').trim(), render });
+        let cleanup = null;
+        panel = window.RPHubUI.openModal({
+            title: String(title || '').trim(),
+            onClose: () => {
+                if (cleanup) {
+                    const fn = cleanup;
+                    cleanup = null;
+                    safeCall('panel cleanup', fn);
+                }
+            },
+            render: (body, modal) => {
+                const result = render(body, modal);
+                if (typeof result === 'function') cleanup = result;
+            }
+        });
     }
 
     // 插件自己的整页：导航菜单里加一个入口，点开像「设置」那样占满主区域；没有主区域的页面退回弹窗。
@@ -694,7 +719,9 @@ const RPHubSDK = (() => {
                 get(key) {
                     try { return localStorage.getItem(prefix + key); } catch (_) { return null; }
                 },
-                set: (key, value) => localStorage.setItem(prefix + key, String(value)),
+                set(key, value) {
+                    try { localStorage.setItem(prefix + key, String(value)); } catch (error) { log(`storage.set(${key}) failed`, error); }
+                },
                 remove(key) {
                     try { localStorage.removeItem(prefix + key); } catch (_) { /* no-op */ }
                 }
@@ -766,9 +793,9 @@ const RPHubSDK = (() => {
     }
 
     const DEFAULTS = {
-        provider: 'fish', fishUrl: '', fishKey: '', fishModel: 'fish-audio/s2.1-pro-free',
+        provider: 'fish', fishProtocol: 'compat', fishUrl: '', fishKey: '', fishModel: 'fish-audio/s2.1-pro-free', fishCustomModel: '', fishFormat: 'mp3',
         openaiTemplate: 'openai', openaiUrl: 'https://api.openai.com', openaiKey: '', openaiModel: 'gpt-4o-mini-tts', openaiVoice: '', openaiTone: 'instructions', openaiFormat: 'mp3',
-        analysisModel: '', analyzeMode: 'click', autoPlay: '0', continuous: '0', userLines: '0', widget: '1', volume: '1', speed: '1'
+        analysisModel: '', analyzeMode: 'click', autoPlay: '0', continuous: '0', userLines: '0', widget: '1', follow: '1', hotkeys: '1', persistCache: '0', volume: '1', speed: '1'
     };
     const FISH = 'https://api.fish.audio';
     const FISH_LIBRARY = `${FISH}/model`;
@@ -793,7 +820,9 @@ const RPHubSDK = (() => {
     const WIDGET_KEY = 'rph_voice_widget'; // 悬浮窗的位置和收起状态，每台设备单独存，不跟云同步
     const PAGE_SIZE = 20; // 手动搜声音库每页 20 个
     const LIMIT = 200; // 每段最多 200 字：太长等得久，太短请求多
-    const CACHE_SIZE = 80; // 重听不重新生成（不再花钱），最多留 80 段，刷新页面后清空
+    const CACHE_SIZE = 80; // 重听不重新生成（不再花钱），内存最多留 80 段；开启持久缓存时存进 IndexedDB
+    const PERSIST_CACHE_LIMIT = 200 * 1024 * 1024; // 本地持久音频缓存上限 200 MB
+    const ANALYSIS_TIMEOUT = 180000; // AI 分析超时（3 分钟，兼顾推理模型）
     const ANALYSIS_KEEP = 40; // 每张卡最多存 40 条回复的分析结果
     const ERROR_HINTS = { 400: '请检查声音和模型', 401: '密钥无效', 402: '余额不足', 403: '密钥权限不足', 429: '请求过于频繁或额度已用完' };
     const TIMEOUT = 60000; // 接口一分钟没回应算超时
@@ -846,6 +875,7 @@ ${translate ? `
     const PEOPLE_PATH = 'M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z';
     const SPEAKER_PATH = 'M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z';
     const SWAP_PATH = 'M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4';
+    const LIST_PATH = 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4';
     const icon = (paths, className) => `<svg class="${className}" fill="none" stroke="currentColor" viewBox="0 0 24 24">${paths.map((d) => `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${d}"></path>`).join('')}</svg>`;
     const ICON_TALK = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${TALK_PATH}"></path>`;
     const ICON_STOP = '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 10a1 1 0 011-1h4a1 1 0 011 1v4a1 1 0 01-1 1h-4a1 1 0 01-1-1v-4z"></path>';
@@ -873,10 +903,13 @@ ${translate ? `
 .rph-voice-widget__dot{display:none;width:42px;height:42px;align-items:center;justify-content:center;border-radius:999px;border:1px solid var(--c-border-soft,#e5e7eb);background:var(--c-elevated,#fff);color:var(--c-accent-text,#2563eb);box-shadow:0 6px 18px rgba(0,0,0,.16);cursor:pointer;touch-action:none}
 .rph-voice-widget.is-folded .rph-voice-widget__card{display:none}
 .rph-voice-widget.is-folded .rph-voice-widget__dot{display:flex}
-.rph-voice-widget.is-busy .rph-voice-widget__dot{box-shadow:0 0 0 3px rgba(96,165,250,.45),0 6px 18px rgba(0,0,0,.16)}`;
+.rph-voice-widget.is-busy .rph-voice-widget__dot{box-shadow:0 0 0 3px rgba(96,165,250,.45),0 6px 18px rgba(0,0,0,.16)}
+.rph-voice-preview-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:8px 0;border-top:1px solid var(--c-border-soft,#e5e7eb)}
+.rph-voice-preview-row.is-skipped{opacity:.5}
+.rph-voice-preview-text{flex:1 1 100%;font-size:13px;line-height:1.5;overflow-wrap:anywhere}`;
 
     RPHubSDK.register({
-        id: 'character-voice', name: '角色语音', version: '1.3.2', requiresApi: 7,
+        id: 'character-voice', name: '角色语音', version: '1.4.0', requiresApi: 7,
         init(ctx) {
             const player = new Audio(); // 都用这一个播放器：手机上点过一次以后，自动播放也能出声
             const preview = new Audio(); // 声音库的试听
@@ -885,9 +918,10 @@ ${translate ? `
             document.head.appendChild(style);
 
             const get = (key) => ctx.storage.get(key) ?? DEFAULTS[key];
-            // 语音接口：Fish（地址留空是官方，也可以填中转）或 OpenAI 语音格式的接口。
+            // 语音接口：Fish（地址留空是官方，也可以填中转，支持兼容和原生格式）或 OpenAI 语音格式的接口。
             const isFish = () => get('provider') === 'fish';
             const fishUrl = () => get('fishUrl').trim() || FISH;
+            const fishModelName = () => (get('fishModel') === '__custom__' ? get('fishCustomModel').trim() : get('fishModel').trim());
             const official = () => {
                 try { return new URL(fishUrl()).origin === FISH; } catch (_) { return false; }
             };
@@ -899,7 +933,9 @@ ${translate ? `
             };
             // 语速直接变速，不用重新合成。换一段语音时浏览器会把语速改回 1，所以每次开始放都要再设一遍。
             const tune = () => {
-                player.volume = numberOf('volume', 0, 1);
+                const vol = numberOf('volume', 0, 1);
+                player.volume = vol;
+                preview.volume = vol;
                 player.playbackRate = numberOf('speed', 0.5, 2);
             };
             let openSettings = () => {};
@@ -914,19 +950,45 @@ ${translate ? `
             };
 
             // 配音表（按角色卡）：每个人物用哪个声音、念什么语言。[{ name, id, title, sample, lang, provider }]。
-            // 不预先放卡名（很多卡是整个世界观，卡名不是人），说话的人物由分析加进来，也可以手动加。
+            // 切换接口时把每家已配的声音分别收进 cast-stash，换回来不丢。
             const castKey = () => `cast:${characterId()}`;
+            const stashKey = () => `cast-stash:${characterId()}`;
             const readCast = () => readJson(castKey(), []).filter((person) => person?.name);
             const saveCast = (people) => ctx.storage.set(castKey(), JSON.stringify(people));
+            const switchProviderCast = (prevProvider, nextProvider) => {
+                if (!characterId() || prevProvider === nextProvider) return;
+                const people = readCast();
+                const stash = readJson(stashKey(), {});
+                const bucket = stash[prevProvider] || {};
+                for (const person of people) {
+                    if (person.id && (person.provider || 'fish') === prevProvider) {
+                        bucket[person.name] = { id: person.id, title: person.title, sample: person.sample, provider: person.provider };
+                    }
+                }
+                stash[prevProvider] = bucket;
+                ctx.storage.set(stashKey(), JSON.stringify(stash));
+                const nextBucket = stash[nextProvider] || {};
+                const restored = people.map((person) => {
+                    const saved = nextBucket[person.name];
+                    if (saved?.id) {
+                        const next = { ...person, id: saved.id, title: saved.title, sample: saved.sample };
+                        if (saved.provider) next.provider = saved.provider; else delete next.provider;
+                        return next;
+                    }
+                    return person;
+                });
+                saveCast(restored);
+            };
             // 名字完全一样优先；其次互相包含（两边都至少两个字，免得「白」对上「对白」）。
             const personOf = (speaker, people) => people.find((item) => item.name === speaker)
                 || people.find((item) => item.name.length > 1 && speaker.length > 1 && (speaker.includes(item.name) || item.name.includes(speaker)));
             // 人物配的声音只在选它时的那个接口上算数（没标的是 Fish 的）；换了接口就用默认声音。
-            const voiceOf = (person) => (person?.id && (person.provider || 'fish') === get('provider') ? person.id : '');
+            const voiceOf = (person, provider = get('provider')) => (person?.id && (person.provider || 'fish') === provider ? person.id : '');
 
             const plain = (el) => el.textContent.replace(/\s+/g, ' ').trim();
-            // 一个块里没有句号问号、也没有引号，却有数字、冒号或竖线，多半是状态栏（「好感度：80/100」）。
-            const looksLikeStatus = (text) => text.length < 300 && !/[。！？!?…“”「」『』"]/.test(text) && /[\d:：|｜]/.test(text);
+            // 只把带明确属性/状态标签的短块当成状态栏；含数字或冒号的普通叙述（如时间、章节、无引号台词）保留。
+            const looksLikeStatus = (text) => text.length <= 80 && !/[。！？!?，,；;]|\.(?:\s|$)/.test(text)
+                && /^(?:好感(?:度)?|信任(?:度)?|体力|精力|生命(?:值)?|魔力|HP|MP|TIME|时间|日期|位置|地点|等级|金钱|余额|状态|SAN|理智|心情)\s*(?:[:：=]\s*\S|[-+]?\d)/i.test(text);
 
             // 页面上显示出来的正文，按块切成段：{ el（所在的块）, raw（这块的原文）, nodes（每个文字节点在 raw 里从哪开始） }。
             function segments(body) {
@@ -1061,6 +1123,17 @@ ${translate ? `
                 const lang = personOf(speaker, people)?.lang;
                 return LANGS[lang] ? lang : '';
             };
+            const targetsSignature = (people) => people
+                .filter((person) => LANGS[person.lang])
+                .map((person) => `${person.name}:${person.lang}`)
+                .sort()
+                .join('|');
+            function saveAnalysisLabels(card, key, labels) {
+                if (store.card !== card) return;
+                store.data = { ...store.data, [key]: labels.map((label) => [label.speaker, label.tone, label.pause ?? null, ...(label.lang ? [label.translation || '', label.lang] : [])]) };
+                Object.keys(store.data).slice(0, -ANALYSIS_KEEP).forEach((old) => delete store.data[old]);
+                ctx.data.set(`analysis:${card}`, store.data).catch((error) => ctx.log('分析结果没存上', error));
+            }
             // 每行存 [说话人, 语气, 停顿, 译文, 译成的语言]，后两项只在翻译过时有。
             // anyLang：只要说话人和语气（画线、悬浮窗用）；不传时还要求译文的语言和人物现在配的一致，换过语言的要重新分析。
             function cachedLabels(lines, anyLang = false) {
@@ -1068,30 +1141,71 @@ ${translate ? `
                 if (!Array.isArray(saved) || saved.length !== lines.length) return null;
                 const people = anyLang ? null : readCast();
                 if (people && saved.some(([speaker, , , , lang = '']) => langOf(speaker, people) !== lang)) return null;
-                return saved.map(([speaker, tone, pause, translation]) => ({ speaker, tone, pause, translation }));
+                return saved.map(([speaker, tone, pause, translation, lang = '']) => ({ speaker, tone, pause, translation: translation || '', lang }));
             }
 
             let analyzing = null; // 正在分析的回复序号
+            const analyzingTasks = new Map(); // taskKey → { index, card, controller, promise }
             const failures = new Map(); // 回复序号 → 分析失败的原因
-            const inflight = new Map(); // 同一条回复同时只分析一次
-            // 分析失败时：引号里的用默认声音念，其余算旁白（不念）。force 为 true 时不用存下的结果，重新分析。
+            const inflight = new Map(); // 同一条回复同时只分析一次（按 card+key 索引）
+            function syncAnalyzing() {
+                const current = characterId();
+                let active = null;
+                for (const item of analyzingTasks.values()) if (item.card === current) active = item.index;
+                analyzing = active;
+            }
+            function abortAnalyses(card = null) {
+                for (const [taskKey, task] of [...inflight.entries()]) {
+                    if (card && task.card !== card) continue;
+                    task.controller?.abort();
+                    inflight.delete(taskKey);
+                    analyzingTasks.delete(taskKey);
+                }
+                syncAnalyzing();
+            }
+            // 分析失败时：引号里的用默认声音念，其余算旁白（不念）。force 为 true 时放弃缓存和旧的同消息分析，重新分析。
             async function analyze(index, force = false) {
                 const card = characterId(), lines = linesOf(index);
                 if (!lines.length) return { lines, labels: [] };
-                await loadStore();
+                if (store.card !== card) await loadStore();
                 if (characterId() !== card) return { lines: [], labels: [] };
                 const cached = force ? null : cachedLabels(lines);
                 if (cached) return { lines, labels: cached };
-                const key = keyOf(lines), task = JSON.stringify([card, key]);
-                if (!inflight.has(task)) inflight.set(task, requestLabels(index, lines, card, key).finally(() => inflight.delete(task)));
-                return { lines, labels: await inflight.get(task) };
+                const key = keyOf(lines), taskKey = JSON.stringify([card, key]);
+                const sig = `${get('analysisModel') || ''}|${targetsSignature(readCast())}`;
+                const existing = inflight.get(taskKey);
+                if (!force && existing && existing.sig === sig) return { lines, labels: await existing.promise };
+                if (existing) {
+                    existing.controller?.abort();
+                    inflight.delete(taskKey);
+                    analyzingTasks.delete(taskKey);
+                }
+                const controller = typeof AbortController === 'function' ? new AbortController() : null;
+                const entry = { index, card, sig, controller, promise: null };
+                entry.promise = requestLabels(index, lines, card, key, entry).finally(() => {
+                    if (inflight.get(taskKey) === entry) inflight.delete(taskKey);
+                    if (analyzingTasks.get(taskKey) === entry) analyzingTasks.delete(taskKey);
+                    syncAnalyzing();
+                    renderWidget();
+                });
+                inflight.set(taskKey, entry);
+                analyzingTasks.set(taskKey, entry);
+                syncAnalyzing();
+                renderWidget();
+                return { lines, labels: await entry.promise };
             }
 
-            async function requestLabels(index, lines, card, key) {
-                const fallback = lines.map((line) => ({ speaker: line.quote ? DIALOGUE : NARRATOR, tone: '' }));
-                analyzing = index;
+            async function requestLabels(index, lines, card, key, entry) {
+                const fallback = lines.map((line) => ({ speaker: line.quote ? DIALOGUE : NARRATOR, tone: '', pause: null, translation: '', lang: '' }));
+                const rowRe = typeof ROW !== 'undefined' ? ROW : /\[\s*\d+\s*,\s*"(?:\\.|[^"\\])*"\s*,\s*"(?:\\.|[^"\\])*"(?:\s*,\s*\d+(?:\.\d+)?)?(?:\s*,\s*"(?:\\.|[^"\\])*")?\s*\]/g;
+                const timeoutMs = typeof ANALYSIS_TIMEOUT === 'number' ? ANALYSIS_TIMEOUT : 180000;
+                const signal = entry?.controller?.signal;
+                let timedOut = false;
+                let timer = null;
+                if (entry?.controller && typeof setTimeout === 'function') {
+                    timer = setTimeout(() => { timedOut = true; entry.controller.abort(); }, timeoutMs);
+                }
                 failures.delete(index);
-                renderWidget();
                 try {
                     if (!widgetVisible()) ctx.ui.toast('正在分析说话人和语气…', { kind: 'info' });
                     // 角色设定的前几百字，帮模型认人名。
@@ -1099,8 +1213,10 @@ ${translate ? `
                     // 声音标了语言的人物：让模型顺便把他的台词译过去。
                     const known = readCast();
                     const targets = known.filter((person) => LANGS[person.lang]).map((person) => `${person.name} → ${LANGS[person.lang]}`);
+                    const maxChars = targets.length ? 1200 : 400;
                     const reply = await ctx.ai.complete({
                         model: get('analysisModel').trim() || undefined,
+                        ...(signal ? { signal } : {}),
                         messages: [
                             { role: 'system', content: analyzePrompt(targets.length > 0) },
                             { role: 'user', content: [
@@ -1109,45 +1225,55 @@ ${translate ? `
                                 ...(targets.length ? [`声音语言：${targets.join('，')}`] : []),
                                 ...(profile ? [`角色设定摘录：${profile}`] : []),
                                 '\n正文：',
-                                ...lines.map((line, i) => `${i + 1}. [${line.quote ? '对白' : '叙述'}] ${line.text.slice(0, 300)}`)
+                                ...lines.map((line, i) => `${i + 1}. [${line.quote ? '对白' : '叙述'}] ${line.text.slice(0, maxChars)}`)
                             ].join('\n') }
                         ]
                     });
-                    const rows = (parseJson(reply, '[') || [...reply.matchAll(ROW)].map((match) => JSON.parse(match[0]))).filter(Array.isArray);
+                    if (signal?.aborted) return fallback;
+                    const parsed = parseJson(reply, '[');
+                    const rows = (Array.isArray(parsed) ? parsed : [...reply.matchAll(rowRe)].map((match) => JSON.parse(match[0]))).filter(Array.isArray);
                     if (!rows.length) throw new Error(reply.trim() ? 'AI 返回的格式不正确' : 'AI 未返回内容，请更换分析模型');
-                    const labels = fallback.map((item, i) => {
-                        const row = rows.find((entry) => Number(entry[0]) === i + 1);
-                        if (!row) return item;
-                        const pause = Number(row[3]);
-                        const speaker = String(row[1] || '').trim() || NARRATOR;
+                    const labels = new Array(lines.length);
+                    const seen = new Set();
+                    for (const row of rows) {
+                        const i = Number(row[0]) - 1;
+                        if (!Number.isInteger(i) || i < 0 || i >= lines.length || typeof row[1] !== 'string' || typeof row[2] !== 'string'
+                            || (row[4] != null && typeof row[4] !== 'string')) {
+                            throw new Error('配音表行号或内容无效，请重新分析');
+                        }
+                        if (seen.has(i)) throw new Error('配音表存在重复行号，请重新分析');
+                        seen.add(i);
+                        const pause = row[3] == null || row[3] === '' ? NaN : Number(row[3]);
+                        const speaker = row[1].trim() || NARRATOR;
                         const lang = langOf(speaker, known);
-                        return {
+                        labels[i] = {
                             speaker,
-                            tone: String(row[2] || '').replace(/[[\]]/g, '').trim().slice(0, 60),
+                            tone: row[2].replace(/[[\]]/g, '').trim().slice(0, 60),
                             pause: Number.isFinite(pause) ? Math.min(Math.max(pause, 0), 3) : null,
                             translation: lang ? String(row[4] || '').trim() : '',
                             lang
                         };
-                    });
-                    if (store.card === card) {
-                        store.data = { ...store.data, [key]: labels.map((label) => [label.speaker, label.tone, label.pause, ...(label.lang ? [label.translation, label.lang] : [])]) };
-                        Object.keys(store.data).slice(0, -ANALYSIS_KEEP).forEach((old) => delete store.data[old]);
-                        ctx.data.set(`analysis:${card}`, store.data).catch((error) => ctx.log('分析结果没存上', error));
                     }
-                    // 新出现的人物（不算用户扮演的）加进配音表，等用户挑音色；挑之前用默认声音。
+                    if (seen.size !== lines.length) throw new Error(`配音表不完整（${seen.size} / ${lines.length} 行），请重新分析`);
+                    if (store.card === card && characterId() === card) {
+                        saveAnalysisLabels(card, key, labels);
+                    }
+                    // 新出现的人物（不算旁白、回退占位「对白」和用户扮演的）加进配音表，等用户挑音色；挑之前用默认声音。
                     const people = readCast();
-                    const fresh = [...new Set(labels.map((label) => label.speaker))].filter((speaker) => !isNarrator(speaker) && speaker !== userName() && !personOf(speaker, people));
+                    const fresh = [...new Set(labels.map((label) => label.speaker))]
+                        .filter((speaker) => !isNarrator(speaker) && speaker !== DIALOGUE && speaker !== userName() && !people.some((item) => item.name === speaker));
                     if (fresh.length && characterId() === card) saveCast([...people, ...fresh.map((name) => ({ name }))]);
                     markRows([...document.querySelectorAll(`[data-chat-index="${index}"]`)]);
                     return labels;
                 } catch (error) {
+                    if (signal?.aborted && !timedOut) return fallback;
                     if (characterId() !== card) return fallback;
-                    failures.set(index, error?.message || String(error));
-                    ctx.ui.toast(`分析失败，本次引号内的台词使用默认声音：${error?.message || error}`, { kind: 'warning' });
+                    const reason = timedOut ? '分析超时，请更换更快的分析模型或重试' : (error?.message || String(error));
+                    failures.set(index, reason);
+                    ctx.ui.toast(`分析失败，本次引号内的台词使用默认声音：${reason}`, { kind: 'warning' });
                     return fallback;
                 } finally {
-                    if (characterId() === card && analyzing === index) analyzing = null;
-                    renderWidget();
+                    if (timer !== null && typeof clearTimeout === 'function') clearTimeout(timer);
                 }
             }
 
@@ -1163,14 +1289,14 @@ ${translate ? `
             }
             // 要说的小段：只留人物说的，每句单独合成（各用各的语气），太长的句子再切开；
             // from 是从第几句开始，only 为 true 时只说这一句。每段带上念完后停多久。
-            function itemsOf(lines, labels, from = 0, only = false) {
+            function itemsOf(lines, labels, from = 0, only = false, provider = get('provider')) {
                 const people = readCast();
                 const rules = readJson('pronunciations', []).filter((rule) => rule?.from);
                 const picked = lines.map((_, i) => i).filter((i) => i >= from && (!only || i === from) && voiced(labels[i].speaker));
                 const items = [];
                 picked.forEach((i, k) => {
                     const { speaker, tone, translation } = labels[i];
-                    const voice = voiceOf(personOf(speaker, people));
+                    const voice = voiceOf(personOf(speaker, people), provider);
                     // 念的是译文（有的话），再按读音替换表把左边的字换成右边的；页面上标的还是原文。
                     const chunks = splitText(rules.reduce((text, rule) => text.split(rule.from).join(rule.to || ''), translation || lines[i].text));
                     const next = picked[k + 1];
@@ -1182,24 +1308,145 @@ ${translate ? `
                 return items;
             }
 
+            // 本地持久音频缓存（可选开启，存在独立 IndexedDB 库里，不进云同步）。
+            let audioDb = null;
+            function openAudioDb() {
+                if (!globalThis.indexedDB) return Promise.resolve(null);
+                audioDb ||= new Promise((resolve, reject) => {
+                    const req = indexedDB.open('RPHubVoiceAudio', 1);
+                    req.onupgradeneeded = () => {
+                        if (!req.result.objectStoreNames.contains('audio')) req.result.createObjectStore('audio', { keyPath: 'key' });
+                    };
+                    req.onsuccess = () => {
+                        const db = req.result;
+                        db.onversionchange = () => { db.close(); audioDb = null; };
+                        resolve(db);
+                    };
+                    req.onerror = () => reject(req.error);
+                    req.onblocked = () => reject(new Error('音频缓存库被占用'));
+                }).catch(() => { audioDb = null; return null; });
+                return audioDb;
+            }
+            async function audioTx(mode, op) {
+                const db = await openAudioDb();
+                if (!db) return undefined;
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction('audio', mode);
+                    const req = op(tx.objectStore('audio'));
+                    tx.oncomplete = () => resolve(req?.result);
+                    tx.onerror = tx.onabort = () => reject(tx.error || new Error('音频缓存操作失败'));
+                });
+            }
+            const persistEnabled = () => get('persistCache') === '1';
+            const dbGetAudio = (key) => (persistEnabled() ? audioTx('readonly', (s) => s.get(key)).then((row) => row?.blob).catch(() => undefined) : Promise.resolve(undefined));
+            const dbPutAudio = (key, blob) => (persistEnabled() ? audioTx('readwrite', (s) => s.put({ key, blob, size: blob.size, time: Date.now() })).catch(() => {}) : Promise.resolve());
+            const dbDelAudio = (key) => audioTx('readwrite', (s) => s.delete(key)).catch(() => {});
+            const dbClearAudio = () => audioTx('readwrite', (s) => s.clear()).catch(() => {});
+            async function dbTrimAudio() {
+                if (!persistEnabled()) return;
+                const rows = await audioTx('readonly', (s) => s.getAll()).catch(() => []);
+                if (!Array.isArray(rows) || !rows.length) return;
+                rows.sort((a, b) => (b.time || 0) - (a.time || 0));
+                let total = 0;
+                const victims = rows.filter((row) => (total += row.size || 0) > PERSIST_CACHE_LIMIT);
+                if (victims.length) await audioTx('readwrite', (s) => { victims.forEach((row) => s.delete(row.key)); return { result: victims.length }; }).catch(() => {});
+            }
+
+            // 把几段音频拼成一个 wav 下载（16 位 PCM，默认 24kHz 控制体积）。
+            async function mergeToWav(blobs, pauses, signal) {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                let audioCtx;
+                try { audioCtx = new AudioCtx({ sampleRate: 24000 }); } catch (_) { audioCtx = new AudioCtx(); }
+                try {
+                    const buffers = [];
+                    for (let i = 0; i < blobs.length; i += 1) {
+                        if (signal?.aborted) throw new DOMException('已取消', 'AbortError');
+                        try { buffers.push(await audioCtx.decodeAudioData(await blobs[i].arrayBuffer())); }
+                        catch (error) { throw Object.assign(error, { audioIndex: i }); }
+                    }
+                    if (signal?.aborted) throw new DOMException('已取消', 'AbortError');
+                    const rate = audioCtx.sampleRate;
+                    const channels = Math.max(1, ...buffers.map((b) => b.numberOfChannels));
+                    const gapList = buffers.map((_, i) => (i < buffers.length - 1 ? Math.round(((pauses[i] ?? 200) / 1000) * rate) : 0));
+                    const frames = buffers.reduce((sum, b, i) => sum + b.length + gapList[i], 0);
+                    const bytes = frames * channels * 2;
+                    const view = new DataView(new ArrayBuffer(44 + bytes));
+                    const write = (off, str) => { for (let i = 0; i < str.length; i += 1) view.setUint8(off + i, str.charCodeAt(i)); };
+                    write(0, 'RIFF'); view.setUint32(4, 36 + bytes, true); write(8, 'WAVE');
+                    write(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, channels, true);
+                    view.setUint32(24, rate, true); view.setUint32(28, rate * channels * 2, true); view.setUint16(32, channels * 2, true); view.setUint16(34, 16, true);
+                    write(36, 'data'); view.setUint32(40, bytes, true);
+                    let offset = 44;
+                    buffers.forEach((buffer, idx) => {
+                        const tracks = Array.from({ length: channels }, (_, c) => buffer.getChannelData(Math.min(c, buffer.numberOfChannels - 1)));
+                        for (let i = 0; i < buffer.length; i += 1) {
+                            for (const track of tracks) {
+                                view.setInt16(offset, Math.round(Math.max(-1, Math.min(1, track[i])) * 32767), true);
+                                offset += 2;
+                            }
+                        }
+                        offset += gapList[idx] * channels * 2;
+                    });
+                    return new Blob([view.buffer], { type: 'audio/wav' });
+                } finally {
+                    audioCtx.close().catch(() => {});
+                }
+            }
+            function downloadBlob(blob, filename) {
+                const url = URL.createObjectURL(blob);
+                const link = document.createElement('a');
+                link.href = url;
+                link.download = filename.replace(/[\\/:*?"<>|\r\n]+/g, '_');
+                link.click();
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            }
+
+            const media = navigator.mediaSession;
+            const setMediaState = (state) => { if (media) try { media.playbackState = state; } catch (_) { /* 浏览器不支持 */ } };
+            const setMediaMeta = (item) => {
+                if (media && typeof window.MediaMetadata === 'function') {
+                    try { media.metadata = new MediaMetadata({ title: item.text.slice(0, 80), artist: item.speaker || '角色语音', album: character().name || '角色语音' }); } catch (_) { /* ignore */ }
+                }
+            };
+
             // 正在说的：{ index, stopped, abort, speaker, paused, at（说到第几段）, seek（要跳去的那段）, finish（结束正在放的这段）, move（叫醒在等的循环） }
             let session = null;
-            function stop() {
+            let exportAbort = null;
+            function stop(cancelAnalysis = false) {
+                exportAbort?.abort();
+                exportAbort = null;
+                if (cancelAnalysis) abortAnalyses();
                 if (session) {
                     session.stopped = true;
                     session.abort.abort();
                     session.finish?.();
+                    session.move?.();
                 }
                 session = null;
                 player.pause();
+                setMediaState('none');
                 refreshButtons();
                 renderWidget();
             }
             // 暂停、继续：正在放的这段跟着停、接着放；还在等合成的，合成好了先不放。
             function togglePause() {
                 if (!session) return;
-                session.paused = !session.paused;
-                if (session.finish) session.paused ? player.pause() : player.play().catch(() => {});
+                const current = session;
+                current.paused = !current.paused;
+                if (current.finish) {
+                    if (current.paused) {
+                        player.pause();
+                    } else {
+                        player.play().catch((error) => {
+                            if (session === current && error?.name !== 'AbortError') {
+                                ctx.log('继续播放失败', error);
+                                ctx.ui.toast(`继续播放失败：${error?.message || error}`);
+                                stop();
+                            }
+                        });
+                    }
+                }
+                setMediaState(current.paused ? 'paused' : 'playing');
                 renderWidget();
             }
             // 上一句（-1）、下一句（1）。这段已经念了两秒以上时，「上一句」是重念这一段。
@@ -1209,6 +1456,11 @@ ${translate ? `
                 session.paused = false;
                 session.finish?.();
                 session.move?.();
+            }
+            if (media) {
+                for (const [action, handler] of [['play', () => { if (session?.paused) togglePause(); }], ['pause', () => { if (session && !session.paused) togglePause(); }], ['stop', () => stop()], ['nexttrack', () => seek(1)], ['previoustrack', () => seek(-1)]]) {
+                    try { media.setActionHandler(action, handler); } catch (_) { /* ignore */ }
+                }
             }
 
             // 手机浏览器只让「点了之后」出声：第一次点按钮时先用同一个播放器放一下静音，之后自动播放也能播。
@@ -1222,42 +1474,107 @@ ${translate ? `
 
             // 等一会儿（句与句之间的停顿、重试前的间隔），停止时马上结束。
             const wait = (ms, signal) => new Promise((resolve) => {
-                const timer = setTimeout(resolve, ms);
-                signal.addEventListener('abort', () => {
+                if (signal?.aborted) return resolve();
+                const timer = setTimeout(() => {
+                    signal?.removeEventListener('abort', onAbort);
+                    resolve();
+                }, ms);
+                const onAbort = () => {
                     clearTimeout(timer);
                     resolve();
-                }, { once: true });
+                };
+                signal?.addEventListener('abort', onAbort, { once: true });
             });
 
-            // 接口地址可以只填域名，也可以填到 /v1 或完整的 …/audio/speech，中转的路径前缀留着；Fish 的地址没填到 /v1 时走它的 /compat/v1。
-            function apiUrl(address, compat) {
+            // 接口地址可以只填域名，也可以填到 /v1 或完整的 …/audio/speech，中转的路径前缀留着；
+            // mode: 'compat'（Fish 兼容，没填 /v1 走 /compat/v1/audio/speech）、'native'（Fish 原生 /v1/tts）、'openai'（/v1/audio/speech）。
+            function apiUrl(address, mode) {
                 let url = null;
                 try { url = new URL(address); } catch (_) { /* 和协议不对一起报 */ }
                 if (!/^https?:$/.test(url?.protocol)) throw new Error('接口地址必须以 http:// 或 https:// 开头');
-                const path = url.pathname.replace(/\/+$/, '').replace(/\/audio\/speech$/, '');
+                const path = url.pathname.replace(/\/+$/, '').replace(/\/(?:audio\/speech|tts)$/, '');
                 const base = path.replace(/\/v1$/, '');
-                url.pathname = `${compat && base === path ? `${base.replace(/\/compat$/, '')}/compat` : base}/v1/audio/speech`;
+                if (mode === 'native') {
+                    url.pathname = `${base.replace(/\/compat$/, '')}/v1/tts`;
+                } else {
+                    const compat = mode === true || mode === 'compat';
+                    url.pathname = `${compat && base === path ? `${base.replace(/\/compat$/, '')}/compat` : base}/v1/audio/speech`;
+                }
+                url.hash = '';
                 return url.href;
             }
-            // 这一段向哪个接口要、带什么去要。语气：Fish 和选了「句首方括号」的接口写在句首；选了 instructions 的放那个字段（tts-1 不认，不传）。
-            function speechRequest({ text, voice, tone }) {
-                if (isFish()) {
-                    return { url: apiUrl(fishUrl(), true), key: get('fishKey').trim(),
-                        body: { model: get('fishModel'), input: tone ? `[${tone}] ${text}` : text, voice, response_format: 'mp3' } };
+            // 固定本次播放/导出的接口设置，途中修改设置不串线。
+            function captureConfig() {
+                const provider = get('provider');
+                const url = fishUrl();
+                let isOfficialFish = false;
+                try { isOfficialFish = new URL(url).origin === FISH; } catch (_) { /* ignore */ }
+                return {
+                    provider,
+                    fishProtocol: get('fishProtocol') === 'native' ? 'native' : 'compat',
+                    fishUrl: url,
+                    fishKey: get('fishKey').trim(),
+                    fishModel: fishModelName(),
+                    fishFormat: get('fishFormat') || 'mp3',
+                    official: isOfficialFish,
+                    openaiUrl: get('openaiUrl').trim(),
+                    openaiKey: get('openaiKey').trim(),
+                    openaiModel: get('openaiModel').trim(),
+                    openaiVoice: get('openaiVoice').trim(),
+                    openaiTone: get('openaiTone'),
+                    openaiFormat: get('openaiFormat') || 'mp3',
+                    fallbackVoice: template().voices[0] || 'alloy'
+                };
+            }
+            function validateConfig(config) {
+                if (config.provider === 'fish') {
+                    if (config.official && !config.fishKey) return '请先在角色语音设置中填写 Fish Audio 密钥';
+                    if (!config.fishModel) return '请先在角色语音设置中填写 Fish 模型名';
+                    return '';
                 }
-                const mode = get('openaiTone');
-                const model = get('openaiModel').trim();
-                return { url: apiUrl(get('openaiUrl').trim(), false), key: get('openaiKey').trim(), body: {
-                    model, input: mode === 'bracket' && tone ? `[${tone}] ${text}` : text,
-                    voice: voice || get('openaiVoice').trim() || template().voices[0] || 'alloy', response_format: get('openaiFormat'),
-                    ...(mode === 'instructions' && tone && !/^tts-1/.test(model) ? { instructions: tone } : {})
-                } };
+                if (!config.openaiUrl) return '请先在角色语音设置中填写语音接口地址';
+                if (!config.openaiModel) return '请先在角色语音设置中填写语音模型名';
+                return '';
+            }
+            // 这一段向哪个接口要、带什么去要。语气：Fish 和选了「句首方括号」的接口写在句首；选了 instructions 的放那个字段（tts-1 系列不认，不传）。
+            function speechRequest({ text, voice, tone }, config = captureConfig()) {
+                const cleanTone = String(tone || '').replace(/[[\]]/g, '').trim();
+                if (config.provider === 'fish') {
+                    const input = cleanTone ? `[${cleanTone}] ${text}` : text;
+                    if (config.fishProtocol === 'native') {
+                        return {
+                            url: apiUrl(config.fishUrl, 'native'),
+                            key: config.fishKey,
+                            headers: { model: config.fishModel.replace(/^fish-audio\//, '') },
+                            body: { text: input, ...(voice ? { reference_id: voice } : {}), format: config.fishFormat }
+                        };
+                    }
+                    return {
+                        url: apiUrl(config.fishUrl, 'compat'),
+                        key: config.fishKey,
+                        body: { model: config.fishModel, input, voice, response_format: config.fishFormat }
+                    };
+                }
+                const mode = config.openaiTone;
+                const model = config.openaiModel;
+                return {
+                    url: apiUrl(config.openaiUrl, 'openai'),
+                    key: config.openaiKey,
+                    body: {
+                        model,
+                        input: mode === 'bracket' && cleanTone ? `[${cleanTone}] ${text}` : text,
+                        voice: voice || config.openaiVoice || config.fallbackVoice,
+                        response_format: config.openaiFormat,
+                        ...(mode === 'instructions' && cleanTone && !/(?:^|\/)tts-1(?:-hd)?(?:-\d+)?$/i.test(model) ? { instructions: cleanTone } : {})
+                    }
+                };
             }
 
             const cache = new Map();
+            const cacheKeyOf = (target) => JSON.stringify([target.url, target.headers || null, target.body]);
             const failure = (message, status) => Object.assign(new Error(message), { status });
             // 向接口要一段语音。出错时带上状态码，播放那边据此决定重试、跳过还是停。
-            async function request({ url, key, body }, signal) {
+            async function request({ url, key, body, headers }, signal) {
                 const controller = new AbortController();
                 const cancel = () => controller.abort();
                 if (signal.aborted) cancel(); else signal.addEventListener('abort', cancel, { once: true });
@@ -1266,7 +1583,7 @@ ${translate ? `
                     const response = await fetch(url, {
                         method: 'POST',
                         signal: controller.signal,
-                        headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) },
+                        headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}), ...(headers || {}) },
                         body: JSON.stringify(body)
                     });
                     if (!response.ok) {
@@ -1274,11 +1591,14 @@ ${translate ? `
                         let reason = detail;
                         try {
                             const json = JSON.parse(detail);
-                            reason = [json.error?.message, json.message, json.detail, json.error].find((item) => typeof item === 'string' && item) || detail;
+                            const picked = [json.error?.message, json.message, json.detail, json.error].find((item) => item != null && item !== '');
+                            reason = typeof picked === 'string' ? picked : (picked ? JSON.stringify(picked) : detail);
                         } catch (_) { /* 不是 JSON，用原文 */ }
                         const status = ERROR_HINTS[response.status] ? `${response.status}，${ERROR_HINTS[response.status]}` : response.status;
                         throw failure(`语音合成失败（${status}）：${String(reason).slice(0, 200) || response.statusText}`, response.status);
                     }
+                    const contentType = response.headers.get('content-type') || '';
+                    if (/json|^text\//i.test(contentType)) throw failure('语音接口返回的不是音频');
                     const blob = await response.blob();
                     // 回的是一段文字（出错了却没给错误码）或者空的：不当成语音存下来。
                     if (!blob.size || /json|^text\//i.test(blob.type)) throw failure('语音接口返回的不是音频');
@@ -1292,55 +1612,95 @@ ${translate ? `
                     signal.removeEventListener('abort', cancel);
                 }
             }
-            async function synthesize(item, signal) {
-                const target = speechRequest(item);
-                const key = JSON.stringify([target.url, target.body]);
-                if (cache.has(key)) return cache.get(key);
+            async function synthesize(item, signal, config = captureConfig()) {
+                const target = speechRequest(item, config);
+                const key = cacheKeyOf(target);
+                if (cache.has(key)) return { blob: cache.get(key), key };
+                const persisted = await dbGetAudio(key);
+                if (signal.aborted) throw new DOMException('已停止', 'AbortError');
+                if (persisted) {
+                    cache.set(key, persisted);
+                    if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value);
+                    return { blob: persisted, key };
+                }
                 const blob = await request(target, signal).catch(async (error) => {
-                    if (!RETRYABLE.includes(error.status)) throw error;
+                    if (signal.aborted || !RETRYABLE.includes(error.status)) throw error;
                     await wait(1500, signal);
+                    if (signal.aborted) throw error;
                     return request(target, signal);
                 });
                 cache.set(key, blob);
                 if (cache.size > CACHE_SIZE) cache.delete(cache.keys().next().value);
-                return blob;
+                await dbPutAudio(key, blob);
+                return { blob, key };
+            }
+            function evictAudio(key) {
+                if (!key) return;
+                cache.delete(key);
+                dbDelAudio(key);
             }
 
             function play(blob, current) {
                 return new Promise((resolve, reject) => {
                     const url = URL.createObjectURL(blob);
+                    let settled = false;
                     const finish = (error) => {
+                        if (settled) return;
+                        settled = true;
                         player.pause(); // 换句时这段还没放完，先停下，别和下一段叠在一起
                         player.onended = player.onerror = null;
-                        current.finish = null;
+                        if (current.finish === cancelPlay) current.finish = null;
+                        player.removeAttribute('src');
+                        player.load();
                         URL.revokeObjectURL(url);
                         if (error) reject(error); else resolve();
                     };
-                    current.finish = () => finish();
+                    const cancelPlay = () => finish();
+                    current.finish = cancelPlay;
                     player.onended = () => finish();
-                    player.onerror = () => finish(new Error('播放失败，接口返回的可能不是音频'));
+                    player.onerror = () => finish(new DOMException('播放失败，接口返回的可能不是音频', 'EncodingError'));
                     player.src = url;
                     tune();
-                    player.play().catch(finish);
+                    player.play().catch((error) => finish(error));
                 });
             }
 
             // 正在说的那句：支持文字高亮的浏览器只标这一句，否则给整段标底色。
             const highlights = globalThis.CSS?.highlights && typeof globalThis.Highlight === 'function' ? CSS.highlights : null;
+            function revealLine(line) {
+                if (!line || get('follow') !== '1') return;
+                try {
+                    const target = highlights ? rangeOf(line) : line.el;
+                    const rect = target.getBoundingClientRect();
+                    if (rect.top >= 0 && rect.bottom <= innerHeight) return;
+                    line.el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                } catch (_) { /* 正文已重画 */ }
+            }
             function showSpeaking(line) {
                 if (highlights) {
-                    if (line) highlights.set('rph-voice-now', new Highlight(rangeOf(line)));
-                    else highlights.delete('rph-voice-now');
+                    if (line) {
+                        highlights.set('rph-voice-now', new Highlight(rangeOf(line)));
+                        revealLine(line);
+                    } else {
+                        highlights.delete('rph-voice-now');
+                    }
                     return;
                 }
                 document.querySelectorAll(`.${SPEAKING}`).forEach((el) => el.classList.remove(SPEAKING));
-                line?.el.classList.add(SPEAKING);
+                if (line?.el) {
+                    line.el.classList.add(SPEAKING);
+                    revealLine(line);
+                }
             }
             // 说一条回复：没分析过先分析，再按人物的声音一句句说，句与句之间按节奏停顿；边播边生成下一段。
             // from 是从第几句开始，only 为 true 时只说这一句（点台词时用）。
             async function speak(index, { from = 0, only = false } = {}) {
                 stop();
-                if (isFish() && official() && !get('fishKey').trim()) return ctx.ui.toast('请先在角色语音设置中填写 Fish Audio 密钥', { kind: 'warning' });
+                const config = captureConfig();
+                const invalid = validateConfig(config);
+                if (invalid) return ctx.ui.toast(invalid, { kind: 'warning' });
+                // 通知其他语音插件（如「朗读」）停下，避免重叠出声。
+                try { window.dispatchEvent(new CustomEvent('rph:voice-start', { detail: { source: 'character-voice' } })); } catch (_) { /* ignore */ }
                 const current = session = { index, stopped: false, abort: new AbortController(), speaker: '', paused: false, at: 0, seek: null };
                 const signal = current.abort.signal;
                 let finished = false; // 自己说完的（没被停、没出错）才接着说后面的回复
@@ -1349,10 +1709,19 @@ ${translate ? `
                 try {
                     const { lines, labels } = await analyze(index);
                     if (current.stopped) return;
-                    const items = itemsOf(lines, labels, from, only);
+                    const items = itemsOf(lines, labels, from, only, config.provider);
                     if (!items.length) ctx.ui.toast('这条回复里没有人物台词', { kind: 'info' });
-                    const loads = [];
-                    const load = (i) => (loads[i] ??= synthesize(items[i], signal));
+                    const loads = new Map();
+                    const loadKey = (i) => cacheKeyOf(speechRequest(items[i], config));
+                    const load = (i) => {
+                        const key = loadKey(i);
+                        if (!loads.has(key)) {
+                            const pending = synthesize(items[i], signal, config);
+                            pending.catch(() => {}); // 防止预取失败或切句放弃等待时产生未捕获拒绝
+                            loads.set(key, pending);
+                        }
+                        return loads.get(key);
+                    };
                     let failed = 0; // 连着几句没合成出来
                     let i = 0;
                     while (!current.stopped) {
@@ -1361,10 +1730,12 @@ ${translate ? `
                         if (i >= items.length) break;
                         current.at = i;
                         const moved = new Promise((resolve) => { current.move = resolve; }); // 换句时不再等这一段
-                        let blob;
+                        const pending = load(i);
+                        let result;
                         try {
-                            blob = await Promise.race([load(i), moved]);
+                            result = await Promise.race([pending, moved]);
                         } catch (error) {
+                            loads.delete(loadKey(i)); // 消费失败后再清除，既避免预取失败重发，也允许上一句重试
                             failed += 1;
                             if (current.stopped || !SKIPPABLE.includes(error.status)) throw error;
                             if (failed >= 3) throw new Error(`连续 3 句合成失败，已停止：${error.message}`);
@@ -1372,23 +1743,28 @@ ${translate ? `
                             i += 1;
                             continue;
                         }
-                        if (current.seek !== null) continue;
+                        if (current.seek !== null || !result) continue;
                         failed = 0;
                         if (i + 1 < items.length) load(i + 1).catch(() => {});
                         while (current.paused && !current.stopped && current.seek === null) await Promise.race([wait(200, signal), moved]);
                         if (current.stopped || current.seek !== null) continue;
                         current.speaker = items[i].speaker;
+                        setMediaMeta(items[i]);
+                        setMediaState('playing');
                         renderWidget();
                         showSpeaking(items[i].line);
                         try {
-                            await play(blob, current);
+                            await play(result.blob, current);
+                        } catch (error) {
+                            if (['EncodingError', 'NotSupportedError'].includes(error?.name)) evictAudio(result.key);
+                            throw error;
                         } finally {
                             showSpeaking(null);
                         }
                         if (items[i].pause && !current.stopped && current.seek === null) await Promise.race([wait(items[i].pause, signal), moved]);
                         if (current.seek === null) i += 1;
                     }
-                    finished = !current.stopped;
+                    finished = !current.stopped && failed === 0;
                 } catch (error) {
                     if (!current.stopped) {
                         ctx.ui.toast(error?.name === 'NotAllowedError' ? '浏览器阻止了自动播放，请手动点击播放' : error?.message || String(error), { kind: 'error' });
@@ -1396,14 +1772,53 @@ ${translate ? `
                 } finally {
                     if (session === current) {
                         session = null;
+                        setMediaState('none');
                         refreshButtons();
                         renderWidget();
                     }
+                    dbTrimAudio();
                 }
                 // 连播：这条自己说完了，接着说后面的回复。
                 if (finished && !only && get('continuous') === '1') {
                     const next = (ctx.app.get('chatHistory') || []).findIndex((message, i) => i > index && message?.role === 'assistant');
                     if (next >= 0 && messageBody(next)) await speak(next);
+                }
+            }
+            async function exportWav(index) {
+                stop();
+                const config = captureConfig();
+                const invalid = validateConfig(config);
+                if (invalid) return ctx.ui.toast(invalid, { kind: 'warning' });
+                const card = characterId();
+                const controller = new AbortController();
+                exportAbort = controller;
+                const { signal } = controller;
+                const keys = [];
+                try {
+                    const { lines, labels } = await analyze(index);
+                    if (signal.aborted || characterId() !== card) return;
+                    const items = itemsOf(lines, labels, 0, false, config.provider);
+                    if (!items.length) return ctx.ui.toast('这条回复里没有人物台词', { kind: 'info' });
+                    ctx.ui.toast(`正在合成并导出（共 ${items.length} 段）…`, { kind: 'info' });
+                    const blobs = [];
+                    const pauses = [];
+                    for (let i = 0; i < items.length; i += 1) {
+                        if (signal.aborted || characterId() !== card) return;
+                        const { blob, key } = await synthesize(items[i], signal, config);
+                        blobs.push(blob);
+                        pauses.push(items[i].pause || 200);
+                        keys.push(key);
+                    }
+                    const wav = await mergeToWav(blobs, pauses, signal);
+                    if (signal.aborted || characterId() !== card) return;
+                    downloadBlob(wav, `${character().name || '角色语音'}-${index + 1}.wav`);
+                    ctx.ui.toast(`导出完成，共 ${items.length} 段`, { kind: 'success' });
+                } catch (error) {
+                    if (typeof error?.audioIndex === 'number') evictAudio(keys[error.audioIndex]);
+                    if (!signal.aborted && error?.name !== 'AbortError') ctx.ui.toast(`导出失败：${error?.message || error}`);
+                } finally {
+                    if (exportAbort === controller) exportAbort = null;
+                    dbTrimAudio();
                 }
             }
             function toggleSpeaking(index) {
@@ -1497,7 +1912,8 @@ ${translate ? `
             document.addEventListener('click', (event) => {
                 if (popover?.contains(event.target)) return;
                 closePopover();
-                if (!marks.size || !getSelection()?.isCollapsed) return;
+                const sel = getSelection();
+                if (!marks.size || (sel && !sel.isCollapsed)) return;
                 const row = event.target.closest?.('[data-chat-index]');
                 const found = row && marks.get(row);
                 if (!found) return;
@@ -1506,11 +1922,139 @@ ${translate ? `
                 const mark = found.find((item) => [...item.range.getClientRects()].some(hit));
                 if (mark) openPopover(mark, x, y);
             });
-            addEventListener('keydown', (event) => { if (event.key === 'Escape') closePopover(); });
+            addEventListener('keydown', (event) => {
+                if (event.key === 'Escape') closePopover();
+                if (!event.altKey || event.ctrlKey || event.metaKey || get('hotkeys') !== '1' || ctx.app.get('currentView') !== 'chat') return;
+                const actions = {
+                    KeyP: () => {
+                        if (session) return togglePause();
+                        const index = lastReplyIndex();
+                        if (index >= 0) toggleSpeaking(index);
+                    },
+                    KeyS: () => stop(true),
+                    BracketLeft: () => seek(-1),
+                    BracketRight: () => seek(1)
+                };
+                if (!actions[event.code]) return;
+                event.preventDefault();
+                actions[event.code]();
+            });
             addEventListener('scroll', closePopover, true);
+            addEventListener('pagehide', () => {
+                stop(true);
+                preview.pause();
+            });
+            addEventListener('rph:voice-start', (event) => {
+                if (event?.detail?.source && event.detail.source !== 'character-voice' && session) stop();
+            });
+
+            // 预览与编辑弹窗：查看并修改最新回复每句的说话人、语气、译文，可从某句开始播放、重新分析或导出 WAV。
+            async function openPreviewModal(index, force = false) {
+                const card = characterId();
+                if (index < 0 || !messageBody(index)) return ctx.ui.toast('暂无可预览的回复', { kind: 'info' });
+                const { lines, labels } = await analyze(index, force);
+                if (!lines.length || characterId() !== card) return;
+                const key = keyOf(lines);
+                ctx.ui.openPanel({
+                    title: '配音预览与编辑',
+                    render(body, modal) {
+                        const people = readCast();
+                        const knownNames = [...new Set([NARRATOR, userName(), ...people.map((p) => p.name)].filter(Boolean))];
+                        const datalistId = `rph-voice-names-${Date.now()}`;
+                        const datalist = document.createElement('datalist');
+                        datalist.id = datalistId;
+                        knownNames.forEach((name) => datalist.appendChild(new Option(name)));
+                        const hint = document.createElement('p');
+                        hint.className = 'rph-ui-muted';
+                        hint.textContent = '可修改每句的说话人、语气和译文（灰显表示按当前设置不朗读）。';
+                        const list = document.createElement('div');
+                        list.style.cssText = 'max-height:55vh;overflow:auto;margin:0.5rem 0';
+                        const inputs = [];
+                        lines.forEach((line, i) => {
+                            const label = labels[i];
+                            const row = document.createElement('div');
+                            row.className = `rph-voice-preview-row${voiced(label.speaker) ? '' : ' is-skipped'}`;
+                            const playOne = document.createElement('button');
+                            playOne.type = 'button';
+                            playOne.className = 'modal-secondary-button rph-ui-button';
+                            playOne.textContent = '▶';
+                            playOne.title = '从这句开始播放';
+                            const speakerInput = Object.assign(document.createElement('input'), {
+                                className: 'rph-ui-input', value: label.speaker, placeholder: '说话人', autocomplete: 'off'
+                            });
+                            speakerInput.setAttribute('list', datalistId);
+                            speakerInput.style.cssText = 'width:7.5rem;min-width:0;padding:4px 8px;font-size:12px';
+                            speakerInput.oninput = () => row.classList.toggle('is-skipped', !voiced(speakerInput.value.trim() || NARRATOR));
+                            const toneInput = Object.assign(document.createElement('input'), {
+                                className: 'rph-ui-input', value: label.tone || '', placeholder: '语气（英文）', autocomplete: 'off'
+                            });
+                            toneInput.style.cssText = 'flex:1;min-width:8rem;padding:4px 8px;font-size:12px';
+                            const textDiv = document.createElement('div');
+                            textDiv.className = 'rph-voice-preview-text';
+                            textDiv.textContent = line.text;
+                            let transInput = null;
+                            if (label.translation || label.lang || langOf(label.speaker, people)) {
+                                transInput = Object.assign(document.createElement('input'), {
+                                    className: 'rph-ui-input', value: label.translation || '', placeholder: '译文（留空念原文）', autocomplete: 'off'
+                                });
+                                transInput.style.cssText = 'flex:1 1 100%;padding:4px 8px;font-size:12px';
+                            }
+                            const collectAndSave = () => {
+                                const curPeople = readCast();
+                                const edited = inputs.map((item, idx) => {
+                                    const sp = item.speakerInput.value.trim() || NARRATOR;
+                                    const lang = langOf(sp, curPeople) || labels[idx].lang || '';
+                                    return {
+                                        speaker: sp,
+                                        tone: item.toneInput.value.replace(/[[\]]/g, '').trim().slice(0, 60),
+                                        pause: labels[idx].pause ?? null,
+                                        translation: item.transInput ? item.transInput.value.trim() : (labels[idx].translation || ''),
+                                        lang
+                                    };
+                                });
+                                saveAnalysisLabels(card, key, edited);
+                                const fresh = [...new Set(edited.map((item) => item.speaker))]
+                                    .filter((sp) => !isNarrator(sp) && sp !== DIALOGUE && sp !== userName() && !curPeople.some((p) => p.name === sp));
+                                if (fresh.length && characterId() === card) saveCast([...curPeople, ...fresh.map((name) => ({ name }))]);
+                                markAll();
+                                renderWidget();
+                            };
+                            playOne.onclick = () => {
+                                collectAndSave();
+                                modal?.close();
+                                unlock();
+                                speak(index, { from: i }).catch((error) => ctx.log('角色语音失败', error));
+                            };
+                            inputs.push({ speakerInput, toneInput, transInput, collectAndSave });
+                            row.append(playOne, speakerInput, toneInput, textDiv);
+                            if (transInput) row.append(transInput);
+                            list.appendChild(row);
+                        });
+                        const actions = document.createElement('div');
+                        actions.className = 'rph-ui-actions';
+                        actions.style.cssText = 'justify-content:flex-end;flex-wrap:wrap;gap:0.5rem;margin-top:0.5rem';
+                        const makeBtn = (label, primary, onClick) => {
+                            const btn = document.createElement('button');
+                            btn.type = 'button';
+                            btn.className = `${primary ? 'modal-primary-button' : 'modal-secondary-button'} rph-ui-button`;
+                            btn.textContent = label;
+                            btn.onclick = onClick;
+                            return btn;
+                        };
+                        const saveAll = () => inputs[0]?.collectAndSave();
+                        actions.append(
+                            makeBtn('重新分析', false, () => { modal?.close(); openPreviewModal(index, true).catch((error) => ctx.log('分析失败', error)); }),
+                            makeBtn('导出 WAV', false, () => { saveAll(); modal?.close(); exportWav(index); }),
+                            makeBtn('保存并播放', true, () => { saveAll(); modal?.close(); unlock(); speak(index).catch((error) => ctx.log('角色语音失败', error)); })
+                        );
+                        body.append(datalist, hint, list, actions);
+                    }
+                });
+            }
 
             // ---- 状态悬浮窗：聊天页右下角，能拖动、能收起成小圆点，位置记在这台设备上 ----
             let widget = null;
+            let widgetPlacedAfterShow = false;
             const widgetVisible = () => get('widget') === '1' && ctx.app.get('currentView') === 'chat' && !!characterId();
             function saveWidgetState() {
                 const rect = widget.getBoundingClientRect();
@@ -1519,8 +2063,9 @@ ${translate ? `
                 } catch (_) { /* storage blocked */ }
             }
             function placeWidget(x, y) {
-                const width = widget.offsetWidth || 220;
-                const height = widget.offsetHeight || 100;
+                const folded = widget.classList.contains('is-folded');
+                const width = widget.offsetWidth || (folded ? 42 : 220);
+                const height = widget.offsetHeight || (folded ? 42 : 100);
                 const left = Math.min(Math.max(4, x), Math.max(4, innerWidth - width - 4));
                 const top = Math.min(Math.max(4, y), Math.max(4, innerHeight - height - 4));
                 Object.assign(widget.style, { left: `${left}px`, top: `${top}px`, right: 'auto', bottom: 'auto' });
@@ -1528,7 +2073,7 @@ ${translate ? `
             // 按住拖动；没怎么动就算点击。
             function draggable(handle, onClick) {
                 handle.addEventListener('pointerdown', (event) => {
-                    if (event.button !== 0 || event.target.closest('[data-collapse], [data-settings]')) return;
+                    if (event.button !== 0 || event.target.closest('[data-collapse], [data-settings], [data-preview]')) return;
                     const rect = widget.getBoundingClientRect();
                     const start = { x: event.clientX, y: event.clientY };
                     let moved = false;
@@ -1566,7 +2111,7 @@ ${translate ? `
                 widget.innerHTML = `
                     <button type="button" class="rph-voice-widget__dot" data-expand title="角色语音" aria-label="展开角色语音"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">${ICON_TALK}</svg></button>
                     <div class="rph-voice-widget__card">
-                        <div class="rph-voice-widget__head" data-drag><strong>角色语音</strong><span class="rph-voice-widget__tools"><button type="button" class="rph-voice-widget__fold" data-settings title="角色语音设置" aria-label="角色语音设置">${icon(GEAR_PATHS, 'w-4 h-4')}</button><button type="button" class="rph-voice-widget__fold" data-collapse title="收起" aria-label="收起">－</button></span></div>
+                        <div class="rph-voice-widget__head" data-drag><strong>角色语音</strong><span class="rph-voice-widget__tools"><button type="button" class="rph-voice-widget__fold" data-preview title="预览与编辑配音" aria-label="预览与编辑配音">${icon([LIST_PATH], 'w-4 h-4')}</button><button type="button" class="rph-voice-widget__fold" data-settings title="角色语音设置" aria-label="角色语音设置">${icon(GEAR_PATHS, 'w-4 h-4')}</button><button type="button" class="rph-voice-widget__fold" data-collapse title="收起" aria-label="收起">－</button></span></div>
                         <p class="rph-voice-widget__status" data-status></p>
                         <div class="rph-voice-widget__actions">
                             <button type="button" class="modal-secondary-button rph-ui-button" data-analyze>分析</button>
@@ -1584,9 +2129,19 @@ ${translate ? `
                 if (saved?.folded) widget.classList.add('is-folded');
                 if (Number.isFinite(saved?.x) && Number.isFinite(saved?.y)) placeWidget(saved.x, saved.y);
                 draggable(widget.querySelector('[data-drag]'));
-                draggable(widget.querySelector('[data-expand]'), () => setFolded(false));
+                const expandBtn = widget.querySelector('[data-expand]');
+                draggable(expandBtn, () => setFolded(false));
+                expandBtn.addEventListener('keydown', (event) => {
+                    if (event.key !== 'Enter' && event.key !== ' ') return;
+                    event.preventDefault();
+                    setFolded(false);
+                });
                 widget.querySelector('[data-collapse]').onclick = () => setFolded(true);
                 widget.querySelector('[data-settings]').onclick = () => openSettings();
+                widget.querySelector('[data-preview]').onclick = () => {
+                    const index = lastReplyIndex();
+                    if (index >= 0) openPreviewModal(index).catch((error) => ctx.log('打开预览失败', error));
+                };
                 widget.querySelector('[data-analyze]').onclick = () => {
                     const index = lastReplyIndex();
                     if (index >= 0) analyze(index, true).catch((error) => ctx.log('分析失败', error));
@@ -1608,6 +2163,10 @@ ${translate ? `
                 const root = ensureWidget();
                 root.hidden = !widgetVisible();
                 if (root.hidden) return;
+                if (!widgetPlacedAfterShow) {
+                    widgetPlacedAfterShow = true;
+                    if (root.style.left) placeWidget(parseFloat(root.style.left), parseFloat(root.style.top));
+                }
                 if (store.card !== characterId()) loadStore().then(renderWidget, () => {});
                 const status = root.querySelector('[data-status]');
                 const analyzeButton = root.querySelector('[data-analyze]');
@@ -1668,7 +2227,12 @@ ${translate ? `
 
             // 监听值用字符串：返回数组的话每次都算「变了」。
             ctx.app.watch(() => `${characterId()}\n${ctx.app.get('currentView')}`, (value, previous = '') => {
-                if (session && value.split('\n')[0] !== previous.split('\n')[0]) stop();
+                const [nextCard] = value.split('\n');
+                const [prevCard] = previous.split('\n');
+                if (nextCard !== prevCard) {
+                    abortAnalyses(prevCard);
+                    if (session) stop();
+                }
                 closePopover();
                 renderWidget();
                 loadStore().then(markAll, () => {});
@@ -1725,15 +2289,15 @@ ${translate ? `
                 return [...found.values()].sort((a, b) => score(b) - score(a)).slice(0, 8).map(toVoice);
             }
 
-            // 分析用的模型列表：和 RPH 自己获取模型一样，用站点的 AI 接口和密钥去取，去掉嵌入模型。
+            // 分析用的模型列表：和 RPH 自己获取模型一样，用站点的 AI 接口去取（本地无密钥接口也允许），去掉嵌入模型。
             let models = null;
             async function listModels() {
                 const settings = ctx.app.get('settings') || {};
                 const endpoint = globalThis.RPHubApiUtils?.buildApiEndpoint;
                 const client = globalThis.RPHubApiClient;
                 if (!endpoint || !client?.requestJson) throw new Error('当前版本的 RPH 不支持获取模型列表');
+                if (!String(settings.apiUrl || '').trim()) throw new Error('请先在 RPH 设置中填写 AI 接口地址');
                 const apiKey = String(settings.apiKey || '').trim();
-                if (!apiKey) throw new Error('请先在 RPH 设置中填写 AI 接口密钥');
                 const data = await client.requestJson({ url: endpoint(settings.apiUrl, 'models'), apiKey });
                 return (data?.data || []).map((model) => String(model?.id || '')).filter((id) => id && !/embedding/i.test(id));
             }
@@ -1806,11 +2370,35 @@ ${translate ? `
             function renderSettings(body) {
                 let selects = [];
                 let castSelects = []; // 配音表每行的语言下拉框，重画配音表时先拆掉
+                let sampleUrl = '';
+                let sampleAbort = null;
+                let sampleOwner = null;
+                let sampleTurn = 0;
+                const stopSample = () => {
+                    sampleTurn += 1;
+                    sampleAbort?.abort();
+                    sampleAbort = null;
+                    if (sampleOwner) {
+                        sampleOwner.textContent = '试听';
+                        sampleOwner.disabled = false;
+                        sampleOwner = null;
+                    }
+                    preview.pause();
+                    preview.removeAttribute('src');
+                    preview.load();
+                    if (sampleUrl) {
+                        URL.revokeObjectURL(sampleUrl);
+                        sampleUrl = '';
+                    }
+                };
+                preview.onended = preview.onerror = () => stopSample();
                 const paint = () => {
+                    stopSample();
                     selects.forEach((item) => item.unmount());
                     // 样式类名见 WORKSHOP-MOD-GUIDE.md「面板样式」，跟随页面主题和深色模式。
                     // 密钥框不用 type=password：浏览器会把它当成网站登录密码，配音表一重画就弹「要更新密码吗」，点了还会把站点密码换成语音接口的密钥。
                     const fish = isFish();
+                    const customFish = get('fishModel') === '__custom__';
                     const SECRET = 'data-1p-ignore data-lpignore="true" style="-webkit-text-security:disc"';
                     const card = (title, paths, content, note = '') => `<div class="settings-card">
                         <div class="settings-card__header"><div class="settings-card__title">${icon(paths, 'w-5 h-5 mr-2')}${title}${note}</div></div>
@@ -1820,9 +2408,12 @@ ${translate ? `
                     const toggle = (key, label) => `<div class="rph-ui-field"><label class="rph-ui-check" style="white-space:normal"><input type="checkbox" class="settings-toggle-input sr-only" data-k="${key}"><span class="settings-toggle" style="flex-shrink:0"></span><span>${label}</span></label></div>`;
                     const range = (key, label, min, max) => `<label class="rph-ui-field"><span>${label} <span data-show="${key}"></span></span><input type="range" min="${min}" max="${max}" step="0.05" class="${RANGE_CLASS}" data-k="${key}"></label>`;
                     body.innerHTML = card('语音接口', [SPEAKER_PATH], select('provider', '接口', [['fish', 'Fish Audio'], ['openai', 'OpenAI 兼容接口']]) + (fish
-                        ? text('fishUrl', '接口地址', '留空使用官方地址，或填写中转地址')
-                            + text('fishKey', '密钥', '官方密钥在 fish.audio 获取', SECRET)
-                            + select('fishModel', '模型', [['fish-audio/s2.1-pro-free', 'S2.1 Pro 免费版'], ['fish-audio/s2.1-pro', 'S2.1 Pro（按字数收费）']])
+                        ? select('fishProtocol', '接口格式', [['compat', 'OpenAI 兼容格式'], ['native', 'Fish 原生格式（/v1/tts）']])
+                            + text('fishUrl', '接口地址', '留空使用官方地址，或填写中转地址')
+                            + text('fishKey', '密钥', '官方密钥在 fish.audio 获取（无认证自建可留空）', SECRET)
+                            + select('fishModel', '模型', [['fish-audio/s2.1-pro-free', 'S2.1 Pro 免费版'], ['fish-audio/s2.1-pro', 'S2.1 Pro（按字数收费）'], ['__custom__', '自定义模型…']])
+                            + (customFish ? text('fishCustomModel', '自定义模型名', '如 s1、speech-1.6 或中转配置的模型名') : '')
+                            + select('fishFormat', '音频格式', [['mp3', 'mp3'], ['wav', 'wav（不压缩，体积大）']])
                         : select('openaiTemplate', '常用提供商', TEMPLATES.map((item) => [item.id, item.label]))
                             + text('openaiUrl', '接口地址', 'https://…，可填域名或 /v1 地址')
                             + text('openaiKey', '密钥', '无需密钥的接口可留空', SECRET)
@@ -1838,6 +2429,10 @@ ${translate ? `
                         ${toggle('continuous', '连续播放')}
                         ${toggle('userLines', '播放用户台词')}
                         ${toggle('widget', '显示悬浮窗')}
+                        ${toggle('follow', '播放时跟随滚动到正在念的句子')}
+                        ${toggle('hotkeys', '快捷键（Alt+P 播放/暂停，Alt+S 停止，Alt+[/] 上下句）')}
+                        ${toggle('persistCache', '本地持久缓存合成音频（刷新后免重复扣费）')}
+                        <div class="rph-ui-actions" style="justify-content:flex-end;margin:-0.25rem 0 0.75rem"><button type="button" class="modal-secondary-button rph-ui-button" data-clear-audio>清空音频缓存</button></div>
                         ${range('volume', '音量', 0, 1)}
                         ${range('speed', '语速', 0.5, 2)}`)
                         + card('读音替换', [SWAP_PATH], '<div data-rules></div><div class="rph-ui-actions" style="margin-top:0.75rem"><button type="button" class="modal-secondary-button rph-ui-button" data-add-rule>添加</button></div>')
@@ -1846,11 +2441,17 @@ ${translate ? `
                             <div class="rph-ui-actions" style="margin-top:0.75rem"><input class="rph-ui-input" data-new-person placeholder="人物名称" style="flex:1;min-width:0"><button type="button" class="modal-secondary-button rph-ui-button" data-add-person>添加人物</button></div>`,
                         '<span class="rph-ui-muted" style="margin-left:0.5rem;font-weight:400" data-card-name></span>');
                     body.querySelector('[data-card-name]').textContent = character().name ? `当前角色卡：${character().name}` : '请先打开角色卡';
+                    body.querySelector('[data-clear-audio]').onclick = async () => {
+                        cache.clear();
+                        await dbClearAudio();
+                        ctx.ui.toast('音频缓存已清空', { kind: 'info' });
+                    };
 
                     // 分析用的模型：从站点的 AI 接口取模型列表（和 RPH 自己获取模型一样，去掉嵌入模型），这次打开页面只取一次。
                     const modelSelect = body.querySelector('[data-k="analysisModel"]');
                     const modelsNote = body.querySelector('[data-models-note]');
                     const fillModels = () => {
+                        if (!body.isConnected || !modelSelect.isConnected) return;
                         const saved = get('analysisModel');
                         const list = models || [];
                         modelSelect.replaceChildren(new Option('跟随 RPH 分析模型（未设置时使用主模型）', ''), ...list.map((id) => new Option(id, id)));
@@ -1861,8 +2462,10 @@ ${translate ? `
                         modelsNote.textContent = '正在获取模型列表…';
                         try {
                             models = await listModels();
+                            if (!body.isConnected || !modelsNote.isConnected) return;
                             modelsNote.textContent = `共 ${models.length} 个模型`;
                         } catch (error) {
+                            if (!body.isConnected || !modelsNote.isConnected) return;
                             modelsNote.textContent = `获取模型列表失败：${error?.message || error}`;
                         }
                         fillModels();
@@ -1873,6 +2476,7 @@ ${translate ? `
 
                     // 设置项改了立即保存。换接口、换常用提供商后重画：下面的设置项跟着变。
                     const SHOW = { volume: (value) => `${Math.round(value * 100)}%`, speed: (value) => `${Number(value).toFixed(2)}x` };
+                    const WIDGET_KEYS = new Set(['widget', 'userLines', 'analyzeMode']);
                     body.querySelectorAll('[data-k]').forEach((field) => {
                         const key = field.dataset.k;
                         const value = () => (field.type === 'checkbox' ? (field.checked ? '1' : '0') : field.value);
@@ -1880,15 +2484,27 @@ ${translate ? `
                             if (SHOW[key]) body.querySelector(`[data-show="${key}"]`).textContent = SHOW[key](field.value);
                         };
                         const save = () => {
-                            ctx.storage.set(key, value());
-                            if (key === 'openaiTemplate') {
-                                const { url, model, tone, format = 'mp3' } = template();
-                                Object.entries({ openaiUrl: url, openaiModel: model, openaiTone: tone, openaiFormat: format, openaiVoice: '' }).forEach(([name, next]) => ctx.storage.set(name, next));
+                            const prev = get(key);
+                            const next = value();
+                            ctx.storage.set(key, next);
+                            if (key === 'provider') {
+                                switchProviderCast(prev, next);
+                                return paint();
                             }
-                            if (key === 'provider' || key === 'openaiTemplate') return paint();
+                            if (key === 'openaiTemplate') {
+                                const { url, model, tone, format = 'mp3', voices: presets = [] } = template();
+                                Object.entries({ openaiUrl: url, openaiModel: model, openaiTone: tone, openaiFormat: format, openaiVoice: '' }).forEach(([name, v]) => ctx.storage.set(name, v));
+                                const stale = readCast().filter((person) => person.id && (person.provider || 'fish') === 'openai' && (!presets.length || !presets.includes(person.id)));
+                                if (stale.length) ctx.ui.toast(`已切换预设；配音表中 ${stale.length} 位人物的旧声音名可能不兼容，可在下方重新选择`, { kind: 'info' });
+                                return paint();
+                            }
+                            if (key === 'fishModel' && (prev === '__custom__' || next === '__custom__')) return paint();
                             show();
                             tune();
-                            renderWidget();
+                            if (WIDGET_KEYS.has(key)) {
+                                if (key === 'userLines') markAll();
+                                renderWidget();
+                            }
                         };
                         if (field.type === 'checkbox') field.checked = get(key) === '1'; else field.value = get(key);
                         show();
@@ -1949,27 +2565,64 @@ ${translate ? `
                         rulesBox.querySelector('div:last-child input')?.focus();
                     };
 
-                    // 配音表：每行一个人物，选声音念什么语言，可以 AI 推荐、自己搜或填声音名、试听、删除。
+                    // 配音表：每行一个人物，选声音念什么语言，可以 AI 推荐、自己搜或填声音名、试听、恢复默认、删除。
                     const castBox = body.querySelector('[data-cast]');
-                    // 试听：声音自带试听就放它的；没有就用现在的接口合成一句（同一句再点不重复合成）。
-                    let sampleUrl = '';
-                    const playSample = async (voice) => {
+                    // 试听：声音自带试听就放它的；没有就用现在的接口合成一句；再次点同一按钮停止，切页/关窗自动停。
+                    const playSample = async (voice, button) => {
+                        const same = button && sampleOwner === button;
+                        stopSample();
+                        if (same) return;
+                        const turn = sampleTurn;
+                        const controller = sampleAbort = new AbortController();
+                        sampleOwner = button || null;
+                        if (button) {
+                            button.textContent = '加载中…';
+                            button.disabled = true;
+                        }
                         try {
                             const sample = voiceOf(voice) && voice.sample;
-                            if (!sample) {
-                                URL.revokeObjectURL(sampleUrl);
-                                sampleUrl = URL.createObjectURL(await synthesize({ text: SAMPLES[voice.lang] || SAMPLE, voice: voiceOf(voice), tone: '' }, new AbortController().signal));
+                            let src = sample;
+                            if (!src) {
+                                const config = captureConfig();
+                                const invalid = validateConfig(config);
+                                if (invalid) throw new Error(invalid);
+                                const { blob } = await synthesize({ text: SAMPLES[voice.lang] || SAMPLE, voice: voiceOf(voice), tone: '' }, controller.signal, config);
+                                if (turn !== sampleTurn || !body.isConnected) return;
+                                sampleUrl = URL.createObjectURL(blob);
+                                src = sampleUrl;
                             }
-                            preview.src = sample || sampleUrl;
+                            if (turn !== sampleTurn || !body.isConnected) return;
+                            preview.src = src;
+                            tune();
+                            if (button) {
+                                button.textContent = '停止';
+                                button.disabled = false;
+                            }
                             await preview.play();
                         } catch (error) {
-                            ctx.ui.toast(`试听失败：${error?.message || error}`);
+                            if (turn === sampleTurn) stopSample();
+                            if (error?.name !== 'AbortError') ctx.ui.toast(`试听失败：${error?.message || error}`);
                         }
                     };
                     // 选了声音，这个人就念这个声音的语言；声音没带语言的（填的名字、私有声音）不动他原来选的。
                     const assign = (name, voice) => {
                         saveCast(readCast().map((person) => (person.name === name
                             ? { ...person, id: voice.id, title: voice.title, sample: voice.sample, provider: fish ? undefined : 'openai', lang: voice.lang || person.lang } : person)));
+                        if (body.isConnected) renderCast();
+                    };
+                    const clearVoice = (name) => {
+                        saveCast(readCast().map((person) => {
+                            if (person.name !== name) return person;
+                            const next = { name: person.name };
+                            if (person.lang) next.lang = person.lang;
+                            return next;
+                        }));
+                        const stash = readJson(stashKey(), {});
+                        const cur = get('provider');
+                        if (stash[cur]?.[name]) {
+                            delete stash[cur][name];
+                            ctx.storage.set(stashKey(), JSON.stringify(stash));
+                        }
                         renderCast();
                     };
                     // 一个候选声音：写着它的语言和标签，能试听、选用。
@@ -1979,11 +2632,13 @@ ${translate ? `
                         const main = element('div', 'rph-ui-row-main');
                         main.append(element('strong', '', voice.title), element('div', 'rph-ui-muted', [LANGS[voice.lang], ...voice.tags].filter(Boolean).join(' · ')));
                         const actions = element('div', 'rph-ui-row-actions');
-                        actions.append(smallButton('试听', () => playSample(voice)), smallButton('使用', () => assign(name, voice)));
+                        const tryBtn = smallButton('试听', () => playSample(voice, tryBtn));
+                        actions.append(tryBtn, smallButton('使用', () => assign(name, voice)));
                         row.append(main, actions);
                         return row;
                     };
                     const showVoices = (area, name, voices, note = '') => {
+                        if (!area || !area.isConnected) return;
                         area.replaceChildren();
                         if (note) area.appendChild(element('p', 'rph-ui-muted', note));
                         if (!voices.length) area.appendChild(element('p', 'rph-ui-muted', '未找到合适的声音，请尝试手动搜索。'));
@@ -2001,9 +2656,11 @@ ${translate ? `
                         const scope = languageSelect('全部语言', language || 'zh', () => load(true));
                         const results = element('div');
                         let page = 0;
+                        let searchTurn = 0;
                         const more = smallButton('加载更多', () => load(false));
                         more.style.marginTop = '0.5rem';
                         const load = async (fresh) => {
+                            const mine = searchTurn += 1;
                             if (fresh) {
                                 page = 0;
                                 results.replaceChildren(element('p', 'rph-ui-muted', '搜索中…'));
@@ -2013,18 +2670,22 @@ ${translate ? `
                                 const text = input.value.trim();
                                 const id = text.match(/(?:^|\/m\/)([0-9a-f]{32})\b/i)?.[1];
                                 const { voices, total } = id ? { voices: [await lookupVoice(id)], total: 1 } : await searchPage(text, page + 1, scope.select.value);
+                                if (mine !== searchTurn || !results.isConnected) return;
                                 page += 1;
                                 if (fresh) results.replaceChildren(element('p', 'rph-ui-muted', total ? `共 ${total} 个声音` : '未找到相关声音，请更换关键词。'));
                                 more.remove();
                                 voices.forEach((voice) => results.appendChild(voiceRow(name, voice)));
                                 if (page * PAGE_SIZE < total) results.appendChild(more);
                             } catch (error) {
-                                results.replaceChildren(element('p', 'rph-ui-muted', error?.message || String(error)));
+                                if (mine !== searchTurn || !results.isConnected) return;
+                                const message = error?.message || String(error);
+                                if (fresh) results.replaceChildren(element('p', 'rph-ui-muted', message));
+                                else ctx.ui.toast(`加载更多失败：${message}`);
                             } finally {
-                                more.disabled = false;
+                                if (mine === searchTurn) more.disabled = false;
                             }
                         };
-                        input.onkeydown = (event) => { if (event.key === 'Enter') load(true); };
+                        input.onkeydown = (event) => { if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) load(true); };
                         form.append(input, scope.box, smallButton('搜索', () => load(true)));
                         area.append(form, results);
                         input.focus();
@@ -2038,7 +2699,7 @@ ${translate ? `
                         const input = element('input', 'rph-ui-input');
                         input.placeholder = '声音名称，按接口文档填写';
                         input.style.cssText = 'flex:1;min-width:0';
-                        input.onkeydown = (event) => { if (event.key === 'Enter' && !event.isComposing) pick(input.value.trim()); };
+                        input.onkeydown = (event) => { if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) pick(input.value.trim()); };
                         form.append(input, smallButton('使用', () => pick(input.value.trim())));
                         const presets = element('div', 'rph-ui-actions');
                         presets.style.cssText = 'justify-content:flex-start;flex-wrap:wrap;margin-top:0.5rem';
@@ -2056,28 +2717,48 @@ ${translate ? `
                             const row = element('div', 'rph-ui-row');
                             row.dataset.person = person.name;
                             const main = element('div', 'rph-ui-row-main');
-                            main.append(element('strong', '', person.name), element('div', 'rph-ui-muted', voiceOf(person) ? person.title || person.id : `${fish ? 'Fish ' : ''}默认声音`));
+                            const hasCurrent = !!voiceOf(person);
+                            main.append(element('strong', '', person.name), element('div', 'rph-ui-muted', hasCurrent ? person.title || person.id : `${fish ? 'Fish ' : ''}默认声音`));
                             const actions = element('div', 'rph-ui-row-actions');
                             const area = element('div');
                             area.dataset.pick = person.name;
                             area.style.marginBottom = '0.5rem';
                             // 这个人的声音念什么语言：选声音时跟着声音带过来，也可以在这里改。和正文不是一种语言时，分析会把他的台词译过去再念。
-                            const lang = languageSelect('与正文相同', person.lang, () => saveCast(readCast().map((item) => (item.name === person.name ? { ...item, lang: lang.select.value || undefined } : item))));
+                            const lang = languageSelect('与正文相同', person.lang, () => {
+                                saveCast(readCast().map((item) => (item.name === person.name ? { ...item, lang: lang.select.value || undefined } : item)));
+                                markAll();
+                                renderWidget();
+                            });
                             lang.box.title = '声音语言';
                             actions.append(lang.box);
-                            if (!fish) actions.append(smallButton('选择声音', () => nameBox(area, person.name)));
-                            else actions.append(smallButton('AI 推荐', async () => {
-                                area.replaceChildren(element('p', 'rph-ui-muted', '推荐中…'));
-                                try {
-                                    const { voices, reason } = await aiPick(person.name, lang.select.value || 'zh');
-                                    if (voices[0]) assign(person.name, voices[0]);
-                                    const fresh = castBox.querySelector(`[data-pick="${CSS.escape(person.name)}"]`);
-                                    showVoices(fresh, person.name, voices, voices[0] ? `已选「${voices[0].title}」。${reason}` : reason);
-                                } catch (error) {
-                                    area.replaceChildren(element('p', 'rph-ui-muted', `推荐失败：${error?.message || error}`));
-                                }
-                            }), smallButton('搜索', () => searchBox(area, person.name, lang.select.value)));
-                            actions.append(smallButton('试听', () => playSample(person)), smallButton('删除', () => {
+                            if (!fish) {
+                                actions.append(smallButton('选择声音', () => nameBox(area, person.name)));
+                            } else {
+                                const aiBtn = smallButton('AI 推荐', async () => {
+                                    const startCard = characterId();
+                                    aiBtn.disabled = true;
+                                    area.replaceChildren(element('p', 'rph-ui-muted', '推荐中…'));
+                                    try {
+                                        const { voices, reason } = await aiPick(person.name, lang.select.value || 'zh');
+                                        if (!body.isConnected || characterId() !== startCard) return;
+                                        if (!readCast().some((item) => item.name === person.name)) return;
+                                        if (voices[0]) assign(person.name, voices[0]);
+                                        const fresh = castBox.querySelector(`[data-pick="${CSS.escape(person.name)}"]`);
+                                        if (fresh) showVoices(fresh, person.name, voices, voices[0] ? `已选「${voices[0].title}」。${reason}` : reason);
+                                    } catch (error) {
+                                        if (body.isConnected && characterId() === startCard && area.isConnected) {
+                                            area.replaceChildren(element('p', 'rph-ui-muted', `推荐失败：${error?.message || error}`));
+                                        }
+                                    } finally {
+                                        aiBtn.disabled = false;
+                                    }
+                                });
+                                actions.append(aiBtn, smallButton('搜索', () => searchBox(area, person.name, lang.select.value)));
+                            }
+                            const tryBtn = smallButton('试听', () => playSample(person, tryBtn));
+                            actions.append(tryBtn);
+                            if (hasCurrent) actions.append(smallButton('恢复默认', () => clearVoice(person.name)));
+                            actions.append(smallButton('删除', () => {
                                 saveCast(readCast().filter((item) => item.name !== person.name));
                                 renderCast();
                             }));
@@ -2087,19 +2768,24 @@ ${translate ? `
                     }
                     renderCast();
                     const newPerson = body.querySelector('[data-new-person]');
-                    body.querySelector('[data-add-person]').onclick = () => {
+                    const addPerson = () => {
                         const name = newPerson.value.trim();
+                        if (!name) return;
+                        if (name === NARRATOR) return ctx.ui.toast('旁白不需要加入配音表', { kind: 'info' });
                         const people = readCast();
-                        if (!name || name === NARRATOR || people.some((person) => person.name === name)) return;
+                        if (people.some((person) => person.name === name)) return ctx.ui.toast(`「${name}」已在配音表中`, { kind: 'info' });
                         saveCast([...people, { name }]);
                         newPerson.value = '';
                         renderCast();
                     };
+                    newPerson.onkeydown = (event) => { if (event.key === 'Enter' && !event.isComposing && event.keyCode !== 229) addPerson(); };
+                    body.querySelector('[data-add-person]').onclick = addPerson;
                 };
                 paint();
                 let stopWatch = null;
                 stopWatch = ctx.app.watch(() => characterId(), () => (body.isConnected ? paint() : stopWatch?.()));
                 return () => {
+                    stopSample();
                     stopWatch?.();
                     [...selects, ...castSelects].forEach((item) => item.unmount());
                 };

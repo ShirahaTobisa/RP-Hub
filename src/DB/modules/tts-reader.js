@@ -15,7 +15,7 @@
     const RANGE_CLASS = 'compact-range w-full h-1.5 bg-primary-100 rounded-lg appearance-none cursor-pointer accent-primary-500';
 
     RPHubSDK.register({
-        id: 'tts-reader', name: '朗读', version: '1.0.2', requiresApi: 4,
+        id: 'tts-reader', name: '朗读', version: '1.1.0', requiresApi: 4,
         init(ctx) {
             const synth = window.speechSynthesis;
             if (!synth || typeof window.SpeechSynthesisUtterance !== 'function') {
@@ -50,12 +50,24 @@
             }
 
             const plain = (el) => el.textContent.replace(/\s+/g, ' ').trim();
-            // 一个块里没有句号问号、也没有引号，却有数字、冒号或竖线，多半是状态栏（「好感度：80/100」）。
-            const looksLikeStatus = (text) => text.length < 300 && !/[。！？!?…“”「」『』"]/.test(text) && /[\d:：|｜]/.test(text);
+            // 只把带明确属性/状态标签的短块当成状态栏，含数字或冒号的普通叙述保留。
+            const looksLikeStatus = (text) => text.length <= 80 && !/[。！？!?，,；;]|\.(?:\s|$)/.test(text)
+                && /^(?:好感(?:度)?|信任(?:度)?|体力|精力|生命(?:值)?|魔力|HP|MP|TIME|时间|日期|位置|地点|等级|金钱|余额|状态|SAN|理智|心情)\s*(?:[:：=]\s*\S|[-+]?\d)/i.test(text);
+
+            // 判断文本在当前位置是否处在尚未闭合的引号对白内（用于保护引号里的斜体强调不被当成动作删掉）。
+            function insideQuote(text) {
+                const openPairs = [['“', '”'], ['「', '」'], ['『', '』']];
+                for (const [open, close] of openPairs) {
+                    const lastOpen = text.lastIndexOf(open);
+                    if (lastOpen >= 0 && lastOpen > text.lastIndexOf(close)) return true;
+                }
+                const quotes = (text.match(/"/g) || []).length;
+                return quotes % 2 === 1;
+            }
 
             function clean(text, opts) {
                 text = text.replace(/(?:rph-image-marker|image)###[\s\S]*?###/g, '')
-                    .replace(/[ \t ]+/g, ' ')
+                    .replace(/[ \t\u00a0]+/g, ' ')
                     .replace(/\s*\n\s*/g, '\n');
                 if (opts.skipParens) text = text.replace(/（[^）]*）|\([^)\n]*\)/g, '');
                 if (opts.skipActions) text = text.replace(/\*[^*\n]+\*/g, '');
@@ -76,7 +88,7 @@
                         return;
                     }
                     if (node.nodeType !== Node.ELEMENT_NODE || node.matches(SKIP) || skipped.has(signature(node))) return;
-                    if (opts.skipActions && node.matches('em, i')) return;
+                    if (opts.skipActions && node.matches('em, i') && !(last?.el === block && insideQuote(last.text))) return;
                     if (node.tagName === 'BR') {
                         if (last) last.text += '\n';
                         return;
@@ -103,12 +115,13 @@
                 return [...kinds.values()];
             }
 
-            // 按段落、句子切成不超过 LIMIT 字的小段；太长的句子再按逗号切。
+            // 按段落、句子切成不超过 LIMIT 字的小段（保留句首省略号、支持英文句号）；太长的句子再按逗号切。
             function splitText(text) {
                 const out = [];
                 for (const paragraph of text.split('\n')) {
                     let current = '';
-                    for (const sentence of paragraph.match(/[^。！？!?…]+[。！？!?…”」』"]*/g) || []) {
+                    const sentences = paragraph.match(/(?:[^。！？!?….]+|\.(?!\s|$)|…+)+[。！？!?…”」』"]*(?:\.(?=\s|$)[”"]?)?/g) || (paragraph ? [paragraph] : []);
+                    for (const sentence of sentences) {
                         for (const piece of sentence.length > LIMIT ? sentence.match(/[^，,；;、]+[，,；;、]*/g) || [sentence] : [sentence]) {
                             for (let i = 0; i < piece.length; i += LIMIT) {
                                 const part = piece.slice(i, i + LIMIT);
@@ -135,17 +148,27 @@
 
             function speakPart(text, voice, current) {
                 return new Promise((resolve) => {
+                    let settled = false;
+                    const finish = () => {
+                        if (settled) return;
+                        settled = true;
+                        clearTimeout(timer);
+                        utterance.onend = utterance.onerror = null;
+                        resolve();
+                    };
                     const utterance = new SpeechSynthesisUtterance(text);
                     utterance.lang = voice?.lang || 'zh-CN';
                     if (voice) utterance.voice = voice;
                     utterance.rate = Number(get('rate')) || 1;
                     utterance.pitch = Number(get('pitch')) || 1;
-                    // 有的浏览器偶尔不发结束事件，按字数给个上限，免得后面的句子卡住。
-                    const timer = setTimeout(resolve, 3000 + text.length * 600 / utterance.rate);
-                    utterance.onend = utterance.onerror = () => {
-                        clearTimeout(timer);
-                        resolve();
-                    };
+                    // 有的浏览器偶尔不发结束事件，超时后先 cancel 清掉卡住的队列项，免得后面的句子一直排队不动。
+                    const timer = setTimeout(() => {
+                        if (!settled && !current.stopped) {
+                            try { synth.cancel(); } catch (_) { /* ignore */ }
+                        }
+                        finish();
+                    }, 3000 + text.length * 600 / utterance.rate);
+                    utterance.onend = utterance.onerror = finish;
                     current.utterance = utterance; // 留着引用：Chrome 会回收没人引用的句子，结束事件就不来了
                     synth.speak(utterance);
                 });
@@ -153,6 +176,8 @@
 
             async function speak(list, index) {
                 stop();
+                // 通知其他语音插件（如「角色语音」）停下，避免同时出声。
+                try { window.dispatchEvent(new CustomEvent('rph:voice-start', { detail: { source: 'tts-reader' } })); } catch (_) { /* ignore */ }
                 const current = session = { index, stopped: false };
                 refreshButtons();
                 const voice = pickVoice();
@@ -221,6 +246,10 @@
             });
 
             ctx.app.watch(() => ctx.app.get('currentCharacter')?.uuid, () => { if (session) stop(); });
+            addEventListener('pagehide', () => { if (session) stop(); });
+            addEventListener('rph:voice-start', (event) => {
+                if (event?.detail?.source && event.detail.source !== 'tts-reader' && session) stop();
+            });
             refreshButtons();
 
             ctx.ui.addComposerButton({
@@ -239,14 +268,14 @@
             function styledSelect(select) {
                 const Component = window.RPHubCustomSelect;
                 const Vue = globalThis.Vue;
-                if (!select || !Component || !Vue?.createApp) return;
+                if (!select || !Component || !Vue?.createApp) return { unmount() {} };
                 const view = Vue.reactive({ value: '', options: [] });
                 const sync = () => Object.assign(view, {
                     value: select.value,
                     options: [...select.options].map((option) => ({ value: option.value, label: option.textContent, disabled: option.disabled }))
                 });
                 const host = document.createElement('div');
-                Vue.createApp({
+                const app = Vue.createApp({
                     render: () => Vue.h(Component, {
                         modelValue: view.value, options: view.options, buttonClass: 'rph-ui-input', menuClass: 'text-sm',
                         'onUpdate:modelValue': (value) => {
@@ -255,11 +284,19 @@
                             select.dispatchEvent(new Event('change', { bubbles: true }));
                         }
                     })
-                }).mount(host);
+                });
+                app.mount(host);
                 select.hidden = true;
                 select.after(host);
-                new MutationObserver(sync).observe(select, { childList: true, subtree: true, attributes: true });
+                const observer = new MutationObserver(sync);
+                observer.observe(select, { childList: true, subtree: true, attributes: true });
                 sync();
+                return {
+                    unmount() {
+                        observer.disconnect();
+                        app.unmount();
+                    }
+                };
             }
 
             ctx.ui.addSidebarEntry({
@@ -273,7 +310,7 @@
                             const range = (key, label) => `<label class="rph-ui-field"><span>${label} <span data-show="${key}"></span></span><input type="range" min="0.5" max="2" step="0.1" class="${RANGE_CLASS}" data-k="${key}"></label>`;
                             body.innerHTML = `
                                 <div class="rph-ui-field"><span>声音</span><select class="rph-ui-input" data-voice></select></div>
-                                <p class="rph-ui-muted">声音选择仅保存在本设备，电脑上使用 Edge 浏览器可选用微软自然语音。</p>
+                                <p class="rph-ui-muted">声音选择仅保存在本设备，中文声音优先排在前面，也可选其他语言声音；电脑上使用 Edge 浏览器可选用微软自然语音。</p>
                                 ${range('rate', '语速')}
                                 ${range('pitch', '音调')}
                                 ${toggle('data-k="autoRead"', '自动朗读')}
@@ -295,7 +332,8 @@
                             const fillVoices = () => {
                                 if (!select.isConnected && select.options.length) return synth.removeEventListener?.('voiceschanged', fillVoices);
                                 const all = synth.getVoices();
-                                const list = all.some(isChinese) ? all.filter(isChinese) : all;
+                                // 中文声音排在前面，其余语言声音保留，方便外语角色卡选用。
+                                const list = [...all].sort((a, b) => Number(isChinese(b)) - Number(isChinese(a)));
                                 const current = pickVoice();
                                 select.innerHTML = '';
                                 if (!list.length) select.appendChild(new Option('暂无可用声音', ''));
@@ -303,7 +341,7 @@
                             };
                             fillVoices();
                             synth.addEventListener?.('voiceschanged', fillVoices);
-                            styledSelect(select);
+                            const voiceSelect = styledSelect(select);
                             select.onchange = () => {
                                 try { localStorage.setItem(VOICE_KEY, select.value); } catch (_) { /* storage blocked */ }
                             };
@@ -345,6 +383,10 @@
                                 preview.hidden = false;
                             };
                             body.querySelector('[data-try]').onclick = () => speak([{ el: null, text: '你好，这是朗读的试听。语速和音调可以在上面调整。' }], null).catch((error) => ctx.log('试听失败', error));
+                            return () => {
+                                synth.removeEventListener?.('voiceschanged', fillVoices);
+                                voiceSelect.unmount();
+                            };
                         }
                     });
                 }
