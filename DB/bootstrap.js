@@ -3565,7 +3565,7 @@
         if (state.background) showFloat({ text: `上传中… ${Math.round(state.progress)}%`, progress: state.progress });
     }
 
-    // ---- 万相广场的卡有新版本：打开角色卡管理时查一次（每天最多一次），右上角显示可更新的数量；
+    // ---- 万相广场的卡有新版本：打开角色卡管理时自动查（每天最多一次），点右上角的「检查更新」马上查；
     // 点「更新」在内嵌的万相广场打开那张卡，在那里点「导入」就原地换成新版，聊天记录不动 ----
     const FORUM_BASE = 'https://rphforum.zeabur.app';
     const CARD_UPDATES_KEY = 'rp_hub_card_updates_v1';
@@ -3574,7 +3574,7 @@
     const CARD_CLOCK_SLACK_MS = 10 * 60 * 1000;
     const CARD_UPDATE_BATCH = 5;
     let cardUpdates = null;
-    let checkingCardUpdates = false;
+    let cardCheck = null;
     let pendingCardUpdate = null;
 
     function readCardUpdates() {
@@ -3608,15 +3608,25 @@
         }).map((char) => ({ char, ...cards[char.uuid] }));
     }
 
+    // 每天自动查一次，点「检查更新」时（force）马上查；正在查就等这次查完。
+    function checkCardUpdates(force) {
+        const chars = getVueProxy()?.characters || [];
+        if (!cardCheck && chars.length && (force || Date.now() - readCardUpdates().checkedAt >= CARD_UPDATE_INTERVAL_MS)) {
+            cardCheck = queryCardUpdates(chars.filter(isForumDownload)).finally(() => {
+                cardCheck = null;
+                decorateCharactersView();
+            });
+        }
+        return cardCheck || Promise.resolve();
+    }
+
     // 本机的卡对应广场上哪张：上次认出的那张 → 简介和作者备注都一样的那张 → 只有一张同名卡时就是它。
     // 广场上的卡要在本机导入之前就有；作者改卡后要重新审核，审核期间搜不到，这时沿用上次的结果。
-    async function checkCardUpdates() {
+    // 本站接口或广场暂时不可用时，之前查到的照旧显示，并报错给「检查更新」。
+    async function queryCardUpdates(chars) {
         const state = readCardUpdates();
-        const all = getVueProxy()?.characters || [];
-        if (checkingCardUpdates || !all.length || Date.now() - state.checkedAt < CARD_UPDATE_INTERVAL_MS) return;
-        checkingCardUpdates = true;
-        const chars = all.filter(isForumDownload);
         const cards = {};
+        let failed = false;
         try {
             for (let index = 0; index < chars.length; index += CARD_UPDATE_BATCH) {
                 const batch = chars.slice(index, index + CARD_UPDATE_BATCH);
@@ -3625,6 +3635,7 @@
                 { retryCount: 0, keepPasswordOnAuthError: true });
                 batch.forEach((char, offset) => {
                     const known = state.cards[char.uuid];
+                    if (!Array.isArray(results?.[offset])) failed = true;
                     const found = (results?.[offset] || []).filter((card) => card.createdAt <= char.createdAt + CARD_CLOCK_SLACK_MS);
                     const match = found.find((card) => card.id === known?.id) || found.find((card) => card.same)
                         || (found.length === 1 ? found[0] : null);
@@ -3632,14 +3643,12 @@
                     if (entry) cards[char.uuid] = entry;
                 });
             }
-            saveCardUpdates({ checkedAt: Date.now(), cards });
-        } catch (_) {
-            // 本站接口或广场暂时不可用：明天再查，之前查到的照旧显示。
+        } catch (error) {
             saveCardUpdates({ ...state, checkedAt: Date.now() });
-        } finally {
-            checkingCardUpdates = false;
+            throw error;
         }
-        decorateCharactersView();
+        saveCardUpdates({ checkedAt: Date.now(), cards });
+        if (failed) throw new Error('万相广场暂时不可用');
     }
 
     // 在 RP-Hub 内嵌的万相广场里打开这张卡；离开广场之前在那里导入同名的卡，就原地更新这张卡。
@@ -3662,8 +3671,18 @@
         window.RPHubUI.toast('在万相广场点「导入」即可更新，聊天记录保留');
     }
 
+    // 状态栏的数值是剧情进度，接着用；作者新版里新加的变量（包括对象里新加的项）用作者给的初始值。
+    function withNewVariables(state, initial) {
+        const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+        if (state === undefined) return structuredClone(initial);
+        if (!isObject(state) || !isObject(initial)) return state;
+        const next = { ...state };
+        for (const key of Object.keys(initial)) next[key] = withNewVariables(state[key], initial[key]);
+        return next;
+    }
+
     // 和官方导入一样整理新卡，只换内容字段；角色卡编号不变，聊天记录、分支、记忆、生图记录都还在。
-    // 同名的界面模板沿用旧模板的编号和运行状态（状态栏的数值和变化记录），游戏进度不会清零。
+    // 同名的界面模板沿用旧模板的编号、变化记录和各分支的数值，游戏进度不会清零。
     async function updateCardInPlace(char, data, buffer) {
         const cards = window.RPHubCardUtils, ui = window.RPHubUiTemplateUtils, config = window.RPHubConfig;
         const imported = cards.parseImportedCharacterCard(data);
@@ -3672,7 +3691,11 @@
             const next = ui.normalizeUiTemplate({ ...ui.sanitizeUiTemplateImportEntry(template), id: window.RPHubUtils.generateUUID(), scope: 'character' });
             const old = oldTemplates.get(next.name);
             oldTemplates.delete(next.name);
-            return old ? { ...next, id: old.id, variableState: old.variableState, changeLog: old.changeLog, runtimeByCharacter: old.runtimeByCharacter } : next;
+            if (!old) return next;
+            const keep = (state) => withNewVariables(state, next.initialVariableState);
+            return { ...next, id: old.id, variableState: keep(old.variableState), changeLog: old.changeLog,
+                runtimeByCharacter: Object.fromEntries(Object.entries(old.runtimeByCharacter || {}).map(([scope, runtime]) => (
+                    [scope, { ...runtime, variableState: keep(runtime?.variableState) }]))) };
         });
         Object.assign(char, {
             name: imported.name, description: imported.description, first_mes: imported.first_mes,
@@ -3712,11 +3735,21 @@
         }, (error) => reply({ error: `更新失败：${error?.message || '请重试'}` }));
     }, true);
 
+    // 点开先查一次再列出来；查不成时也列出之前查到的。
     function openCardUpdates() {
-        window.RPHubUI.openModal({ title: '角色卡更新', size: 'sm', render(body, modal) {
+        window.RPHubUI.openModal({ title: '角色卡更新', size: 'sm', async render(body, modal) {
+            const note = document.createElement('div');
+            note.className = 'rph-ui-muted';
+            note.textContent = '正在检查…';
+            body.appendChild(note);
+            const error = await checkCardUpdates(true).then(() => null, (failure) => failure);
+            const items = outdatedCards();
+            if (error || !items.length) note.textContent = error ? `检查失败：${error.message}` : '都是最新版';
+            else note.remove();
+            if (!items.length) return;
             const list = document.createElement('div');
             list.className = 'rph-ui-list';
-            for (const { char, id, updatedAt } of outdatedCards()) {
+            for (const { char, id, updatedAt } of items) {
                 const row = document.createElement('div');
                 row.className = 'rph-ui-row';
                 row.innerHTML = '<div class="rph-ui-row-main"><div></div><div class="rph-ui-muted"></div></div><div class="rph-ui-row-actions"></div>';
@@ -3732,14 +3765,16 @@
         } });
     }
 
-    // 角色卡管理右上角（手机、电脑各一组按钮）在「添加角色卡」那组按钮最前面放一个带数字的更新按钮。
+    // 角色卡管理右上角（手机、电脑各一组按钮）在「添加角色卡」那组按钮最前面放「检查更新」，有新版本时带数字；
+    // 没有从万相广场下载的卡就不放。
     function decorateCharactersView() {
-        checkCardUpdates();
+        checkCardUpdates().catch(() => { /* 明天再查，或点「检查更新」 */ });
+        const forum = (getVueProxy()?.characters || []).some(isForumDownload);
         const count = outdatedCards().length;
-        const label = `${count} 张卡可更新`;
+        const label = count ? `${count} 张卡可更新` : '检查更新';
         for (const add of document.querySelectorAll('.character-management-header .settings-create-button')) {
             let button = add.parentElement.querySelector('[data-rph-card-updates]');
-            if (!count) {
+            if (!forum) {
                 button?.remove();
                 continue;
             }
@@ -3755,7 +3790,7 @@
             if (button.title !== label) {
                 button.title = label;
                 button.setAttribute('aria-label', label);
-                button.lastChild.textContent = count;
+                button.lastChild.textContent = count || '';
             }
         }
     }

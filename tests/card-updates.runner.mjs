@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } from './sync-195.helpers.mjs';
 
 // 万相广场的卡有新版本：打开角色卡管理时查一次，只查从广场下载的卡（头像 PNG 的 IHDR 后面紧跟 tEXt chara 块）；
-// 广场上导入之后改过的卡，右上角按钮显示数量，列表里点「更新」在内嵌的万相广场打开那张卡，在那里导入就原地换成新版：
-// 角色卡编号不变（聊天记录还在），同名的状态栏模板沿用编号和数值；只拦这一次导入，再导入照旧新建一张。
-// 不算更新的：本机已有改过之后再导入的同名卡、同名卡认不出是哪张、广场上的卡比本机导入还晚。一天之内不重复查；认出过的卡下次照旧认。
+// 广场上导入之后改过的卡，右上角「检查更新」带数字，点开马上再查一次并列出来，点「更新」在内嵌的万相广场打开那张卡，在那里导入就原地换成新版：
+// 角色卡编号不变（聊天记录还在），同名的状态栏模板沿用编号和数值、补上作者新加的变量；只拦这一次导入，再导入照旧新建一张。
+// 不算更新的：本机已有改过之后再导入的同名卡、同名卡认不出是哪张、广场上的卡比本机导入还晚。一天之内不自动重复查；认出过的卡下次照旧认。
 const SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const chunk = (type, data) => {
     const length = Buffer.alloc(4);
@@ -16,15 +16,16 @@ const dataUrl = (bytes) => 'data:image/png;base64,' + bytes.toString('base64');
 const cardChunk = (card) => chunk('tEXt', Buffer.from('chara\0' + Buffer.from(JSON.stringify(card)).toString('base64'), 'latin1'));
 const forumAvatar = dataUrl(pngBytes(cardChunk({ name: 'x' })));
 const plainAvatar = dataUrl(pngBytes());
-// 广场上「夕」的新版：简介、开场白、世界书、正则都改了，状态栏模板同名但换了写法。
+// 广场上「夕」的新版：简介、开场白、世界书、正则都改了，状态栏模板同名但换了写法，还加了魔力和背包里的药。
 const newVersion = pngBytes(cardChunk({ spec: 'chara_card_v2', data: {
     name: '夕', description: '夕的新简介', first_mes: '新的开场白', creator_notes: '#R18',
     character_book: { entries: [{ keys: ['画'], content: '新世界书', comment: '画室', enabled: true }] },
     extensions: { regex_scripts: [{ scriptName: '新正则', findRegex: '/旧/g', replaceString: '新' }],
-        rp_hub_ui_templates: [{ name: '状态栏', htmlTemplate: '<div>体力 {{hp}}</div>', initialVariableState: { hp: 100 } }] }
+        rp_hub_ui_templates: [{ name: '状态栏', htmlTemplate: '<div>体力 {{hp}} 魔力 {{mp}}</div>', initialVariableState: { hp: 100, mp: 50, 背包: { 药: 3 } } }] }
 } }));
-const statusBar = { id: 'tpl-old', name: '状态栏', htmlTemplate: '<div>{{hp}}</div>', initialVariableState: { hp: 100 },
-    variableState: { hp: 37 }, changeLog: [], runtimeByCharacter: { xi: { variableState: { hp: 37 }, changeLog: [] } } };
+const oldState = { hp: 37, 背包: { 剑: 1 } };
+const statusBar = { id: 'tpl-old', name: '状态栏', htmlTemplate: '<div>{{hp}}</div>', initialVariableState: { hp: 100, 背包: {} },
+    variableState: oldState, changeLog: [], runtimeByCharacter: { xi: { variableState: oldState, changeLog: [] } } };
 const day = (date) => Date.UTC(2026, 10, date);
 const imported = day(1);
 const cards = [
@@ -38,6 +39,7 @@ let forum = {
     '令': [{ id: 'd1', createdAt: Date.UTC(2026, 9, 1), updatedAt: day(20), same: false }, { id: 'd2', createdAt: Date.UTC(2026, 9, 2), updatedAt: day(21), same: false }],
     '重岳': [{ id: 'e1', createdAt: day(5), updatedAt: day(20), same: false }]
 };
+let failing = false;
 
 const harness = await startHarness({ upstream: defaultUpstream });
 const browser = await chromium.launch({ executablePath: chrome, headless: true });
@@ -53,7 +55,7 @@ try {
         const body = route.request().postDataJSON();
         if (body?.action !== 'forum-cards') return route.continue();
         asked.push(body.cards);
-        return route.fulfill({ json: { ok: true, results: body.cards.map((card) => forum[card.name] || []) } });
+        return route.fulfill({ json: { ok: true, results: body.cards.map((card) => (failing ? null : forum[card.name] || [])) } });
     });
     await page.goto(harness.url + '/seed.html');
     await initializeFixture(page);
@@ -80,14 +82,19 @@ try {
             return (app?._instance?.proxy || app?._container?._vnode?.component?.proxy)?.characters?.length === count;
         }, count, { timeout: 45000 });
     };
-    const badge = page.locator('[data-rph-card-updates]:visible');
+    const updates = (count) => page.locator(`[data-rph-card-updates][title="${count} 张卡可更新"]:visible`);
+    const checkButton = page.locator('[data-rph-card-updates][title="检查更新"]:visible');
     const rows = page.locator('.rph-ui-overlay .rph-ui-row');
+    const note = page.locator('.rph-ui-overlay .rph-ui-body > .rph-ui-muted');
+    const closeList = async () => {
+        await page.locator('.rph-ui-overlay .modal-close-button').click();
+        await page.locator('.rph-ui-overlay').waitFor({ state: 'detached', timeout: 5000 });
+    };
 
     await load(6);
     await app('proxy.currentView = arg', 'characters');
-    await badge.waitFor({ timeout: 15000 });
-    assert.equal(await badge.getAttribute('title'), '1 张卡可更新');
-    assert.equal(await badge.textContent(), '1');
+    await updates(1).waitFor({ timeout: 15000 });
+    assert.equal(await updates(1).textContent(), '1');
     assert.equal(await page.locator('[data-rph-card-updates]').count(), 2, 'one button in the phone actions and one in the computer actions');
     assert.equal(asked.length, 1);
     assert.deepEqual(asked[0].map((card) => card.name), ['夕', '黍', '黍', '令', '重岳'], 'only cards downloaded from the plaza are looked up');
@@ -96,8 +103,9 @@ try {
     assert.deepEqual(Object.keys(saved.cards).sort(), ['shu-new', 'shu-old', 'xi'], 'ambiguous names and plaza cards newer than the import are not linked');
     console.log('PASS only plaza downloads are checked; a card updated after its import is counted, the other cases are not');
 
-    await badge.click();
+    await updates(1).click();
     await rows.first().waitFor();
+    assert.equal(asked.length, 2, 'opening the list checks the plaza again');
     assert.equal(await rows.count(), 1);
     assert.equal(await rows.first().locator('.rph-ui-row-main > div').first().textContent(), '夕');
     assert.equal(await rows.first().locator('.rph-ui-muted').textContent(), '万相广场 11月20日更新');
@@ -105,7 +113,7 @@ try {
     await page.waitForFunction(() => document.querySelector('iframe')?.getAttribute('src')?.startsWith('https://rphforum.zeabur.app/card/a1?t='), null, { timeout: 15000 });
     assert.equal(await app('return proxy.currentView'), 'square');
     await page.locator('.rph-ui-overlay').waitFor({ state: 'detached', timeout: 5000 }); // 列表随广场打开而关闭
-    console.log('PASS the update button opens the card inside the embedded plaza');
+    console.log('PASS the list checks again, and the update button opens the card inside the embedded plaza');
 
     // 在广场里点「导入」：广场把卡片 PNG 发给 RPH，等它回导入结果。
     const plazaImport = async (requestId) => {
@@ -121,11 +129,12 @@ try {
         return { count: proxy.characters.length, current: proxy.currentCharacter?.uuid, chat: proxy.chatHistory?.length,
             description: char.description, first: char.first_mes, avatar: char.avatar === arg,
             world: char.worldInfo.map((entry) => entry.content), regex: char.regexScripts.map((script) => script.name || script.scriptName),
-            templates: char.uiTemplates.map((t) => ({ id: t.id, html: t.htmlTemplate, hp: t.variableState?.hp, saved: t.runtimeByCharacter?.xi?.variableState?.hp })) };`,
+            templates: char.uiTemplates.map((t) => ({ id: t.id, html: t.htmlTemplate, state: t.variableState, saved: t.runtimeByCharacter?.xi?.variableState })) };`,
     dataUrl(newVersion));
-    // 被更新的是正在聊的那张卡：还是当前卡，聊天还在页面上。
+    // 被更新的是正在聊的那张卡：还是当前卡，聊天还在页面上；状态栏数值接着用，作者新加的魔力、药用作者给的初始值。
+    const newState = { hp: 37, mp: 50, 背包: { 剑: 1, 药: 3 } };
     assert.deepEqual(updated, { count: 6, current: 'xi', chat: 2, description: '夕的新简介', first: '新的开场白', avatar: true, world: ['新世界书'], regex: ['新正则'],
-        templates: [{ id: 'tpl-old', html: '<div>体力 {{hp}}</div>', hp: 37, saved: 37 }] });
+        templates: [{ id: 'tpl-old', html: '<div>体力 {{hp}} 魔力 {{mp}}</div>', state: newState, saved: newState }] });
     await initializeFixture(page);
     const stored = await page.evaluate(async () => {
         const db = await fixture.db();
@@ -135,9 +144,8 @@ try {
         return result;
     });
     assert.deepEqual(stored, { description: '夕的新简介', chat: ['你好', '继续画'] }, 'the update is saved at once and the chat stays with the card');
-    assert.equal(await page.locator('[data-rph-card-updates]').count(), 0, 'nothing left to update');
     assert.ok(await page.evaluate(() => JSON.parse(localStorage.getItem('rp_hub_card_updates_v1')).cards.xi.syncedAt > 0));
-    console.log('PASS importing from the update replaces the card in place: same card, new content, the status bar keeps its values');
+    console.log('PASS importing from the update replaces the card in place: same card, new content, the status bar keeps its values and gains the new ones');
 
     assert.equal((await plazaImport('import-2')).name, '夕');
     await page.waitForFunction(() => {
@@ -145,12 +153,27 @@ try {
         return (app._instance?.proxy || app._container._vnode.component.proxy).characters.length === 7;
     }, null, { timeout: 15000 });
     await app('proxy.currentView = arg', 'characters');
+    await checkButton.waitFor({ timeout: 15000 });
     await page.waitForTimeout(1000);
-    assert.equal(asked.length, 1, 'the plaza is checked at most once a day');
-    assert.equal(await page.locator('[data-rph-card-updates]').count(), 0);
+    assert.equal(asked.length, 2, 'besides opening the list, the plaza is checked at most once a day');
+    assert.equal(await checkButton.textContent(), '', 'nothing left to update; the button stays for checking by hand');
     console.log('PASS only that one import is taken over; importing again adds a new card as before');
 
-    // 一天后再查：广场上「夕」多了一张同名卡、简介也改了，作者又改了一次；靠上次认出的编号照旧认出原来那张。
+    // 点「检查更新」马上查：广场不可用时说查不成，好了以后说都是最新版。
+    failing = true;
+    await checkButton.click();
+    await note.filter({ hasText: '检查失败' }).waitFor({ timeout: 15000 });
+    assert.equal(await note.textContent(), '检查失败：万相广场暂时不可用');
+    assert.equal(await rows.count(), 0);
+    await closeList();
+    failing = false;
+    await checkButton.click();
+    await note.filter({ hasText: '都是最新版' }).waitFor({ timeout: 15000 });
+    assert.equal(asked.length, 6, 'each check by hand asks at once: six plaza downloads in two batches');
+    await closeList();
+    console.log('PASS checking by hand asks the plaza at once and says when it cannot be reached');
+
+    // 一天后再查：广场上「夕」多了一张同名卡、简介也改了，作者又改了一次；靠认出过的编号照旧认出原来那张，两张本机的「夕」都要更新。
     const later = Date.now() + 2 * 24 * 60 * 60 * 1000;
     forum = { ...forum, '夕': [{ id: 'z9', createdAt: Date.UTC(2026, 9, 3), updatedAt: later + 1000, same: false },
         { id: 'a1', createdAt: Date.UTC(2026, 9, 1), updatedAt: later, same: false }] };
@@ -158,15 +181,14 @@ try {
         const state = JSON.parse(localStorage.getItem('rp_hub_card_updates_v1'));
         localStorage.setItem('rp_hub_card_updates_v1', JSON.stringify({ ...state, checkedAt: 0 }));
     });
+    const before = asked.length;
     await load(7);
     await app('proxy.currentView = arg', 'characters');
-    await badge.waitFor({ timeout: 15000 });
-    assert.equal(asked.length, 3, 'six plaza downloads now, asked in two batches');
-    assert.equal(await badge.getAttribute('title'), '1 张卡可更新');
-    await badge.click();
-    await rows.first().waitFor();
-    assert.equal(await rows.count(), 1);
-    assert.equal(await rows.first().locator('.rph-ui-row-main > div').first().textContent(), '夕');
+    await updates(2).waitFor({ timeout: 15000 });
+    assert.equal(asked.length - before, 2, 'six plaza downloads, asked in two batches');
+    await updates(2).click();
+    await rows.nth(1).waitFor();
+    assert.deepEqual(await rows.locator('.rph-ui-row-main > div:first-child').allTextContents(), ['夕', '夕']);
     assert.match(await rows.first().locator('.rph-ui-muted').textContent(), /^万相广场 \d+月\d+日更新$/);
     console.log('PASS a card linked once keeps its plaza card when a same-name card appears, and shows the next update after an in-place update');
     assert.deepEqual(errors, []);

@@ -408,5 +408,6 @@ textarea.rph-ui-code { font: 0.75rem/1.5 var(--font-mono, ui-monospace, monospac
 .rp-sync-float__bar { position: absolute; left: 0; bottom: 0; width: 0; height: 2px; background: var(--rk-accent); transition: width 0.3s ease; }
 .rp-sync-float[data-kind="error"] .rp-sync-float__main { color: var(--rk-danger); }
 /* 角色卡管理右上角的更新按钮，右上角的数字和批量删除的计数气泡一个样子 */
-.rph-card-updates { position: relative; color: var(--rk-accent); }
+.rph-card-updates { position: relative; }
+.rph-card-updates > span:empty { display: none; }
 .rph-card-updates > span { position: absolute; top: -0.25rem; right: -0.25rem; min-width: 1.125rem; padding: 0.125rem 0.3rem; border: 1px solid var(--rk-tint); border-radius: 999px; background: var(--c-surface, #fff); color: var(--rk-accent); font-size: 10px; font-weight: 700; line-height: 1; box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); }
