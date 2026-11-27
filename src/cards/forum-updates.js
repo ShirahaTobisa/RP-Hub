@@ -1,4 +1,5 @@
-    // ---- 万相广场的卡有新版本：打开角色卡管理时查一次（每天最多一次），标题旁显示「N 张卡可更新」，点开给出广场链接 ----
+    // ---- 万相广场的卡有新版本：打开角色卡管理时查一次（每天最多一次），右上角显示可更新的数量；
+    // 点「更新」在内嵌的万相广场打开那张卡，在那里点「导入」就原地换成新版，聊天记录不动 ----
     const FORUM_BASE = 'https://rphforum.zeabur.app';
     const CARD_UPDATES_KEY = 'rp_hub_card_updates_v1';
     const CARD_UPDATE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -7,6 +8,7 @@
     const CARD_UPDATE_BATCH = 5;
     let cardUpdates = null;
     let checkingCardUpdates = false;
+    let pendingCardUpdate = null;
 
     function readCardUpdates() {
         if (!cardUpdates) {
@@ -28,13 +30,13 @@
         try { return atob(char.avatar.slice(prefix.length, prefix.length + 64)).slice(37, 47) === 'tEXtchara\0'; } catch (_) { return false; }
     }
 
-    // 广场上的卡在本机导入之后改过，而且本机还没有改过之后再导入的同名卡。
+    // 广场上的卡在本机导入（或上次原地更新）之后改过，而且本机还没有改过之后再导入的同名卡。
     function outdatedCards() {
         const { cards } = readCardUpdates();
         const chars = getVueProxy()?.characters || [];
         return chars.filter((char) => {
             const entry = cards[char.uuid];
-            return entry && entry.updatedAt > char.createdAt + CARD_CLOCK_SLACK_MS
+            return entry && entry.updatedAt > Math.max(char.createdAt, entry.syncedAt || 0) + CARD_CLOCK_SLACK_MS
                 && !chars.some((other) => other.name === char.name && other.createdAt > entry.updatedAt);
         }).map((char) => ({ char, ...cards[char.uuid] }));
     }
@@ -59,7 +61,7 @@
                     const found = (results?.[offset] || []).filter((card) => card.createdAt <= char.createdAt + CARD_CLOCK_SLACK_MS);
                     const match = found.find((card) => card.id === known?.id) || found.find((card) => card.same)
                         || (found.length === 1 ? found[0] : null);
-                    const entry = match ? { id: match.id, updatedAt: match.updatedAt } : known;
+                    const entry = match ? { ...(match.id === known?.id ? known : {}), id: match.id, updatedAt: match.updatedAt } : known;
                     if (entry) cards[char.uuid] = entry;
                 });
             }
@@ -73,8 +75,9 @@
         decorateCharactersView();
     }
 
-    // 在 RP-Hub 内嵌的万相广场里打开这张卡，可以直接导入新版本；页面上没有万相广场时开新标签页。
-    async function openForumCard(id) {
+    // 在 RP-Hub 内嵌的万相广场里打开这张卡；离开广场之前在那里导入同名的卡，就原地更新这张卡。
+    // 页面上没有万相广场时开新标签页，只能手动导入。
+    async function openCardUpdate(char, id) {
         const url = `${FORUM_BASE}/card/${encodeURIComponent(id)}`;
         const proxy = getVueProxy();
         if (!proxy || !('squareUrl' in proxy)) return void window.open(url, '_blank', 'noopener');
@@ -83,7 +86,64 @@
             await globalThis.Vue.nextTick(); // 切到广场时官方会把地址换回广场首页，等它换完再改成这张卡
         }
         proxy.squareUrl = `${url}?t=${Date.now()}`;
+        pendingCardUpdate = { uuid: char.uuid, name: char.name };
+        const stop = globalThis.Vue.watch(() => proxy.currentView, (view) => {
+            if (view === 'square') return;
+            pendingCardUpdate = null;
+            stop();
+        });
+        window.RPHubUI.toast('在万相广场点「导入」即可更新，聊天记录保留');
     }
+
+    // 和官方导入一样整理新卡，只换内容字段；角色卡编号不变，聊天记录、分支、记忆、生图记录都还在。
+    // 同名的界面模板沿用旧模板的编号和运行状态（状态栏的数值和变化记录），游戏进度不会清零。
+    async function updateCardInPlace(char, data, buffer) {
+        const cards = window.RPHubCardUtils, ui = window.RPHubUiTemplateUtils, config = window.RPHubConfig;
+        const imported = cards.parseImportedCharacterCard(data);
+        const oldTemplates = new Map((char.uiTemplates || []).map((template) => [template.name, template]));
+        const uiTemplates = imported.uiTemplates.map((template) => {
+            const next = ui.normalizeUiTemplate({ ...ui.sanitizeUiTemplateImportEntry(template), id: window.RPHubUtils.generateUUID(), scope: 'character' });
+            const old = oldTemplates.get(next.name);
+            oldTemplates.delete(next.name);
+            return old ? { ...next, id: old.id, variableState: old.variableState, changeLog: old.changeLog, runtimeByCharacter: old.runtimeByCharacter } : next;
+        });
+        Object.assign(char, {
+            name: imported.name, description: imported.description, first_mes: imported.first_mes,
+            personality: imported.personality, creator_notes: imported.creator_notes,
+            avatar: await cards.blobToDataUrl(new Blob([buffer], { type: 'image/png' })),
+            worldInfo: imported.worldInfoEntries.map((entry) => cards.normalizeWorldInfoEntry({ ...entry, scope: 'character' },
+                { systemNames: config.systemWorldInfoNames })).filter((entry) => entry.scope !== 'global'),
+            regexScripts: imported.regexScripts.map((script) => cards.normalizeImportedRegexScript({ ...script, scope: 'character' },
+                { fallbackScope: 'character', systemNames: config.systemRegexNames })).filter((script) => script.scope !== 'global'),
+            uiTemplates
+        });
+        const state = readCardUpdates();
+        if (state.cards[char.uuid]) state.cards[char.uuid].syncedAt = Date.now();
+        saveCardUpdates(state);
+        await flushAppState().catch(() => { /* 正在生成回复时存不了，官方一秒后会自己存 */ });
+    }
+
+    // 从「更新」打开的广场里导入同名的卡：不新建角色卡，原地更新；别的导入照旧交给官方。
+    // 在捕获阶段先于官方的监听处理，处理了就拦下，并替官方给广场回导入结果。
+    window.addEventListener('message', (event) => {
+        const target = pendingCardUpdate;
+        const { type, requestId, buffer } = event.data || {};
+        if (!target || type !== 'RPH_FORUM_IMPORT_CARD' || event.origin !== FORUM_BASE) return;
+        if (![...document.querySelectorAll('iframe')].some((frame) => frame.contentWindow === event.source)) return;
+        if (typeof requestId !== 'string' || !/^[\w-]{1,80}$/.test(requestId) || !(buffer instanceof ArrayBuffer)) return;
+        let data;
+        try { data = window.RPHubCardUtils.parsePngCharacterData(buffer).data; } catch (_) { return; }
+        const char = getVueProxy()?.characters?.find((item) => item.uuid === target.uuid);
+        if (!char || String((data?.data || data)?.name || '').trim() !== target.name) return;
+        event.stopImmediatePropagation();
+        pendingCardUpdate = null;
+        const reply = (result) => event.source.postMessage({ type: 'RPHUB_IMPORT_RESULT', requestId, ...result }, event.origin);
+        updateCardInPlace(char, data, buffer).then(() => {
+            reply({ name: char.name });
+            window.RPHubUI.toast(`已更新「${char.name}」`, { kind: 'success' });
+            decorateCharactersView();
+        }, (error) => reply({ error: `更新失败：${error?.message || '请重试'}` }));
+    }, true);
 
     function openCardUpdates() {
         window.RPHubUI.openModal({ title: '角色卡更新', size: 'sm', render(body, modal) {
@@ -96,9 +156,9 @@
                 const [name, date] = row.firstChild.children;
                 name.textContent = char.name;
                 date.textContent = `万相广场 ${new Date(updatedAt).toLocaleDateString('zh-CN', { month: 'long', day: 'numeric' })}更新`;
-                const view = window.RPHubUI.button('查看', 'primary');
-                view.addEventListener('click', () => { modal.close(); openForumCard(id); });
-                row.lastChild.appendChild(view);
+                const update = window.RPHubUI.button('更新', 'primary');
+                update.addEventListener('click', () => { modal.close(); openCardUpdate(char, id); });
+                row.lastChild.appendChild(update);
                 list.appendChild(row);
             }
             body.appendChild(list);
