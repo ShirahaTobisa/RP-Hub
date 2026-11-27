@@ -183,7 +183,9 @@ try {
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        `$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath ${powershellLiteral(second.zip)} -DestinationPath ${powershellLiteral(extractedRoot)} -Force`
+        // 不用 Expand-Archive：GitHub 的 windows-latest 从 2026-11 下旬起在 PowerShell 5.1 里调用它会报
+        // 「Cannot find an overload for "ExtractToDirectory"」；和打包脚本一样直接用 .NET 的 ZipFile。
+        `$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [IO.Compression.ZipFile]::ExtractToDirectory(${powershellLiteral(second.zip)}, ${powershellLiteral(extractedRoot)})`
     ], { stdio: 'pipe', windowsHide: true });
     assert.deepEqual(listFiles(extractedRoot), expected, 'ZIP contents differ from dist');
     assert.deepEqual(listFiles(distRoot), listFiles(extractedRoot));
