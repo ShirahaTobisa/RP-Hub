@@ -5,6 +5,7 @@ import { startHarness, initializeFixture, chromium, chrome, defaultUpstream } fr
 // 广场上导入之后改过的卡，右上角「检查更新」带数字，点开马上再查一次并列出来，点「更新」在内嵌的万相广场打开那张卡，在那里导入就原地换成新版：
 // 角色卡编号不变（聊天记录还在），同名的状态栏模板沿用编号和数值、补上作者新加的变量；只拦这一次导入，再导入照旧新建一张。
 // 不算更新的：本机已有改过之后再导入的同名卡、同名卡认不出是哪张、广场上的卡比本机导入还晚。一天之内不自动重复查；认出过的卡下次照旧认。
+// 卡片上的「检查更新」只查那一张，认不出时列出同名卡让人选，选过的记住。
 const SIGNATURE = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
 const chunk = (type, data) => {
     const length = Buffer.alloc(4);
@@ -168,7 +169,7 @@ try {
     await closeList();
     failing = false;
     await checkButton.click();
-    await note.filter({ hasText: '都是最新版' }).waitFor({ timeout: 15000 });
+    await note.filter({ hasText: '已是最新版本' }).waitFor({ timeout: 15000 });
     assert.equal(asked.length, 6, 'each check by hand asks at once: six plaza downloads in two batches');
     await closeList();
     console.log('PASS checking by hand asks the plaza at once and says when it cannot be reached');
@@ -191,6 +192,63 @@ try {
     assert.deepEqual(await rows.locator('.rph-ui-row-main > div:first-child').allTextContents(), ['夕', '夕']);
     assert.match(await rows.first().locator('.rph-ui-muted').textContent(), /^万相广场 \d+月\d+日更新$/);
     console.log('PASS a card linked once keeps its plaza card when a same-name card appears, and shows the next update after an in-place update');
+    await closeList();
+
+    // 卡片上的「检查更新」只查这一张：翻牌时正对着的卡有，网格里每张广场下载的卡都有，自己导入的卡没有。
+    await page.locator('.character-deck__item.is-focused [data-rph-card-check]').waitFor({ timeout: 15000 });
+    await app('proxy.characterGridView = true');
+    // 翻牌那组卡片只是藏起来了还在页面上，只找网格里看得见的。
+    const card = (name, index = 0) => page.locator('.char-grid-item:visible').filter({ has: page.locator('h3', { hasText: new RegExp(`^${name}$`) }) }).nth(index);
+    const checkCard = (name, index) => card(name, index).locator('[data-rph-card-check]');
+    await checkCard('令').waitFor({ timeout: 15000 });
+    assert.equal(await page.locator('.char-grid-item:visible [data-rph-card-check]').count(), 6, 'every plaza download has one');
+    assert.equal(await checkCard('年').count(), 0);
+    // 「令」在广场上有两张同名卡、认不出：列出来（新上传的在前）让人选，选过的记住，有新版本就能更新。
+    const asking = asked.length;
+    await checkCard('令').click();
+    await note.filter({ hasText: '请选择' }).waitFor({ timeout: 15000 });
+    assert.deepEqual(asked.slice(asking).map((batch) => batch.map((item) => item.name)), [['令']], 'only that card is looked up');
+    assert.equal(await note.textContent(), '请选择万相广场上对应的卡');
+    assert.equal(await rows.count(), 2);
+    await rows.first().getByRole('button', { name: '选择' }).click();
+    await note.filter({ hasText: '有新版本' }).waitFor();
+    assert.equal(await note.textContent(), '「令」有新版本');
+    assert.equal(await rows.first().getByRole('button', { name: '更新' }).count(), 1);
+    assert.equal(await rows.nth(1).getByRole('button', { name: '选择' }).count(), 1);
+    assert.equal(await page.evaluate(() => JSON.parse(localStorage.getItem('rp_hub_card_updates_v1')).cards.ling.id), 'd2');
+    await closeList();
+    await updates(3).waitFor({ timeout: 5000 });
+    console.log('PASS checking one card asks only for it and lets you pick its plaza card when the name is ambiguous');
+
+    // 认得出又没有新版本的只说一句；同一张卡导入了两份（头像一模一样）也分得清点的是哪张。
+    await checkCard('黍', 1).click();
+    await note.filter({ hasText: '已是最新版本' }).waitFor({ timeout: 15000 });
+    assert.equal(await note.textContent(), '「黍」已是最新版本');
+    assert.equal(await rows.count(), 0);
+    await closeList();
+    const copy = await app('return proxy.characters[6].uuid');
+    const copyIndex = (await app('return proxy.displayedCharacters.filter((char) => char.name === arg).map((char) => char.uuid)', '夕')).indexOf(copy);
+    const xiSynced = await page.evaluate(() => JSON.parse(localStorage.getItem('rp_hub_card_updates_v1')).cards.xi.syncedAt);
+    await checkCard('夕', copyIndex).click();
+    await note.filter({ hasText: '有新版本' }).waitFor({ timeout: 15000 });
+    assert.equal(await rows.count(), 2, 'the other same-name plaza card is offered too');
+    await rows.nth(1).getByRole('button', { name: '更新' }).click();
+    await page.waitForFunction(() => document.querySelector('iframe')?.getAttribute('src')?.startsWith('https://rphforum.zeabur.app/card/a1?t='), null, { timeout: 15000 });
+    assert.equal((await plazaImport('update-copy')).name, '夕');
+    const synced = await page.evaluate(() => JSON.parse(localStorage.getItem('rp_hub_card_updates_v1')).cards);
+    assert.ok(synced[copy].syncedAt > 0 && synced.xi.syncedAt === xiSynced, 'the copy that was clicked is the one updated');
+    assert.equal(await app('return proxy.characters.length'), 7);
+    console.log('PASS a card that is up to date says so, and two copies of the same card are told apart');
+
+    // 作者把新版重新上传成了一张新卡（比本机导入晚）：自动检查不认，单张检查里选上它就能更新。
+    await app('proxy.currentView = arg', 'characters'); // 回到角色卡管理时官方会切回翻牌，再换成网格
+    await app('proxy.characterGridView = true');
+    await checkCard('重岳').click();
+    await note.filter({ hasText: '请选择' }).waitFor({ timeout: 15000 });
+    await rows.first().getByRole('button', { name: '选择' }).click();
+    await rows.first().getByRole('button', { name: '更新' }).click();
+    await page.waitForFunction(() => document.querySelector('iframe')?.getAttribute('src')?.startsWith('https://rphforum.zeabur.app/card/e1?t='), null, { timeout: 15000 });
+    console.log('PASS a re-uploaded plaza card can be picked by hand and updated');
     assert.deepEqual(errors, []);
 } finally {
     await browser.close();
