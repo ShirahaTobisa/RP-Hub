@@ -8,6 +8,7 @@
     "src/sync/restore.js",
     "src/sync/http.js",
     "src/sync/panel.js",
+    "src/cards/forum-updates.js",
     "src/sync/actions.js"
   ],
   "DB/image-module.js": [
@@ -37,6 +38,7 @@
     "src/server/dispatch.js",
     "src/server/self-updates.js",
     "src/server/feedback.js",
+    "src/server/forum-cards.js",
     "src/server/routes.js"
   ],
   "DB/char-store.js": [

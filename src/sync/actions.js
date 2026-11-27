@@ -336,5 +336,6 @@
         offerResumeUpload();
         showRestoreNotice();
     }
-    watchSettingsView();
+    watchView('settings', decorateSettingsView);
+    watchView('characters', decorateCharactersView);
 })();

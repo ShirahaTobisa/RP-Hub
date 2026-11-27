@@ -25,7 +25,8 @@ async function handleJsonApi(request, env, ctx) {
         'app-update-rollback': () => handleAppUpdateRollback(bucket),
         'self-update-status': () => handleSelfUpdateStatus(env),
         'self-update-apply': () => handleSelfUpdateApply(request, env, body),
-        'self-update-rollback': () => handleSelfUpdateRollback(request, env)
+        'self-update-rollback': () => handleSelfUpdateRollback(request, env),
+        'forum-cards': () => handleForumCards(body)
     };
     if (!Object.hasOwn(actions, body.action)) return error('Unsupported action.', 404);
     return actions[body.action]();

@@ -294,7 +294,7 @@
     background: var(--overlay, rgba(0, 0, 0, 0.5));
     backdrop-filter: blur(6px) saturate(120%);
 }
-:is(.rph-ui-overlay, .rp-sync-modal, [data-rph-workshop-page], .rp-sync-float) {
+:is(.rph-ui-overlay, .rp-sync-modal, [data-rph-workshop-page], .rp-sync-float, .rph-card-updates) {
     --rk-text: var(--c-text, #111827);
     --rk-muted: var(--c-text-3, #6b7280);
     --rk-border: var(--c-border-soft, #e5e7eb);
@@ -305,7 +305,7 @@
     --rk-accent: var(--c-accent-text, #2563eb);
     --rk-danger: var(--c-danger, #dc2626);
 }
-:root[data-app-theme="dark"] :is(.rph-ui-overlay, .rp-sync-modal, [data-rph-workshop-page], .rp-sync-float) {
+:root[data-app-theme="dark"] :is(.rph-ui-overlay, .rp-sync-modal, [data-rph-workshop-page], .rp-sync-float, .rph-card-updates) {
     --rk-text: var(--c-text, var(--night-text));
     --rk-muted: var(--c-text-3, var(--night-muted));
     --rk-border: var(--c-border-soft, var(--night-border));
@@ -407,3 +407,6 @@ textarea.rph-ui-code { font: 0.75rem/1.5 var(--font-mono, ui-monospace, monospac
 .rp-sync-float__close[hidden], .rp-sync-float__action[hidden] { display: none; }
 .rp-sync-float__bar { position: absolute; left: 0; bottom: 0; width: 0; height: 2px; background: var(--rk-accent); transition: width 0.3s ease; }
 .rp-sync-float[data-kind="error"] .rp-sync-float__main { color: var(--rk-danger); }
+/* 角色卡管理右上角的更新按钮，右上角的数字和批量删除的计数气泡一个样子 */
+.rph-card-updates { position: relative; color: var(--rk-accent); }
+.rph-card-updates > span { position: absolute; top: -0.25rem; right: -0.25rem; min-width: 1.125rem; padding: 0.125rem 0.3rem; border: 1px solid var(--rk-tint); border-radius: 999px; background: var(--c-surface, #fff); color: var(--rk-accent); font-size: 10px; font-weight: 700; line-height: 1; box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); }

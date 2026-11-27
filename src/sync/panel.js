@@ -638,8 +638,8 @@
         ensureCloudBackupEntry();
     }
 
-    // 只在设置页打开时观察页面变化，离开就停，不影响聊天时的性能。
-    function watchSettingsView() {
+    // 只在某个页面（设置页、角色卡管理）打开时观察页面变化，离开就停，不影响聊天时的性能。
+    function watchView(name, decorate) {
         let observer = null;
         const start = setInterval(() => {
             const proxy = getVueProxy();
@@ -648,9 +648,9 @@
             globalThis.Vue.watch(() => proxy.currentView, (view) => {
                 observer?.disconnect();
                 observer = null;
-                if (view !== 'settings') return;
-                decorateSettingsView();
-                observer = new MutationObserver(decorateSettingsView);
+                if (view !== name) return;
+                decorate();
+                observer = new MutationObserver(decorate);
                 observer.observe(document.getElementById('app'), { childList: true, subtree: true });
             }, { immediate: true });
         }, 1000);

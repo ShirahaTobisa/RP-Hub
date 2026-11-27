@@ -20,7 +20,7 @@ const tests = [
     'nai2api-plugin.test.mjs',
     'custom-image-plugin.test.mjs',
     'update-notice.test.mjs',
-    'static-cache.test.mjs', 'sync-gzip.test.mjs', 'fork-migration.test.mjs', 'cloud-backup-patch.test.mjs', 'voice-plugins.test.mjs'
+    'static-cache.test.mjs', 'sync-gzip.test.mjs', 'fork-migration.test.mjs', 'cloud-backup-patch.test.mjs', 'voice-plugins.test.mjs', 'forum-cards.test.mjs'
 ];
 
 for (const test of tests) {
